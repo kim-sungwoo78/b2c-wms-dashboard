@@ -20,6 +20,17 @@ def get_drive_service(creds_dict):
 
 def process_and_update(service):
     conn = sqlite3.connect(DB_PATH)
+    
+    # 1. raw_shipments 테이블이 없으면 미리 생성
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS raw_shipments (
+        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, `배송 속성` TEXT,
+        `판매 플랫폼` TEXT, `출고 박스` TEXT, SKU명 TEXT, 바코드 TEXT,
+        `송장 번호` TEXT, `출고 수량` INTEGER
+    )
+    """)
+    
+    # 2. daily_summary 테이블 생성
     conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -60,12 +71,13 @@ def process_and_update(service):
             fields='id, parents'
         ).execute()
 
+    # 3. 집계 쿼리 실행
     conn.execute("""
     INSERT OR REPLACE INTO daily_summary
     SELECT 
         영업마감일자, 센터, 고객사,
-        `배송 속성` AS 배송속성,
-        `판매 플랫폼` AS 판매처,
+        COALESCE(`배송 속성`, '미지정') AS 배송속성,
+        COALESCE(`판매 플랫폼`, '미지정') AS 판매처,
         COALESCE(`출고 박스`, '미지정') AS 출고박스종류,
         SKU명, 바코드,
         COUNT(DISTINCT `송장 번호`) AS 출고건수,
