@@ -37,12 +37,23 @@ def process_and_update(service):
     )
     """)
 
-    query = f"'{MAIN_UPLOAD_FOLDER_ID}' in parents and (name contains '.xlsx' or name contains '.csv') and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
+    # 공유 드라이브 전용 API 검색 옵션 적용
+    query = f"'{MAIN_UPLOAD_FOLDER_ID}' in parents and trashed = false"
+    results = service.files().list(
+        q=query, 
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+        corpora='allDrives'
+    ).execute()
     files = results.get('files', [])
 
     for f in files:
         file_id, file_name = f['id'], f['name']
+        
+        if not (file_name.lower().endswith('.xlsx') or file_name.lower().endswith('.csv')):
+            continue
+
         request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -51,12 +62,10 @@ def process_and_update(service):
             _, done = downloader.next_chunk()
         fh.seek(0)
 
-        df = pd.read_excel(fh) if file_name.endswith('.xlsx') else pd.read_csv(fh)
+        df = pd.read_excel(fh) if file_name.lower().endswith('.xlsx') else pd.read_csv(fh)
         
-        # 공백 제거 및 다양한 열 이름 자동 매핑
         df.columns = [str(c).replace(" ", "").strip() for c in df.columns]
 
-        # 날짜 컬럼 유연하게 찾기 (마감일시, 마감일자, 출고일시 등)
         date_col = None
         for c in df.columns:
             if any(k in c for k in ['마감일시', '마감일자', '출고일시', '출고일자', '일시', '일자']):
@@ -69,7 +78,6 @@ def process_and_update(service):
         else:
             df['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
 
-        # 표준 컬럼명 재매핑
         col_map = {
             '센터': '센터', '고객사': '고객사', '배송속성': '배송 속성', '배송유형': '배송 속성',
             '판매플랫폼': '판매 플랫폼', '판매처': '판매 플랫폼', '출고박스': '출고 박스',
@@ -81,7 +89,6 @@ def process_and_update(service):
             if k in df.columns and v not in df.columns:
                 df[v] = df[k]
 
-        # 필요한 컬럼만 추출하여 DB에 저장
         target_cols = ['영업마감일자', '센터', '고객사', '배송 속성', '판매 플랫폼', '출고 박스', 'SKU명', '바코드', '송장 번호', '출고 수량']
         for tc in target_cols:
             if tc not in df.columns:
@@ -89,11 +96,12 @@ def process_and_update(service):
 
         df[target_cols].to_sql('raw_shipments', conn, if_exists='append', index=False)
 
-        # 처리 완료된 파일은 처리완료 폴더로 이동
+        # 처리 완료된 파일을 처리완료 폴더로 이동 (공유 드라이브 지원)
         service.files().update(
             fileId=file_id,
             addParents=PROCESSED_FOLDER_ID,
             removeParents=MAIN_UPLOAD_FOLDER_ID,
+            supportsAllDrives=True,
             fields='id, parents'
         ).execute()
 
