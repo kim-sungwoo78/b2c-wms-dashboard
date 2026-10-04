@@ -122,7 +122,10 @@ with tab1:
             show_client = st.radio("2. 고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"])
         with col3:
             if "보이기" in show_client:
-                clients = st.multiselect("3. 고객사 선택 (미선택 시 전체)", sorted(list(df_raw['고객사'].dropna().unique())), key="tab1_clients")
+                # 선택된 센터가 있으면 해당 센터의 고객사만 필터링
+                available_clients_df = df_raw[df_raw['센터'].isin(centers)] if centers else df_raw
+                available_clients = sorted(list(available_clients_df['고객사'].dropna().unique()))
+                clients = st.multiselect("3. 고객사 선택 (미선택 시 전체)", available_clients, key="tab1_clients")
             else:
                 clients = []
                 st.selectbox("3. 고객사 선택", ["고객사 숨김 상태"], disabled=True)
@@ -173,19 +176,44 @@ with tab3:
         final_df3.set_index('총 출고건수', append=True, inplace=True)
         st.dataframe(final_df3, use_container_width=True)
 
-# Tab 4: SKU별 출고량 (기간 합산 및 다중 선택 조건 내림차순 집계)
+# Tab 4: SKU별 출고량 (기간 선택 및 센터별 고객사 종속 필터링)
 with tab4:
-    st.header("🔍 SKU별 출고량 (기간 합산)")
+    st.header("🔍 SKU별 출고량 (기간 선택 집계)")
     if not df_raw.empty:
+        # 데이터의 최소/최대 날짜 파악
+        df_raw['영업마감일자_dt'] = pd.to_datetime(df_raw['영업마감일자'], errors='coerce')
+        min_date = df_raw['영업마감일자_dt'].min().date() if not df_raw['영업마감일자_dt'].isna().all() else datetime.now().date()
+        max_date = df_raw['영업마감일자_dt'].max().date() if not df_raw['영업마감일자_dt'].isna().all() else datetime.now().date()
+
+        # 1. 기간 선택 필터
+        date_range = st.date_input(
+            "📅 조회 기간 선택:",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="tab4_date_range"
+        )
+
+        # 2. 센터 및 고객사 선택 (종속 필터링)
         col1, col2 = st.columns(2)
         with col1:
             selected_centers = st.multiselect("센터 선택 (다중 선택 가능)", sorted(list(df_raw['센터'].dropna().unique())), key="tab4_centers")
+        
+        # 선택한 센터에 종속된 고객사 목록 산출
+        filtered_by_center = df_raw[df_raw['센터'].isin(selected_centers)] if selected_centers else df_raw
+        available_clients = sorted(list(filtered_by_center['고객사'].dropna().unique()))
+        
         with col2:
-            selected_clients = st.multiselect("고객사 선택 (다중 선택 가능)", sorted(list(df_raw['고객사'].dropna().unique())), key="tab4_clients")
+            selected_clients = st.multiselect("고객사 선택 (선택한 센터의 고객사만 표시)", available_clients, key="tab4_clients")
             
         sku_df = df_raw.copy()
         
-        # 필터링 적용
+        # 날짜 범위 필터링
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_d, end_d = date_range
+            sku_df = sku_df[(sku_df['영업마감일자_dt'].dt.date >= start_d) & (sku_df['영업마감일자_dt'].dt.date <= end_d)]
+
+        # 센터 및 고객사 필터링 적용
         if selected_centers:
             sku_df = sku_df[sku_df['센터'].isin(selected_centers)]
         if selected_clients:
@@ -198,10 +226,11 @@ with tab4:
             # 출고수량 많은 순서로 정렬 (내림차순)
             sku_summary = sku_summary.sort_values(by='총출고수량', ascending=False).reset_index(drop=True)
             
-            # 천단위 콤마 서식 적용 표 출력
+            # hide_index=True 로 순번(인덱스) 제거 및 천단위 콤마 서식 적용
             st.dataframe(
                 sku_summary.style.format({'출고건수': '{:,}', '총출고수량': '{:,}'}),
-                use_container_width=True
+                use_container_width=True,
+                hide_index=True
             )
         else:
-            st.info("선택한 조건에 해당하는 데이터가 없습니다.")
+            st.info("선택한 조건 및 기간에 해당하는 데이터가 없습니다.")
