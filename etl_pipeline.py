@@ -21,7 +21,6 @@ def get_drive_service(creds_dict):
 def process_and_update(service):
     conn = sqlite3.connect(DB_PATH)
     
-    # 1. raw_shipments 테이블이 없으면 미리 생성
     conn.execute("""
     CREATE TABLE IF NOT EXISTS raw_shipments (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, `배송 속성` TEXT,
@@ -30,7 +29,6 @@ def process_and_update(service):
     )
     """)
     
-    # 2. daily_summary 테이블 생성
     conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -54,16 +52,44 @@ def process_and_update(service):
         fh.seek(0)
 
         df = pd.read_excel(fh) if file_name.endswith('.xlsx') else pd.read_csv(fh)
-        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 공백 제거 및 다양한 열 이름 자동 매핑
+        df.columns = [str(c).replace(" ", "").strip() for c in df.columns]
 
-        if '마감 일시' in df.columns:
-            df['마감일시_dt'] = pd.to_datetime(df['마감 일시'], errors='coerce')
-            df['영업마감일자'] = (df['마감일시_dt'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
+        # 날짜 컬럼 유연하게 찾기 (마감일시, 마감일자, 출고일시 등)
+        date_col = None
+        for c in df.columns:
+            if any(k in c for k in ['마감일시', '마감일자', '출고일시', '출고일자', '일시', '일자']):
+                date_col = c
+                break
+
+        if date_col:
+            df['dt_temp'] = pd.to_datetime(df[date_col], errors='coerce')
+            df['영업마감일자'] = (df['dt_temp'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
         else:
-            df['영업마감일자'] = ""
+            df['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
 
-        df.to_sql('raw_shipments', conn, if_exists='append', index=False)
+        # 표준 컬럼명 재매핑
+        col_map = {
+            '센터': '센터', '고객사': '고객사', '배송속성': '배송 속성', '배송유형': '배송 속성',
+            '판매플랫폼': '판매 플랫폼', '판매처': '판매 플랫폼', '출고박스': '출고 박스',
+            '박스종류': '출고 박스', 'SKU명': 'SKU명', '상품명': 'SKU명',
+            '바코드': '바코드', '송장번호': '송장 번호', '출고수량': '출고 수량', '수량': '출고 수량'
+        }
+        
+        for k, v in col_map.items():
+            if k in df.columns and v not in df.columns:
+                df[v] = df[k]
 
+        # 필요한 컬럼만 추출하여 DB에 저장
+        target_cols = ['영업마감일자', '센터', '고객사', '배송 속성', '판매 플랫폼', '출고 박스', 'SKU명', '바코드', '송장 번호', '출고 수량']
+        for tc in target_cols:
+            if tc not in df.columns:
+                df[tc] = None
+
+        df[target_cols].to_sql('raw_shipments', conn, if_exists='append', index=False)
+
+        # 처리 완료된 파일은 처리완료 폴더로 이동
         service.files().update(
             fileId=file_id,
             addParents=PROCESSED_FOLDER_ID,
@@ -71,17 +97,19 @@ def process_and_update(service):
             fields='id, parents'
         ).execute()
 
-    # 3. 집계 쿼리 실행
     conn.execute("""
     INSERT OR REPLACE INTO daily_summary
     SELECT 
-        영업마감일자, 센터, 고객사,
+        영업마감일자,
+        COALESCE(센터, '미지정') AS 센터,
+        COALESCE(고객사, '미지정') AS 고객사,
         COALESCE(`배송 속성`, '미지정') AS 배송속성,
         COALESCE(`판매 플랫폼`, '미지정') AS 판매처,
         COALESCE(`출고 박스`, '미지정') AS 출고박스종류,
-        SKU명, 바코드,
+        COALESCE(SKU명, '미지정') AS SKU명,
+        COALESCE(바코드, '미지정') AS 바코드,
         COUNT(DISTINCT `송장 번호`) AS 출고건수,
-        SUM(`출고 수량`) AS 총출고수량
+        SUM(CAST(COALESCE(`출고 수량`, 1) AS INTEGER)) AS 총출고수량
     FROM raw_shipments
     WHERE 영업마감일자 IS NOT NULL AND 영업마감일자 != ''
     GROUP BY 영업마감일자, 센터, 고객사, `배송 속성`, `판매 플랫폼`, 출고박스종류, SKU명, 바코드;
