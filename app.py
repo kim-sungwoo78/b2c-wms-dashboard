@@ -56,6 +56,7 @@ def load_data():
 
 st.title("🚚 B2C 출고현황 동적 대시보드")
 
+# --- 사이드바 동기화 & 대시보드 상태 ---
 if st.sidebar.button("🔄 드라이브 동기화 / 새로고침"):
     with st.spinner("드라이브 데이터 동기화 중..."):
         run_sync()
@@ -69,24 +70,59 @@ if df_raw.empty:
 else:
     st.sidebar.success(f"데이터 로드 성공! (총 {len(df_raw):,}개 집계 레코드)")
 
+# --- 사이드바: 엑셀 다운로드 전용 섹션 ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("📥 엑셀 데이터 다운로드")
+
+if not df_raw.empty:
+    all_cols = ['영업마감일자', '센터', '고객사', '바코드', 'SKU명', '출고박스종류', '배송속성', '판매처', '출고건수', '총출고수량']
+    selected_cols = st.sidebar.multiselect(
+        "다운로드할 항목 선택:", 
+        all_cols, 
+        default=['영업마감일자', '센터', '고객사', '바코드', 'SKU명', '출고건수', '총출고수량']
+    )
+    
+    if selected_cols:
+        group_keys = [c for c in selected_cols if c not in ['출고건수', '총출고수량']]
+        val_keys = [c for c in ['출고건수', '총출고수량'] if c in selected_cols]
+        
+        if group_keys and val_keys:
+            export_df = df_raw.groupby(group_keys)[val_keys].sum().reset_index()
+        else:
+            export_df = df_raw[selected_cols]
+            
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            export_df.to_excel(writer, index=False, sheet_name='출고상세현황')
+            
+        st.sidebar.download_button(
+            label="💾 선택한 항목으로 엑셀 다운로드",
+            data=output.getvalue(),
+            file_name=f"B2C_출고현황_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+# --- 메인 탭 화면 ---
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 센터/고객사별 일자 출고현황", 
     "🚚 배송속성 / 판매처별 현황", 
     "📦 출고박스별 현황",
-    "🔍 센터/고객사/SKU 상세 & 엑셀 다운로드"
+    "🔍 SKU별 출고량"
 ])
 
+# Tab 1: 센터/고객사별 일자 출고현황
 with tab1:
     st.header("센터 & 고객사별 일자 출고현황 (06시 영업마감 기준)")
     if not df_raw.empty:
         col1, col2, col3 = st.columns([2, 2, 2])
         with col1:
-            centers = st.multiselect("1. 센터 선택 (미선택 시 전체)", sorted(list(df_raw['센터'].dropna().unique())))
+            centers = st.multiselect("1. 센터 선택 (미선택 시 전체)", sorted(list(df_raw['센터'].dropna().unique())), key="tab1_centers")
         with col2:
             show_client = st.radio("2. 고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"])
         with col3:
             if "보이기" in show_client:
-                clients = st.multiselect("3. 고객사 선택 (미선택 시 전체)", sorted(list(df_raw['고객사'].dropna().unique())))
+                clients = st.multiselect("3. 고객사 선택 (미선택 시 전체)", sorted(list(df_raw['고객사'].dropna().unique())), key="tab1_clients")
             else:
                 clients = []
                 st.selectbox("3. 고객사 선택", ["고객사 숨김 상태"], disabled=True)
@@ -110,6 +146,7 @@ with tab1:
             final_df.set_index('총 출고건수', append=True, inplace=True)
             st.dataframe(final_df, use_container_width=True)
 
+# Tab 2: 배송속성 / 판매처별 현황
 with tab2:
     st.header("배송 속성 및 판매처별 출고현황")
     if not df_raw.empty:
@@ -124,6 +161,7 @@ with tab2:
         final_df2.set_index('총 출고건수', append=True, inplace=True)
         st.dataframe(final_df2, use_container_width=True)
 
+# Tab 3: 출고박스별 현황
 with tab3:
     st.header("출고박스 규격별 사용 현황")
     if not df_raw.empty:
@@ -135,26 +173,35 @@ with tab3:
         final_df3.set_index('총 출고건수', append=True, inplace=True)
         st.dataframe(final_df3, use_container_width=True)
 
+# Tab 4: SKU별 출고량 (기간 합산 및 다중 선택 조건 내림차순 집계)
 with tab4:
-    st.header("🔍 센터/고객사/SKU 상세 조회 및 선택 엑셀 다운로드")
+    st.header("🔍 SKU별 출고량 (기간 합산)")
     if not df_raw.empty:
-        all_cols = ['영업마감일자', '센터', '고객사', '바코드', 'SKU명', '출고박스종류', '배송속성', '판매처', '출고건수', '총출고수량']
-        selected_cols = st.multiselect("다운로드할 항목을 선택하세요:", all_cols, default=['영업마감일자', '센터', '고객사', '바코드', 'SKU명', '출고건수', '총출고수량'])
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_centers = st.multiselect("센터 선택 (다중 선택 가능)", sorted(list(df_raw['센터'].dropna().unique())), key="tab4_centers")
+        with col2:
+            selected_clients = st.multiselect("고객사 선택 (다중 선택 가능)", sorted(list(df_raw['고객사'].dropna().unique())), key="tab4_clients")
+            
+        sku_df = df_raw.copy()
         
-        if selected_cols:
-            group_keys = [c for c in selected_cols if c not in ['출고건수', '총출고수량']]
-            val_keys = [c for c in ['출고건수', '총출고수량'] if c in selected_cols]
-            export_df = df_raw.groupby(group_keys)[val_keys].sum().reset_index() if group_keys else df_raw[val_keys]
+        # 필터링 적용
+        if selected_centers:
+            sku_df = sku_df[sku_df['센터'].isin(selected_centers)]
+        if selected_clients:
+            sku_df = sku_df[sku_df['고객사'].isin(selected_clients)]
             
-            st.dataframe(export_df.head(1000), use_container_width=True)
+        if not sku_df.empty:
+            # 기간 합산 집계 (고객사, 바코드, SKU명 기준)
+            sku_summary = sku_df.groupby(['고객사', '바코드', 'SKU명'])[['출고건수', '총출고수량']].sum().reset_index()
             
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                export_df.to_excel(writer, index=False, sheet_name='출고상세현황')
-                
-            st.download_button(
-                label="💾 선택한 항목으로 엑셀 파일 다운로드",
-                data=output.getvalue(),
-                file_name=f"B2C_출고현황_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            # 출고수량 많은 순서로 정렬 (내림차순)
+            sku_summary = sku_summary.sort_values(by='총출고수량', ascending=False).reset_index(drop=True)
+            
+            # 천단위 콤마 서식 적용 표 출력
+            st.dataframe(
+                sku_summary.style.format({'출고건수': '{:,}', '총출고수량': '{:,}'}),
+                use_container_width=True
             )
+        else:
+            st.info("선택한 조건에 해당하는 데이터가 없습니다.")
