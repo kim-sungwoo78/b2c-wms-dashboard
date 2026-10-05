@@ -103,7 +103,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn = sqlite3.connect(DB_PATH)
     
-    # B2C Raw 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS raw_shipments (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, `배송 속성` TEXT,
@@ -113,7 +112,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
     
-    # B2C 요약 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -122,7 +120,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 입고 Raw 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS raw_inbound (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, `입고 번호` TEXT,
@@ -131,7 +128,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 입고 요약 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS inbound_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
@@ -239,7 +235,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             conn.executemany(insert_inbound_sql, df[target_in_cols].to_numpy().tolist())
 
         else:
-            # --- B2C 출고 파일 처리 ---
             date_col = None
             for c in df.columns:
                 if any(k in c for k in ['마감일시', '마감일자', '출고일시', '출고일자', '일시', '일자']):
@@ -310,14 +305,13 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     GROUP BY 영업마감일자, 센터, 고객사, `배송 속성`, `판매 플랫폼`, 출고박스종류, SKU명, 바코드;
     """)
 
-    # 2. 입고 + 구글시트 연동 요약 재집계
+    # 2. 입고 요약 재집계
     df_sheet = pd.DataFrame()
     if sheets_service:
         df_sheet = fetch_google_sheets_ib(sheets_service)
 
     df_raw_inbound = pd.read_sql("SELECT * FROM raw_inbound", conn)
     if not df_raw_inbound.empty:
-        # 입고 번호 단위로 중복 제거하여 1차 그룹핑 (총검수완료수량은 first 값 사용)
         inbound_grp = df_raw_inbound.groupby(['영업마감일자', '센터', '고객사', '상태', '입고 번호']).agg(
             바코드수=('바코드', 'nunique'),
             입고완료수량=('총 검수 완료 수량', 'first')
