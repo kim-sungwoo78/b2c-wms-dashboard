@@ -12,7 +12,7 @@ importlib.reload(etl_pipeline)
 
 st.set_page_config(page_title="B2C 출고현황 동적 대시보드", layout="wide")
 
-# HTML/CSS 기반 테이블 틀고정 스타일 정의
+# CSS: 2D 틀고정 (상단 헤더/합계 고정 + 좌측 센터/고객사 고정)
 st.markdown("""
 <style>
     .sticky-table-container {
@@ -36,33 +36,68 @@ st.markdown("""
         border-bottom: 1px solid #1f2937;
         border-right: 1px solid #1f2937;
         white-space: nowrap;
+        background-color: #0e1117;
     }
-    .sticky-table th:first-child, .sticky-table td:first-child {
-        text-align: left;
-    }
-    /* 컬럼 헤더 상단 고정 */
+
+    /* 1. 컬럼 헤더 상단 고정 */
     .sticky-table thead tr th {
         position: sticky;
         top: 0;
         z-index: 20;
-        background-color: #1f2937;
+        background-color: #1f2937 !important;
         color: #9ca3af;
         font-weight: bold;
     }
-    /* ★ 일별 합계 행 상단 고정 (헤더 바로 밑 35px 위치) */
+
+    /* 2. ★ 일별 합계 행 상단 고정 */
     .sticky-table tr.total-row td {
         position: sticky;
         top: 35px;
-        z-index: 10;
+        z-index: 15;
         background-color: #1e293b !important;
         color: #facc15 !important;
         font-weight: bold;
         border-bottom: 2px solid #eab308 !important;
     }
+
+    /* 3. 좌측 1번째 열 (센터) 고정 */
+    .sticky-table th.freeze-col-1, 
+    .sticky-table td.freeze-col-1 {
+        position: sticky;
+        left: 0;
+        z-index: 10;
+        background-color: #111827 !important;
+        border-right: 2px solid #374151 !important;
+        text-align: left;
+    }
+
+    /* 4. 좌측 2번째 열 (고객사) 고정 */
+    .sticky-table th.freeze-col-2, 
+    .sticky-table td.freeze-col-2 {
+        position: sticky;
+        left: 140px; /* 1번째 열 너비 고려 */
+        z-index: 10;
+        background-color: #111827 !important;
+        border-right: 2px solid #374151 !important;
+        text-align: left;
+    }
+
+    /* 5. 교차 모서리 (좌측 고정 열 + 상단 고정 헤더/합계) z-index 최우선 처리 */
+    .sticky-table thead tr th.freeze-col-1,
+    .sticky-table thead tr th.freeze-col-2 {
+        z-index: 30 !important;
+        background-color: #1f2937 !important;
+    }
+    .sticky-table tr.total-row td.freeze-col-1,
+    .sticky-table tr.total-row td.freeze-col-2 {
+        z-index: 25 !important;
+        background-color: #1e293b !important;
+    }
+
     /* 소계 행 스타일 */
     .sticky-table tr.subtotal-row td {
-        background-color: #111827;
-        color: #38bdf8;
+        background-color: #0f172a !important;
+        color: #38bdf8 !important;
         font-weight: bold;
     }
 </style>
@@ -171,12 +206,15 @@ if not df_raw.empty:
             use_container_width=True
         )
 
-# HTML 스티키 테이블 생성 함수
+# 2D 틀고정 HTML 스티키 테이블 렌더링 함수
 def render_sticky_pivot(df, index_names):
     html = ['<div class="sticky-table-container"><table class="sticky-table"><thead><tr>']
     
-    for idx_name in index_names:
-        html.append(f'<th>{idx_name}</th>')
+    num_freeze_cols = len(index_names)
+    
+    for idx_i, idx_name in enumerate(index_names, 1):
+        freeze_cls = f' class="freeze-col-{idx_i}"' if idx_i <= 2 else ''
+        html.append(f'<th{freeze_cls}>{idx_name}</th>')
     
     cols = [c for c in df.columns]
     for c in cols:
@@ -191,10 +229,12 @@ def render_sticky_pivot(df, index_names):
         html.append(f'<tr{row_class}>')
         
         if isinstance(idx_val, tuple):
-            for v in idx_val:
-                html.append(f'<td style="text-align:left;">{v}</td>')
+            for idx_i, v in enumerate(idx_val, 1):
+                freeze_cls = f' class="freeze-col-{idx_i}"' if idx_i <= 2 else ''
+                html.append(f'<td{freeze_cls}>{v}</td>')
         else:
-            html.append(f'<td style="text-align:left;">{idx_val}</td>')
+            freeze_cls = ' class="freeze-col-1"'
+            html.append(f'<td{freeze_cls}>{idx_val}</td>')
             
         for val in row:
             val_str = f"{int(val):,}" if pd.notnull(val) and isinstance(val, (int, float)) else str(val)
@@ -212,7 +252,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 SKU별 출고량"
 ])
 
-# Tab 1: 센터/고객사별 일자 출고현황 (틀고정 완벽 구현)
+# Tab 1: 센터/고객사별 일자 출고현황 (2D 틀고정)
 with tab1:
     st.header("센터 & 고객사별 일자 출고현황 (06시 영업마감 기준)")
     if not df_raw.empty:
@@ -274,7 +314,7 @@ with tab1:
 
             final_df = pd.concat([total_df, body_df])
             
-            # 틀고정 스티키 테이블 출력
+            # 2D 틀고정 테이블 출력
             render_sticky_pivot(final_df, group_cols)
 
 # Tab 2: 배송속성 / 판매처별 현황
