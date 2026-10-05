@@ -9,7 +9,7 @@ st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide"
 
 DB_PATH = "wms_dashboard.db"
 
-# 데이터베이스 기본 테이블 생성
+# 데이터베이스 기본 요약 테이블 생성
 def init_local_db():
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -35,7 +35,7 @@ def init_local_db():
 
 init_local_db()
 
-# 동기화 실행 (버튼 클릭시에만 etl_pipeline 임포트)
+# 동기화 버튼 클릭 시에만 etl_pipeline 동적 임포트
 def run_sync():
     if "gcp_service_account" in st.secrets:
         try:
