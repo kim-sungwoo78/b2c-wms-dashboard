@@ -147,16 +147,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn = sqlite3.connect(DB_PATH, timeout=30)
     
-    # 1. 송장 단위 고유 출고 테이블 (B2C 건수 정확 집계용)
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS shipment_orders (
-        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
-        출고박스종류 TEXT, 송장번호 TEXT,
-        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호)
-    )
-    """)
-
-    # 2. SKU 수량 집계 테이블
+    # B2C 요약 테이블 (송장 기준 고유 출고건수 + 총출고수량)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -165,7 +156,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 3. 입고 요약 테이블
+    # 입고 요약 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS inbound_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
@@ -332,23 +323,10 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     df_b2c_f['총출고수량'] = 1
                 df_b2c_f['총출고수량'] = pd.to_numeric(df_b2c_f['총출고수량'], errors='coerce').fillna(1)
 
-                # '상세 보기' 필터링
                 valid_mask = ~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)
                 df_b2c_valid = df_b2c_f[valid_mask]
 
-                # ★ [핵심 정밀 보정 1] 송장 단위 고유 출고 테이블 저장 (송장번호 중복 없이 고유 1건씩 저장)
-                shipment_distinct = df_b2c_valid[['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호']].drop_duplicates()
-                for _, row_s in shipment_distinct.iterrows():
-                    conn.execute("""
-                    INSERT OR REPLACE INTO shipment_orders
-                    (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        row_s['영업마감일자'], row_s['센터'], row_s['고객사'], row_s['배송속성'], row_s['판매처'],
-                        row_s['출고박스종류'], row_s['송장번호']
-                    ))
-
-                # ★ [핵심 정밀 보정 2] SKU 단위 수량 집계 저장
+                # ★ 송장번호 고유 수 집계 및 저장
                 b2c_sum = df_b2c_valid.groupby(['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드']).agg(
                     출고건수=('송장번호', 'nunique'),
                     총출고수량=('총출고수량', 'sum')
