@@ -14,13 +14,6 @@ def init_local_db():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
-        CREATE TABLE IF NOT EXISTS shipment_orders (
-            영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
-            출고박스종류 TEXT, 송장번호 TEXT,
-            PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호)
-        )
-        """)
-        conn.execute("""
         CREATE TABLE IF NOT EXISTS daily_summary (
             영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
             출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
@@ -69,25 +62,21 @@ def run_sync():
         st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
-# ★ B2C 출고 데이터 로드 (shipment_orders + daily_summary 하이브리드 지원)
+# ★ B2C 출고 데이터 로드 (SKU 중복 없는 고유 출고건수 집계)
 @st.cache_data(ttl=60)
 def load_shipment_orders():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_PATH, timeout=5)
-        
-        # 1. shipment_orders 테이블 조회
-        df_shipment = pd.read_sql("SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, COUNT(DISTINCT 송장번호) AS 출고건수 FROM shipment_orders GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류", conn)
-        
-        if not df_shipment.empty:
-            conn.close()
-            return df_shipment
-        
-        # 2. shipment_orders가 비어있을 경우 daily_summary 기반 백업 조회
-        df_daily = pd.read_sql("SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, MAX(출고건수) AS 출고건수 FROM daily_summary GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류", conn)
+        # SKU 중복 합산 방지를 위한 그룹별 최고값/고유값 집계
+        df = pd.read_sql("""
+            SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, MAX(출고건수) AS 출고건수, SUM(총출고수량) AS 총출고수량
+            FROM daily_summary
+            GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류
+        """, conn)
         conn.close()
-        return df_daily
+        return df
     except Exception:
         return pd.DataFrame()
 
