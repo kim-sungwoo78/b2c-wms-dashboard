@@ -8,12 +8,15 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
-MAIN_UPLOAD_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'
-PROCESSED_FOLDER_ID = '1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ'
-DB_PATH = 'wms_dashboard.db'
+# 구글 드라이브 폴더 ID 지정
+TOP_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'       # 대시보드 업로드 (상위 폴더)
+B2C_FOLDER_ID = '1ArGfyeVpZDJYUrdlGNSCrhj734JrqGW9'        # B2C 폴더
+INBOUND_FOLDER_ID = '1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp'    # 입고 폴더
+B2B_FOLDER_ID = '1wpqrIBC8HnWTU20rShcg0Yvkcc1VIsml'        # B2B 폴더
+PROCESSED_FOLDER_ID = '1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ'  # 처리완료 폴더
 
-# 이천375 1층 구글 시트 ID
-IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
+DB_PATH = 'wms_dashboard.db'
+IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0' # 이천375 1층 구글 시트 ID
 
 def get_drive_service(creds_dict):
     creds = Credentials.from_service_account_info(
@@ -33,7 +36,7 @@ def get_sheets_service(creds_dict):
     return build('sheets', '4', credentials=creds)
 
 def download_db_from_drive(service):
-    query = f"'{MAIN_UPLOAD_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
+    query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
     results = service.files().list(
         q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
     ).execute()
@@ -53,7 +56,7 @@ def download_db_from_drive(service):
 def upload_db_to_drive(service):
     if not os.path.exists(DB_PATH):
         return
-    query = f"'{MAIN_UPLOAD_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
+    query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
     results = service.files().list(
         q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
     ).execute()
@@ -69,7 +72,7 @@ def upload_db_to_drive(service):
     else:
         file_metadata = {
             'name': DB_PATH,
-            'parents': [MAIN_UPLOAD_FOLDER_ID]
+            'parents': [TOP_FOLDER_ID]
         }
         service.files().create(
             body=file_metadata, media_body=media, supportsAllDrives=True
@@ -141,21 +144,35 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    query = f"'{MAIN_UPLOAD_FOLDER_ID}' in parents and trashed = false and name != '{DB_PATH}'"
-    results = service.files().list(
-        q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
-    ).execute()
-    files = results.get('files', [])
+    # 각 폴더별 대상 파일 수집 (TOP_FOLDER, B2C_FOLDER, INBOUND_FOLDER 모두 검사)
+    folder_mapping = [
+        (B2C_FOLDER_ID, 'B2C'),
+        (INBOUND_FOLDER_ID, 'INBOUND'),
+        (TOP_FOLDER_ID, 'AUTO')
+    ]
 
-    target_files = [f for f in files if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv')]
-    total_count = len(target_files)
+    all_target_files = []
+    for folder_id, category in folder_mapping:
+        query = f"'{folder_id}' in parents and trashed = false and name != '{DB_PATH}'"
+        results = service.files().list(
+            q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
+        ).execute()
+        files = results.get('files', [])
+        for f in files:
+            if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv'):
+                f['category'] = category
+                f['source_folder_id'] = folder_id
+                all_target_files.append(f)
 
+    total_count = len(all_target_files)
     new_files_processed = False
     start_time = time.time()
 
-    for idx, f in enumerate(target_files, 1):
+    for idx, f in enumerate(all_target_files, 1):
         file_id, file_name = f['id'], f['name']
-        
+        category = f['category']
+        src_folder = f['source_folder_id']
+
         if progress_callback:
             elapsed = time.time() - start_time
             avg_time = elapsed / (idx - 1) if idx > 1 else 3.0
@@ -183,13 +200,12 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             else:
                 df = pd.read_excel(fh, engine='openpyxl')
             
-            # 칼럼 정형화 (모든 공백 제거 버전 & 원래 버전 동시 생성)
             df_cols_no_space = [str(c).replace(" ", "").strip() for c in df.columns]
 
-            # --- 입고 파일 판별 ---
-            if any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량']) or '입고요청서' in file_name:
-                
-                # 칼럼 매핑 매칭
+            is_inbound = (category == 'INBOUND') or any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량']) or ('입고요청서' in file_name)
+
+            if is_inbound:
+                # --- 입고 파일 처리 ---
                 col_map_inbound = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -210,7 +226,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 if '상태' not in df_in.columns:
                     df_in['상태'] = '입고 완료'
 
-                # 날짜 지정 우선순위: 입고 완료 일시 -> 최종 변경 일시 -> 등록 일시
                 s_date = None
                 if '입고 완료 일시' in df_in.columns:
                     s_date = df_in['입고 완료 일시']
@@ -299,7 +314,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 service.files().update(
                     fileId=file_id,
                     addParents=PROCESSED_FOLDER_ID,
-                    removeParents=MAIN_UPLOAD_FOLDER_ID,
+                    removeParents=src_folder,
                     supportsAllDrives=True,
                     fields='id, parents'
                 ).execute()
