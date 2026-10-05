@@ -9,7 +9,84 @@ st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide"
 
 DB_PATH = "wms_dashboard.db"
 
-# CSS 스티키 테이블 스타일 정의
+# 데이터베이스 기본 테이블 생성
+def init_local_db():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_summary (
+            영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
+            출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
+            PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드)
+        )
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS inbound_summary (
+            영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
+            입고건수 INTEGER, 바코드수 INTEGER, 입고완료수량 INTEGER,
+            PLT수 REAL, BOX수 REAL, 파적BOX수 REAL,
+            PRIMARY KEY (영업마감일자, 센터, 고객사, 상태)
+        )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+init_local_db()
+
+# 동기화 실행 (버튼 클릭시에만 etl_pipeline 임포트)
+def run_sync():
+    if "gcp_service_account" in st.secrets:
+        try:
+            import etl_pipeline
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            service = etl_pipeline.get_drive_service(creds_dict)
+            sheets_service = etl_pipeline.get_sheets_service(creds_dict)
+            
+            status_text = st.sidebar.empty()
+
+            def update_progress(current, total, filename, eta):
+                status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`")
+
+            etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
+            
+            status_text.empty()
+            st.cache_data.clear()
+            st.sidebar.success("✅ 동기화 완료!")
+            return True
+        except Exception as e:
+            st.sidebar.error(f"❌ 동기화 에러: {e}")
+            return False
+    else:
+        st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
+    return False
+
+@st.cache_data(ttl=60)
+def load_b2c_data():
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        df = pd.read_sql("SELECT * FROM daily_summary", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def load_inbound_data():
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        df = pd.read_sql("SELECT * FROM inbound_summary", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+# CSS 스티키 테이블 스타일
 st.markdown("""
 <style>
     .sticky-table-container {
@@ -61,81 +138,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
-def init_db_tables():
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS daily_summary (
-            영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
-            출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
-            PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드)
-        )
-        """)
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS inbound_summary (
-            영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
-            입고건수 INTEGER, 바코드수 INTEGER, 입고완료수량 INTEGER,
-            PLT수 REAL, BOX수 REAL, 파적BOX수 REAL,
-            PRIMARY KEY (영업마감일자, 센터, 고객사, 상태)
-        )
-        """)
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        pass
-
-init_db_tables()
-
-def run_sync():
-    if "gcp_service_account" in st.secrets:
-        try:
-            import etl_pipeline
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            service = etl_pipeline.get_drive_service(creds_dict)
-            sheets_service = etl_pipeline.get_sheets_service(creds_dict)
-            
-            status_text = st.sidebar.empty()
-
-            def update_progress(current, total, filename, eta):
-                status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`")
-
-            etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
-            
-            status_text.empty()
-            st.cache_data.clear()
-            st.sidebar.success("✅ 동기화 완료!")
-            return True
-        except Exception as e:
-            st.sidebar.error(f"❌ 동기화 에러: {e}")
-            return False
-    else:
-        st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
-    return False
-
-@st.cache_data(ttl=60)
-def load_b2c_data():
-    if not os.path.exists(DB_PATH):
-        return pd.DataFrame()
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=5)
-        df = pd.read_sql("SELECT * FROM daily_summary", conn)
-        conn.close()
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-@st.cache_data(ttl=60)
-def load_inbound_data():
-    if not os.path.exists(DB_PATH):
-        return pd.DataFrame()
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=5)
-        df = pd.read_sql("SELECT * FROM inbound_summary", conn)
-        conn.close()
-        return df
-    except Exception:
-        return pd.DataFrame()
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
