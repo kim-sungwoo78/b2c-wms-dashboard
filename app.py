@@ -69,21 +69,32 @@ def run_sync():
         st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
-# ★ B2C 출고 데이터 로드 (고유 송장 번호 100% 오차 0% 집계)
+# ★ B2C 출고 데이터 로드 (shipment_raw + daily_summary 하이브리드 자동 적용)
 @st.cache_data(ttl=60)
 def load_shipment_orders():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_PATH, timeout=5)
-        # shipment_raw 테이블에서 고유 송장 번호 개수만 정밀 카운트!
-        df = pd.read_sql("""
+        # 1. shipment_raw 테이블 우선 조회 (고유 송장 정밀 카운트)
+        df_raw = pd.read_sql("""
             SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, COUNT(DISTINCT 송장번호) AS 출고건수
             FROM shipment_raw
             GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류
         """, conn)
+        
+        if not df_raw.empty:
+            conn.close()
+            return df_raw
+            
+        # 2. 백업 조회
+        df_daily = pd.read_sql("""
+            SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SUM(출고건수) AS 출고건수
+            FROM daily_summary
+            GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류
+        """, conn)
         conn.close()
-        return df
+        return df_daily
     except Exception:
         return pd.DataFrame()
 
