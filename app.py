@@ -5,10 +5,18 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
-import etl_pipeline
 
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide")
 
+# etl_pipeline 안전 임포트
+try:
+    import etl_pipeline
+except Exception as e:
+    st.error(f"⚠️ etl_pipeline 모듈 로드 오류: {e}")
+
+DB_PATH = "wms_dashboard.db"
+
+# CSS 스티키 테이블 스타일
 st.markdown("""
 <style>
     .sticky-table-container {
@@ -51,16 +59,6 @@ st.markdown("""
         position: sticky; left: 140px; z-index: 10;
         background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: left;
     }
-    .sticky-table th.freeze-col-3, .sticky-table td.freeze-col-3,
-    .sticky-table th.freeze-col-2-total, .sticky-table td.freeze-col-2-total {
-        position: sticky; left: 280px; z-index: 10;
-        background-color: #1e1b4b !important; color: #a5b4fc !important;
-        font-weight: bold; border-right: 2px solid #4f46e5 !important; text-align: right;
-    }
-    .sticky-table thead tr th.freeze-col-1, .sticky-table thead tr th.freeze-col-2,
-    .sticky-table thead tr th.freeze-col-3, .sticky-table thead tr th.freeze-col-2-total {
-        z-index: 30 !important;
-    }
     .sticky-table tr.subtotal-row td {
         background-color: #0f172a !important; color: #38bdf8 !important; font-weight: bold;
     }
@@ -71,27 +69,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-DB_PATH = "wms_dashboard.db"
-
 def init_local_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS daily_summary (
-        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
-        출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
-        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드)
-    )
-    """)
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS inbound_summary (
-        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
-        입고건수 INTEGER, 바코드수 INTEGER, 입고완료수량 INTEGER,
-        PLT수 REAL, BOX수 REAL, 파적BOX수 REAL,
-        PRIMARY KEY (영업마감일자, 센터, 고객사, 상태)
-    )
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_summary (
+            영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
+            출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
+            PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드)
+        )
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS inbound_summary (
+            영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
+            입고건수 INTEGER, 바코드수 INTEGER, 입고완료수량 INTEGER,
+            PLT수 REAL, BOX수 REAL, 파적BOX수 REAL,
+            PRIMARY KEY (영업마감일자, 센터, 고객사, 상태)
+        )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.sidebar.error(f"DB 초기화 오류: {e}")
 
 init_local_db()
 
@@ -120,7 +119,7 @@ def run_sync():
         st.sidebar.error("시크릿 계정이 없습니다.")
     return False
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=30)
 def load_b2c_data():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
@@ -132,7 +131,7 @@ def load_b2c_data():
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=30)
 def load_inbound_data():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
@@ -649,7 +648,7 @@ elif main_mode == "📦 입고 현황":
             st.info("입고 데이터가 존재하지 않습니다. 구글 드라이브에 입고요청서 엑셀 파일을 올린 후 [🔄 드라이브 & 구글시트 동기화]를 눌러주세요.")
 
     with in_tab2:
-        st.header("📋 상태별(입고완료 / 승인대기) 입고 현황")
+        st.header("📋 상태별(입고완료 / 승인대기) 현황")
         if not df_inbound.empty and '상태' in df_inbound.columns:
             pivot_status = pd.pivot_table(df_inbound, index=['센터', '고객사', '상태'], columns='영업마감일자', values='입고완료수량', aggfunc='sum', fill_value=0)
             pivot_status['총 입고완료수량'] = pivot_status.sum(axis=1)
