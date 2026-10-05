@@ -33,7 +33,7 @@ def get_sheets_service(creds_dict):
         creds_dict, 
         scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
     )
-    return build('sheets', '4', credentials=creds)
+    return build('sheets', 'v4', credentials=creds) # '4' -> 'v4' 수정 완료
 
 def download_db_from_drive(service):
     try:
@@ -247,7 +247,16 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 in_sum['BOX수'] = 0.0
                 in_sum['파적BOX수'] = 0.0
 
-                in_sum.to_sql('inbound_summary', conn, if_exists='append', index=False)
+                for _, row_in in in_sum.iterrows():
+                    conn.execute("""
+                    INSERT OR REPLACE INTO inbound_summary
+                    (영업마감일자, 센터, 고객사, 상태, 입고건수, 바코드수, 입고완료수량, PLT수, BOX수, 파적BOX수)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        row_in['영업마감일자'], row_in['센터'], row_in['고객사'], row_in['상태'],
+                        int(row_in['입고건수']), int(row_in['바코드수']), int(row_in['입고완료수량']),
+                        float(row_in['PLT수']), float(row_in['BOX수']), float(row_in['파적BOX수'])
+                    ))
 
             else:
                 col_map_b2c = {}
@@ -288,7 +297,16 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     총출고수량=('총출고수량', 'sum')
                 ).reset_index()
 
-                b2c_sum.to_sql('daily_summary', conn, if_exists='append', index=False)
+                for _, row_b2c in b2c_sum.iterrows():
+                    conn.execute("""
+                    INSERT OR REPLACE INTO daily_summary
+                    (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드, 출고건수, 총출고수량)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        row_b2c['영업마감일자'], row_b2c['센터'], row_b2c['고객사'], row_b2c['배송속성'], row_b2c['판매처'],
+                        row_b2c['출고박스종류'], row_b2c['SKU명'], row_b2c['바코드'],
+                        int(row_b2c['출고건수']), int(row_b2c['총출고수량'])
+                    ))
 
             # 처리 완료 폴더로 이동
             try:
