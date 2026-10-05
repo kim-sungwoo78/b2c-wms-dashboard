@@ -14,6 +14,13 @@ def init_local_db():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS shipment_orders (
+            영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
+            출고박스종류 TEXT, 송장번호 TEXT,
+            PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호)
+        )
+        """)
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS daily_summary (
             영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
             출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
@@ -62,8 +69,21 @@ def run_sync():
         st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
+# ★ 송장 단위 고유 출고 데이터 로드 (오차 제로 건수)
 @st.cache_data(ttl=60)
-def load_b2c_data():
+def load_shipment_orders():
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        df = pd.read_sql("SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, COUNT(DISTINCT 송장번호) AS 출고건수 FROM shipment_orders GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def load_b2c_sku_data():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
     try:
@@ -86,7 +106,7 @@ def load_inbound_data():
     except Exception:
         return pd.DataFrame()
 
-# CSS 스티키 테이블 스타일
+# CSS 스티키 테이블 & 버튼 스타일
 st.markdown("""
 <style>
     .sticky-table-container {
@@ -136,6 +156,11 @@ st.markdown("""
         background-color: #172554 !important; color: #60a5fa !important;
         font-weight: bold !important; border-right: 2px solid #2563eb !important; border-left: 2px solid #2563eb !important;
     }
+    /* 컴팩트 월 버튼 스타일 */
+    div[data-testid="column"] button {
+        padding: 4px 2px !important;
+        font-size: 12px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -145,8 +170,9 @@ if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
     if run_sync():
         st.rerun()
 
-df_b2c = load_b2c_data()
-df_inbound = load_inbound_data()
+df_b2c_orders = load_shipment_orders() # 고유 송장 건수
+df_b2c_sku = load_b2c_sku_data()       # SKU 수량
+df_inbound = load_inbound_data()       # 입고 요약
 
 if 'main_mode_selection' not in st.session_state:
     st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
@@ -276,7 +302,7 @@ def inject_monthly_sum_columns(pivot_df):
     return new_df
 
 # ==========================================
-# 1. 메인 센터 종합 현황 모드
+# 1. 메인 센터 종합 현황 모드 (한 줄 UI 적용)
 # ==========================================
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
@@ -284,36 +310,41 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     if 'selected_month_num' not in st.session_state:
         st.session_state['selected_month_num'] = "누적"
         
-    st.markdown("##### 🗓️ 기준 월 선택")
-    month_cols = st.columns(13)
-    months_list = [f"{i}월" for i in range(1, 13)] + ["누적"]
-    
-    for idx, m_name in enumerate(months_list):
-        with month_cols[idx]:
-            is_active = (st.session_state['selected_month_num'] == m_name)
-            btn_style = "primary" if is_active else "secondary"
-            if st.button(m_name, key=f"btn_month_{m_name}", type=btn_style, use_container_width=True):
-                st.session_state['selected_month_num'] = m_name
-                st.rerun()
-
-    selected_m = st.session_state['selected_month_num']
-    
     raw_centers = set()
-    if not df_b2c.empty and '센터' in df_b2c.columns:
-        raw_centers.update(df_b2c['센터'].dropna().unique())
+    if not df_b2c_orders.empty and '센터' in df_b2c_orders.columns:
+        raw_centers.update(df_b2c_orders['센터'].dropna().unique())
     if not df_inbound.empty and '센터' in df_inbound.columns:
         raw_centers.update(df_inbound['센터'].dropna().unique())
         
     sorted_centers = sorted(list(raw_centers))
-    
-    selected_centers_filter = st.multiselect(
-        "🏢 센터 선택 (미선택 시 전체 센터 조회):", 
-        sorted_centers, 
-        default=[],
-        key="main_center_filter"
-    )
 
-    filtered_b2c = df_b2c.copy() if not df_b2c.empty else pd.DataFrame()
+    # ★ 센터 필터 & 월/누적 버튼 한 줄 레이아웃 ★
+    filter_row_col1, filter_row_col2 = st.columns([3, 7])
+    
+    with filter_row_col1:
+        selected_centers_filter = st.multiselect(
+            "🏢 센터 선택 (미선택 시 전체):", 
+            sorted_centers, 
+            default=[],
+            key="main_center_filter"
+        )
+
+    with filter_row_col2:
+        st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>🗓️ 기준 월 선택</p>", unsafe_allow_html=True)
+        month_btn_cols = st.columns(13)
+        months_list = [f"{i}월" for i in range(1, 13)] + ["누적"]
+        
+        for idx, m_name in enumerate(months_list):
+            with month_btn_cols[idx]:
+                is_active = (st.session_state['selected_month_num'] == m_name)
+                btn_style = "primary" if is_active else "secondary"
+                if st.button(m_name, key=f"btn_month_{m_name}", type=btn_style, use_container_width=True):
+                    st.session_state['selected_month_num'] = m_name
+                    st.rerun()
+
+    selected_m = st.session_state['selected_month_num']
+
+    filtered_b2c = df_b2c_orders.copy() if not df_b2c_orders.empty else pd.DataFrame()
     filtered_inbound = df_inbound.copy() if not df_inbound.empty else pd.DataFrame()
 
     # 센터 필터 적용
@@ -331,7 +362,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         if not filtered_inbound.empty and '영업마감일자' in filtered_inbound.columns:
             filtered_inbound = filtered_inbound[filtered_inbound['영업마감일자'].str.slice(5, 7) == m_digit]
 
-    # ★ 메인 종합현황용 입고 필터: '입고완료' 및 '승인대기' 상태만 합산! ★
+    # 입고 '입고완료' / '승인대기' 전용 필터
     if not filtered_inbound.empty and '상태' in filtered_inbound.columns:
         main_inbound_df = filtered_inbound[
             filtered_inbound['상태'].astype(str).str.contains('입고완료|입고 완료|승인대기|승인 대기', na=False)
@@ -400,8 +431,8 @@ elif main_mode == "🚚 B2C 출고 현황":
 
     with tab1:
         st.header("센터 & 고객사별 출고현황 (06시 영업마감 기준)")
-        if not df_b2c.empty:
-            raw_centers = sorted(list(df_b2c['센터'].dropna().unique()))
+        if not df_b2c_orders.empty:
+            raw_centers = sorted(list(df_b2c_orders['센터'].dropna().unique()))
             center_options = []
             if any('1층' in str(c) or '375 1' in str(c) for c in raw_centers):
                 center_options.append("375 소계")
@@ -419,14 +450,14 @@ elif main_mode == "🚚 B2C 출고 현황":
                 show_client = st.radio("3. 고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"])
             with col4:
                 if "보이기" in show_client:
-                    available_clients_df = df_b2c[df_b2c['센터'].isin(expanded_centers)] if expanded_centers else df_b2c
+                    available_clients_df = df_b2c_orders[df_b2c_orders['센터'].isin(expanded_centers)] if expanded_centers else df_b2c_orders
                     available_clients = sorted(list(available_clients_df['고객사'].dropna().unique()))
                     clients = st.multiselect("4. 고객사 선택 (미선택 시 전체)", available_clients, key="tab1_clients")
                 else:
                     clients = []
                     st.selectbox("4. 고객사 선택", ["고객사 숨김 상태"], disabled=True)
 
-            filtered_df = df_b2c.copy()
+            filtered_df = df_b2c_orders.copy()
             if expanded_centers: 
                 filtered_df = filtered_df[filtered_df['센터'].isin(expanded_centers)]
             if "보이기" in show_client and clients: 
@@ -481,7 +512,7 @@ elif main_mode == "🚚 B2C 출고 현황":
 
     with tab2:
         st.header("배송 속성 및 판매처별 출고현황")
-        if not df_b2c.empty:
+        if not df_b2c_orders.empty:
             col_t1, col_t2 = st.columns([3, 3])
             with col_t1:
                 analysis_type = st.radio("분석 기준 선택", ["배송 속성별", "판매처별"], horizontal=True)
@@ -489,7 +520,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 view_mode2 = st.radio("보기 형식 선택", ["일자별 (일별 상세)", "월별 (월 요약만)"], horizontal=True, key="tab2_view")
 
             target_col = '배송속성' if analysis_type == "배송 속성별" else '판매처'
-            df_tab2 = df_b2c.copy()
+            df_tab2 = df_b2c_orders.copy()
 
             if "월별" in view_mode2:
                 df_tab2['연월'] = df_tab2['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
@@ -510,9 +541,9 @@ elif main_mode == "🚚 B2C 출고 현황":
 
     with tab3:
         st.header("출고박스 규격별 사용 현황")
-        if not df_b2c.empty:
+        if not df_b2c_orders.empty:
             view_mode3 = st.radio("보기 형식 선택", ["일자별 (일별 상세)", "월별 (월 요약만)"], horizontal=True, key="tab3_view")
-            df_tab3 = df_b2c.copy()
+            df_tab3 = df_b2c_orders.copy()
 
             if "월별" in view_mode3:
                 df_tab3['연월'] = df_tab3['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
@@ -533,10 +564,10 @@ elif main_mode == "🚚 B2C 출고 현황":
 
     with tab4:
         st.header("🔍 SKU별 출고량 (기간 선택 집계)")
-        if not df_b2c.empty:
-            df_b2c['영업마감일자_dt'] = pd.to_datetime(df_b2c['영업마감일자'], errors='coerce')
-            min_date = df_b2c['영업마감일자_dt'].min().date() if not df_b2c['영업마감일자_dt'].isna().all() else datetime.now().date()
-            max_date = df_b2c['영업마감일자_dt'].max().date() if not df_b2c['영업마감일자_dt'].isna().all() else datetime.now().date()
+        if not df_b2c_sku.empty:
+            df_b2c_sku['영업마감일자_dt'] = pd.to_datetime(df_b2c_sku['영업마감일자'], errors='coerce')
+            min_date = df_b2c_sku['영업마감일자_dt'].min().date() if not df_b2c_sku['영업마감일자_dt'].isna().all() else datetime.now().date()
+            max_date = df_b2c_sku['영업마감일자_dt'].max().date() if not df_b2c_sku['영업마감일자_dt'].isna().all() else datetime.now().date()
 
             if 'sku_start_date' not in st.session_state:
                 st.session_state['sku_start_date'] = min_date
@@ -579,7 +610,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 end_date = st.date_input("📅 조회 종료일자:", value=st.session_state['sku_end_date'], key="tab4_end_picker")
                 st.session_state['sku_end_date'] = end_date
 
-            raw_centers_tab4 = sorted(list(df_b2c['센터'].dropna().unique()))
+            raw_centers_tab4 = sorted(list(df_b2c_sku['센터'].dropna().unique()))
             center_options_tab4 = []
             if any('1층' in str(c) or '375 1' in str(c) for c in raw_centers_tab4):
                 center_options_tab4.append("375 소계")
@@ -592,13 +623,13 @@ elif main_mode == "🚚 B2C 출고 현황":
                 selected_centers_input_tab4 = st.multiselect("센터 선택 (다중 선택 가능)", center_options_tab4, key="tab4_centers")
                 expanded_centers_tab4 = expand_selected_centers(selected_centers_input_tab4, raw_centers_tab4) if selected_centers_input_tab4 else []
             
-            filtered_by_center = df_b2c[df_b2c['센터'].isin(expanded_centers_tab4)] if expanded_centers_tab4 else df_b2c
+            filtered_by_center = df_b2c_sku[df_b2c_sku['센터'].isin(expanded_centers_tab4)] if expanded_centers_tab4 else df_b2c_sku
             available_clients = sorted(list(filtered_by_center['고객사'].dropna().unique()))
             
             with col2:
                 selected_clients = st.multiselect("고객사 선택 (선택한 센터의 고객사만 표시)", available_clients, key="tab4_clients")
                 
-            sku_df = df_b2c.copy()
+            sku_df = df_b2c_sku.copy()
             if start_date and end_date:
                 sku_df = sku_df[(sku_df['영업마감일자_dt'].dt.date >= start_date) & (sku_df['영업마감일자_dt'].dt.date <= end_date)]
 
