@@ -164,19 +164,18 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
+    # ★ 입고 고유 원본 데이터 테이블 (중복 없는 오차 0%) ★
     conn.execute("""
     CREATE TABLE IF NOT EXISTS inbound_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, 입고번호 TEXT,
         입고방법 TEXT, SKU명 TEXT, 바코드 TEXT, 소비기한 TEXT, 로트 TEXT,
         기본로케이션 TEXT, 예정수량 INTEGER, 요청SKU수량 INTEGER, 총예정수량 INTEGER,
-        총검수완료수량 INTEGER, 입고건수 INTEGER, 바코드수 INTEGER, 입고완료수량 INTEGER,
-        PLT수 REAL, BOX수 REAL, 파적BOX수 REAL, 등록일시 TEXT, 변경자 TEXT,
+        총검수완료수량 INTEGER, PLT수 REAL, BOX수 REAL, 파적BOX수 REAL, 등록일시 TEXT, 변경자 TEXT,
         최종변경일시 TEXT, 입고완료일시 TEXT,
         PRIMARY KEY (영업마감일자, 센터, 고객사, 상태, 입고번호, SKU명, 바코드)
     )
     """)
 
-    # ★ 신규 미처리 파일만 스캔하도록 PROCESSED(처리완료) 폴더 제외 ★
     folder_mapping = [
         (INBOUND_FOLDER_ID, 'INBOUND'),
         (B2C_FOLDER_ID, 'B2C'),
@@ -279,16 +278,15 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     conn.execute("""
                     INSERT OR REPLACE INTO inbound_summary
                     (영업마감일자, 센터, 고객사, 상태, 입고번호, 입고방법, SKU명, 바코드, 소비기한, 로트,
-                     기본로케이션, 예정수량, 요청SKU수량, 총예정수량, 총검수완료수량, 입고건수, 바코드수, 입고완료수량,
-                     PLT수, BOX수, 파적BOX수, 등록일시, 변경자, 최종변경일시, 입고완료일시)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, 0.0, 0.0, 0.0, ?, ?, ?, ?)
+                     기본로케이션, 예정수량, 요청SKU수량, 총예정수량, 총검수완료수량, PLT수, BOX수, 파적BOX수, 등록일시, 변경자,
+                     최종변경일시, 입고완료일시)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, 0.0, ?, ?, ?, ?)
                     """, (
                         row_in['영업마감일자'], row_in['센터'], row_in['고객사'], row_in['상태'],
                         str(row_in['입고번호']), str(row_in['입고방법']), str(row_in['SKU명']), str(row_in['바코드']),
                         str(row_in['소비기한']), str(row_in['로트']), str(row_in['기본로케이션']),
                         int(row_in['예정수량']), int(row_in['요청SKU수량']), int(row_in['총예정수량']), int(row_in['총검수완료수량']),
-                        int(row_in['총검수완료수량']), str(row_in['등록일시']), str(row_in['변경자']),
-                        str(row_in['최종변경일시']), str(row_in['입고완료일시'])
+                        str(row_in['등록일시']), str(row_in['변경자']), str(row_in['최종변경일시']), str(row_in['입고완료일시'])
                     ))
 
             else:
@@ -296,7 +294,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
                     if '상세' in clean_c: 
-                        continue  # B열 '송장 상세' 제외
+                        continue
                     if '센터' in clean_c: col_map_b2c[orig_c] = '센터'
                     elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
                     elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
