@@ -86,7 +86,7 @@ def run_sync():
             status_text = st.sidebar.empty()
 
             def update_progress(current, total, filename, eta):
-                status_text.markdown(f"⏳ **동기화 중 ({current}/{total})**\n\n📄 `{filename}`")
+                status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`")
 
             etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
             
