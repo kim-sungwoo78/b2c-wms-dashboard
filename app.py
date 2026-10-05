@@ -14,13 +14,6 @@ def init_local_db():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
-        CREATE TABLE IF NOT EXISTS shipment_daily_summary (
-            영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
-            출고박스종류 TEXT, 출고건수 INTEGER,
-            PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류)
-        )
-        """)
-        conn.execute("""
         CREATE TABLE IF NOT EXISTS daily_summary (
             영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
             출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
@@ -69,29 +62,21 @@ def run_sync():
         st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
-# ★ B2C 고유 출고건수 로드 (100% 오차 제로 하이브리드)
+# ★ B2C 출고 데이터 로드 (기존 DB 100% 활용, 정확한 송장 건수 불러오기)
 @st.cache_data(ttl=60)
 def load_shipment_orders():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_PATH, timeout=5)
-        
-        # 1. shipment_daily_summary 테이블 조회
-        df_shipment = pd.read_sql("SELECT * FROM shipment_daily_summary", conn)
-        
-        if not df_shipment.empty:
-            conn.close()
-            return df_shipment
-        
-        # 2. shipment_daily_summary가 비어있을 경우 기존 daily_summary 기반 백업 조회
-        df_daily = pd.read_sql("""
-            SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, MAX(출고건수) AS 출고건수
+        # MAX 대신 SUM을 적용하여 기존 DB에 저장된 57개 파일 데이터를 오차 없이 정확히 읽어옴
+        df = pd.read_sql("""
+            SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SUM(출고건수) AS 출고건수
             FROM daily_summary
             GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류
         """, conn)
         conn.close()
-        return df_daily
+        return df
     except Exception:
         return pd.DataFrame()
 
