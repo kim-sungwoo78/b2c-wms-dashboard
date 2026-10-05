@@ -67,11 +67,20 @@ def process_and_update(service, progress_callback=None):
 
     conn = sqlite3.connect(DB_PATH)
     
+    # 1. raw_shipments 테이블에 영업마감일자+송장번호+SKU명+바코드 Unique Primary Key 추가
     conn.execute("""
     CREATE TABLE IF NOT EXISTS raw_shipments (
-        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, `배송 속성` TEXT,
-        `판매 플랫폼` TEXT, `출고 박스` TEXT, SKU명 TEXT, 바코드 TEXT,
-        `송장 번호` TEXT, `출고 수량` INTEGER
+        영업마감일자 TEXT, 
+        센터 TEXT, 
+        고객사 TEXT, 
+        `배송 속성` TEXT,
+        `판매 플랫폼` TEXT, 
+        `출고 박스` TEXT, 
+        SKU명 TEXT, 
+        바코드 TEXT,
+        `송장 번호` TEXT, 
+        `출고 수량` INTEGER,
+        PRIMARY KEY (영업마감일자, `송장 번호`, SKU명, 바코드)
     )
     """)
     
@@ -98,10 +107,9 @@ def process_and_update(service, progress_callback=None):
     for idx, f in enumerate(target_files, 1):
         file_id, file_name = f['id'], f['name']
         
-        # 콜백 호출 (진행률 및 예상시간 업데이트)
         if progress_callback:
             elapsed = time.time() - start_time
-            avg_time = elapsed / (idx - 1) if idx > 1 else 3.0  # 파일당 기본 3초 추정
+            avg_time = elapsed / (idx - 1) if idx > 1 else 3.0
             rem_files = total_count - (idx - 1)
             eta_seconds = int(avg_time * rem_files)
             
@@ -155,11 +163,20 @@ def process_and_update(service, progress_callback=None):
             if tc not in df.columns:
                 df[tc] = None
 
-        chunk_size = 10000
-        for i in range(0, len(df), chunk_size):
-            chunk = df[target_cols].iloc[i:i+chunk_size]
-            chunk.to_sql('raw_shipments', conn, if_exists='append', index=False)
+        # 데이터 클렌징 (None 값 빈 문자열 처리)
+        for fill_col in ['영업마감일자', 'SKU명', '바코드', '송장 번호']:
+            df[fill_col] = df[fill_col].fillna('')
 
+        # 2. SQLite 고속 INSERT OR IGNORE 실행 (중복 데이터 초고속 스킵)
+        insert_sql = """
+        INSERT OR IGNORE INTO raw_shipments 
+        (영업마감일자, 센터, 고객사, `배송 속성`, `판매 플랫폼`, `출고 박스`, SKU명, 바코드, `송장 번호`, `출고 수량`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        records = df[target_cols].to_numpy().tolist()
+        conn.executemany(insert_sql, records)
+
+        # 처리 완료 파일 이동
         service.files().update(
             fileId=file_id,
             addParents=PROCESSED_FOLDER_ID,
@@ -170,11 +187,12 @@ def process_and_update(service, progress_callback=None):
 
         new_files_processed = True
 
-    # 마지막 100% 완료 상태 표기
     if progress_callback and total_count > 0:
-        progress_callback(current=total_count, total=total_count, filename="최종 DB 집계 처리 중...", eta=0)
+        progress_callback(current=total_count, total=total_count, filename="최종 DB 중복 집계 정리 중...", eta=0)
 
     if new_files_processed:
+        # 요약 집계 DB 재계산
+        conn.execute("DELETE FROM daily_summary;")
         conn.execute("""
         INSERT OR REPLACE INTO daily_summary
         SELECT 
