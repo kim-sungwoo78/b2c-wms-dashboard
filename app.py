@@ -215,8 +215,8 @@ if not df_raw.empty:
             use_container_width=True
         )
 
-# 2D 틀고정 HTML 스티키 테이블 렌더링 함수
-def render_sticky_pivot(df, index_names):
+# 2D 틀고정 HTML 스티키 테이블 렌더링 및 하단 엑셀 다운로드 버튼 함수
+def render_sticky_pivot(df, index_names, key_suffix=""):
     html = ['<div class="sticky-table-container"><table class="sticky-table"><thead><tr>']
     
     for idx_i, idx_name in enumerate(index_names, 1):
@@ -225,7 +225,7 @@ def render_sticky_pivot(df, index_names):
     
     cols = [c for c in df.columns]
     for c in cols:
-        is_m_sum = "월 합계" in str(c) or "월" in str(c) and "일자" not in str(c)
+        is_m_sum = "월 합계" in str(c) or ("월" in str(c) and "일자" not in str(c) and "-" not in str(c))
         col_cls = ' class="month-sum-col"' if is_m_sum else ''
         html.append(f'<th{col_cls}>{c}</th>')
     html.append('</tr></thead><tbody>')
@@ -254,6 +254,20 @@ def render_sticky_pivot(df, index_names):
         
     html.append('</tbody></table></div>')
     st.markdown("".join(html), unsafe_allow_html=True)
+
+    # 표 바로 하단 엑셀 다운로드 버튼
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='현황데이터')
+        
+    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+    st.download_button(
+        label="💾 현재 표 데이터 엑셀 다운로드",
+        data=excel_buffer.getvalue(),
+        file_name=f"B2C_현황_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"dl_table_{key_suffix}"
+    )
 
 # 센터 확장 변환 함수
 def expand_selected_centers(selected_list, all_centers):
@@ -314,7 +328,6 @@ with tab1:
             center_options.append("XFC 소계")
         center_options.extend(raw_centers)
 
-        # 상단 옵션 4개 구성 (보기 형식 추가)
         col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
         with col1:
             view_mode = st.radio("1. 보기 형식 선택", ["일자별 (일별 상세)", "월별 (월 요약만)"], horizontal=True)
@@ -344,17 +357,14 @@ with tab1:
 
         if not filtered_df.empty:
             if "월별" in view_mode:
-                # 월별 요약 보기 모드
                 filtered_df['연월'] = filtered_df['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
                 pivot_df = pd.pivot_table(filtered_df, index=group_cols, columns='연월', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_df['총 출고건수'] = pivot_df.sum(axis=1)
             else:
-                # 일자별 상세 보기 모드
                 pivot_df = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_df['총 출고건수'] = pivot_df.sum(axis=1)
                 pivot_df = inject_monthly_sum_columns(pivot_df)
 
-            # --- 소계(부분합) 행 생성 ---
             subtotal_dfs = []
             
             c_375 = [c for c in pivot_df.index.get_level_values('센터').unique() if '1층' in str(c) or '375 1' in str(c)]
@@ -380,7 +390,6 @@ with tab1:
 
             body_df = pd.concat(subtotal_dfs) if subtotal_dfs else pivot_df
 
-            # 상단 합계 행 생성
             total_series = pivot_df.sum(axis=0)
             total_label = "★ 전체 합계" if "월별" in view_mode else "★ 일별 합계"
             total_idx = pd.MultiIndex.from_tuples([(total_label, "전체")], names=group_cols) if "보이기" in show_client else pd.Index([total_label], name="센터")
@@ -388,8 +397,7 @@ with tab1:
 
             final_df = pd.concat([total_df, body_df])
             
-            # 2D 틀고정 스티키 테이블 렌더링
-            render_sticky_pivot(final_df, group_cols)
+            render_sticky_pivot(final_df, group_cols, key_suffix="tab1")
 
 # Tab 2: 배송속성 / 판매처별 현황
 with tab2:
@@ -418,7 +426,7 @@ with tab2:
         total_df2 = pd.DataFrame([total_series2.values], columns=pivot_df2.columns, index=pd.Index([total_label2], name=target_col))
         
         final_df2 = pd.concat([total_df2, pivot_df2])
-        render_sticky_pivot(final_df2, [target_col])
+        render_sticky_pivot(final_df2, [target_col], key_suffix="tab2")
 
 # Tab 3: 출고박스별 현황
 with tab3:
@@ -441,7 +449,7 @@ with tab3:
         total_df3 = pd.DataFrame([total_series3.values], columns=pivot_df3.columns, index=pd.Index([total_label3], name="출고박스 규격"))
         
         final_df3 = pd.concat([total_df3, pivot_df3])
-        render_sticky_pivot(final_df3, ["출고박스 규격"])
+        render_sticky_pivot(final_df3, ["출고박스 규격"], key_suffix="tab3")
 
 # Tab 4: SKU별 출고량
 with tab4:
@@ -530,6 +538,18 @@ with tab4:
                 sku_summary.style.format({'출고건수': '{:,}', '총출고수량': '{:,}'}),
                 use_container_width=True,
                 hide_index=True
+            )
+            
+            excel_buffer_sku = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer_sku, engine='openpyxl') as writer:
+                sku_summary.to_excel(writer, index=False, sheet_name='SKU별출고량')
+                
+            st.download_button(
+                label="💾 현재 표 데이터 엑셀 다운로드",
+                data=excel_buffer_sku.getvalue(),
+                file_name=f"B2C_SKU별출고량_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_table_tab4"
             )
         else:
             st.info("선택한 조건 및 기간에 해당하는 데이터가 없습니다.")
