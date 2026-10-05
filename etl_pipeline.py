@@ -145,7 +145,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn = sqlite3.connect(DB_PATH, timeout=30)
     
-    # ★ 1. B2C 정밀 원본 송장 테이블 (요청된 B2C 세부 항목 전체 적용)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS shipment_raw (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -157,7 +156,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 2. B2C SKU 요약 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -166,7 +164,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # ★ 3. 입고 정밀 요약 테이블 (요청된 입고 세부 항목 전체 적용)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS inbound_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, 입고번호 TEXT,
@@ -225,7 +222,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             is_inbound = (category == 'INBOUND') or any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량', '입고방법']) or ('입고요청서' in file_name)
 
             if is_inbound:
-                # --- 입고 데이터 컬럼 매핑 (c, h, i, j, k, L, m, n, o, p, r, s, t, u열 반영) ---
                 col_map_inbound = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -296,7 +292,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     ))
 
             else:
-                # --- B2C 출고 데이터 컬럼 매핑 (c, d, h, i, L, m, r, s, t, v, y, aj열 반영) ---
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -360,7 +355,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 valid_mask = ~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)
                 df_b2c_valid = df_b2c_f[valid_mask]
 
-                # ★ 1. 세부 시간/주문 컬럼 포함 고유 송장 저장
                 shipment_distinct = df_b2c_valid[
                     ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호',
                      '마감일시', '마감자', '주문일시', '결제일시', '등록일시', '할당일시', '출력일시',
@@ -383,7 +377,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         str(row_s['개별주문번호']), str(row_s['피킹지시서번호']), str(row_s['품고추적번호']), str(row_s['CS'])
                     ))
 
-                # ★ 2. SKU 수량 단위 요약 저장
                 b2c_sum = df_b2c_valid.groupby(
                     ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드']
                 ).agg(
