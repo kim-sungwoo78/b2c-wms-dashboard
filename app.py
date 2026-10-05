@@ -37,10 +37,16 @@ def run_sync():
             return False
     return False
 
-# 최초 접속 시 파일 자동 동기화
+# 최초 접속 시 드라이브에서 DB 가져오기 (없으면 초기 생성)
 if "initial_synced" not in st.session_state:
-    with st.spinner("구글 드라이브 최신 데이터 동기화 중..."):
-        run_sync()
+    with st.spinner("구글 드라이브 데이터베이스 로드 중..."):
+        if "gcp_service_account" in st.secrets:
+            try:
+                creds_dict = dict(st.secrets["gcp_service_account"])
+                service = etl_pipeline.get_drive_service(creds_dict)
+                etl_pipeline.download_db_from_drive(service)
+            except Exception:
+                pass
         st.session_state["initial_synced"] = True
 
 @st.cache_data(ttl=300)
@@ -58,14 +64,14 @@ st.title("🚚 B2C 출고현황 동적 대시보드")
 
 # --- 사이드바 동기화 & 대시보드 상태 ---
 if st.sidebar.button("🔄 드라이브 동기화 / 새로고침"):
-    with st.spinner("드라이브 데이터 동기화 중..."):
+    with st.spinner("새 파일 동기화 및 데이터 업데이트 중..."):
         run_sync()
     st.rerun()
 
 df_raw = load_data()
 
 if df_raw.empty:
-    st.sidebar.warning("⚠️ 집계된 데이터가 없습니다.")
+    st.sidebar.warning("⚠️️ 집계된 데이터가 없습니다.")
     st.info("구글 드라이브 폴더에 새 엑셀 파일을 올린 후 [🔄 드라이브 동기화 / 새로고침] 버튼을 눌러주세요.")
 else:
     st.sidebar.success(f"데이터 로드 성공! (총 {len(df_raw):,}개 집계 레코드)")
@@ -175,7 +181,7 @@ with tab3:
         final_df3.set_index('총 출고건수', append=True, inplace=True)
         st.dataframe(final_df3, use_container_width=True)
 
-# Tab 4: SKU별 출고량 (시작일/종료일 분리 선택)
+# Tab 4: SKU별 출고량
 with tab4:
     st.header("🔍 SKU별 출고량 (기간 선택 집계)")
     if not df_raw.empty:
@@ -183,14 +189,12 @@ with tab4:
         min_date = df_raw['영업마감일자_dt'].min().date() if not df_raw['영업마감일자_dt'].isna().all() else datetime.now().date()
         max_date = df_raw['영업마감일자_dt'].max().date() if not df_raw['영업마감일자_dt'].isna().all() else datetime.now().date()
 
-        # 1. 시작일자 / 종료일자 분리 선택 (편의성 개선)
         date_col1, date_col2 = st.columns(2)
         with date_col1:
             start_date = st.date_input("📅 조회 시작일자:", value=min_date, key="tab4_start_date")
         with date_col2:
             end_date = st.date_input("📅 조회 종료일자:", value=max_date, key="tab4_end_date")
 
-        # 2. 센터 및 고객사 선택 (종속 필터링)
         col1, col2 = st.columns(2)
         with col1:
             selected_centers = st.multiselect("센터 선택 (다중 선택 가능)", sorted(list(df_raw['센터'].dropna().unique())), key="tab4_centers")
@@ -203,7 +207,6 @@ with tab4:
             
         sku_df = df_raw.copy()
         
-        # 시작일/종료일 날짜 필터링
         if start_date and end_date:
             sku_df = sku_df[(sku_df['영업마감일자_dt'].dt.date >= start_date) & (sku_df['영업마감일자_dt'].dt.date <= end_date)]
 
