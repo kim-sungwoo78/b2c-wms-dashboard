@@ -12,11 +12,15 @@ importlib.reload(etl_pipeline)
 
 st.set_page_config(page_title="B2C 출고현황 동적 대시보드", layout="wide")
 
+# 표의 첫 번째 데이터 행(★ 일별 합계) 상단 고정 CSS
 st.markdown("""
 <style>
     [data-testid="stDataFrame"] table tbody tr:first-child {
-        position: sticky !important; top: 0 !important; z-index: 10 !important;
-        background-color: #1e222a !important; font-weight: bold !important;
+        position: sticky !important; 
+        top: 0 !important; 
+        z-index: 10 !important;
+        background-color: #262730 !important; 
+        font-weight: bold !important;
         border-bottom: 2px solid #4a5568 !important;
     }
 </style>
@@ -133,7 +137,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 SKU별 출고량"
 ])
 
-# Tab 1: 센터/고객사별 일자 출고현황
+# Tab 1: 센터/고객사별 일자 출고현황 (소계 처리 및 일별합계 고정)
 with tab1:
     st.header("센터 & 고객사별 일자 출고현황 (06시 영업마감 기준)")
     if not df_raw.empty:
@@ -161,13 +165,44 @@ with tab1:
         if not filtered_df.empty:
             pivot_df = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
             pivot_df['총 출고건수'] = pivot_df.sum(axis=1)
+
+            # --- 소계(부분합) 행 삽입 로직 ---
+            subtotal_dfs = []
             
+            # 1) '375' 그룹 (1층 네이버, 1층 코어)
+            c_375 = [c for c in pivot_df.index.get_level_values('센터').unique() if '1층' in str(c) or '375 1' in str(c)]
+            if c_375:
+                df_375 = pivot_df.loc[pivot_df.index.get_level_values('센터').isin(c_375)]
+                subtotal_dfs.append(df_375)
+                sum_375 = df_375.sum(axis=0)
+                sub_idx_375 = ("375 소계", "소계") if "보이기" in show_client else "375 소계"
+                subtotal_dfs.append(pd.DataFrame([sum_375.values], columns=pivot_df.columns, index=pd.MultiIndex.from_tuples([sub_idx_375], names=group_cols) if "보이기" in show_client else pd.Index([sub_idx_375], name="센터")))
+
+            # 2) 'XFC' 그룹 (XFC 네이버, XFC 코어)
+            c_xfc = [c for c in pivot_df.index.get_level_values('센터').unique() if 'XFC' in str(c).upper()]
+            if c_xfc:
+                df_xfc = pivot_df.loc[pivot_df.index.get_level_values('센터').isin(c_xfc)]
+                subtotal_dfs.append(df_xfc)
+                sum_xfc = df_xfc.sum(axis=0)
+                sub_idx_xfc = ("XFC 소계", "소계") if "보이기" in show_client else "XFC 소계"
+                subtotal_dfs.append(pd.DataFrame([sum_xfc.values], columns=pivot_df.columns, index=pd.MultiIndex.from_tuples([sub_idx_xfc], names=group_cols) if "보이기" in show_client else pd.Index([sub_idx_xfc], name="센터")))
+
+            # 3) 기타 센터들
+            c_other = [c for c in pivot_df.index.get_level_values('센터').unique() if c not in c_375 and c not in c_xfc]
+            if c_other:
+                df_other = pivot_df.loc[pivot_df.index.get_level_values('센터').isin(c_other)]
+                subtotal_dfs.append(df_other)
+
+            body_df = pd.concat(subtotal_dfs) if subtotal_dfs else pivot_df
+
+            # 맨 위 일별 합계 행 생성
             total_series = pivot_df.sum(axis=0)
-            total_idx = pd.MultiIndex.from_tuples([("★ 일별 합계", "전체")], names=group_cols) if len(group_cols) > 1 else pd.Index(["★ 일별 합계"], name="센터")
+            total_idx = pd.MultiIndex.from_tuples([("★ 일별 합계", "전체")], names=group_cols) if "보이기" in show_client else pd.Index(["★ 일별 합계"], name="센터")
             total_df = pd.DataFrame([total_series.values], columns=pivot_df.columns, index=total_idx)
-            
-            final_df = pd.concat([total_df, pivot_df])
+
+            final_df = pd.concat([total_df, body_df])
             final_df.set_index('총 출고건수', append=True, inplace=True)
+            
             st.dataframe(final_df, use_container_width=True)
 
 # Tab 2: 배송속성 / 판매처별 현황
@@ -197,7 +232,7 @@ with tab3:
         final_df3.set_index('총 출고건수', append=True, inplace=True)
         st.dataframe(final_df3, use_container_width=True)
 
-# Tab 4: SKU별 출고량 (빠른 기간 선택 버튼 대안 A 적용)
+# Tab 4: SKU별 출고량
 with tab4:
     st.header("🔍 SKU별 출고량 (기간 선택 집계)")
     if not df_raw.empty:
@@ -205,7 +240,6 @@ with tab4:
         min_date = df_raw['영업마감일자_dt'].min().date() if not df_raw['영업마감일자_dt'].isna().all() else datetime.now().date()
         max_date = df_raw['영업마감일자_dt'].max().date() if not df_raw['영업마감일자_dt'].isna().all() else datetime.now().date()
 
-        # 세션 상태 날짜 초기화
         if 'sku_start_date' not in st.session_state:
             st.session_state['sku_start_date'] = min_date
         if 'sku_end_date' not in st.session_state:
@@ -240,7 +274,6 @@ with tab4:
                 st.session_state['sku_end_date'] = max_date
                 st.rerun()
 
-        # 날짜 직접 지정 피커
         date_col1, date_col2 = st.columns(2)
         with date_col1:
             start_date = st.date_input("📅 조회 시작일자:", value=st.session_state['sku_start_date'], key="tab4_start_picker")
