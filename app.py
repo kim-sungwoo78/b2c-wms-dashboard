@@ -69,16 +69,25 @@ def run_sync():
         st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
-# ★ 송장 단위 고유 출고 데이터 로드 (오차 제로 건수)
+# ★ B2C 출고 데이터 로드 (shipment_orders + daily_summary 하이브리드 지원)
 @st.cache_data(ttl=60)
 def load_shipment_orders():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_PATH, timeout=5)
-        df = pd.read_sql("SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, COUNT(DISTINCT 송장번호) AS 출고건수 FROM shipment_orders GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류", conn)
+        
+        # 1. shipment_orders 테이블 조회
+        df_shipment = pd.read_sql("SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, COUNT(DISTINCT 송장번호) AS 출고건수 FROM shipment_orders GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류", conn)
+        
+        if not df_shipment.empty:
+            conn.close()
+            return df_shipment
+        
+        # 2. shipment_orders가 비어있을 경우 daily_summary 기반 백업 조회
+        df_daily = pd.read_sql("SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, MAX(출고건수) AS 출고건수 FROM daily_summary GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류", conn)
         conn.close()
-        return df
+        return df_daily
     except Exception:
         return pd.DataFrame()
 
@@ -156,7 +165,6 @@ st.markdown("""
         background-color: #172554 !important; color: #60a5fa !important;
         font-weight: bold !important; border-right: 2px solid #2563eb !important; border-left: 2px solid #2563eb !important;
     }
-    /* 컴팩트 월 버튼 스타일 */
     div[data-testid="column"] button {
         padding: 4px 2px !important;
         font-size: 12px !important;
@@ -170,9 +178,9 @@ if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
     if run_sync():
         st.rerun()
 
-df_b2c_orders = load_shipment_orders() # 고유 송장 건수
-df_b2c_sku = load_b2c_sku_data()       # SKU 수량
-df_inbound = load_inbound_data()       # 입고 요약
+df_b2c_orders = load_shipment_orders()
+df_b2c_sku = load_b2c_sku_data()
+df_inbound = load_inbound_data()
 
 if 'main_mode_selection' not in st.session_state:
     st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
@@ -302,7 +310,7 @@ def inject_monthly_sum_columns(pivot_df):
     return new_df
 
 # ==========================================
-# 1. 메인 센터 종합 현황 모드 (한 줄 UI 적용)
+# 1. 메인 센터 종합 현황 모드
 # ==========================================
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
@@ -318,7 +326,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         
     sorted_centers = sorted(list(raw_centers))
 
-    # ★ 센터 필터 & 월/누적 버튼 한 줄 레이아웃 ★
     filter_row_col1, filter_row_col2 = st.columns([3, 7])
     
     with filter_row_col1:
@@ -362,7 +369,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         if not filtered_inbound.empty and '영업마감일자' in filtered_inbound.columns:
             filtered_inbound = filtered_inbound[filtered_inbound['영업마감일자'].str.slice(5, 7) == m_digit]
 
-    # 입고 '입고완료' / '승인대기' 전용 필터
     if not filtered_inbound.empty and '상태' in filtered_inbound.columns:
         main_inbound_df = filtered_inbound[
             filtered_inbound['상태'].astype(str).str.contains('입고완료|입고 완료|승인대기|승인 대기', na=False)
