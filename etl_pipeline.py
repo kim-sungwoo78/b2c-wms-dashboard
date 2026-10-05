@@ -176,10 +176,10 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
+    # ★ 신규 미처리 파일만 스캔하도록 PROCESSED(처리완료) 폴더 제외 ★
     folder_mapping = [
         (INBOUND_FOLDER_ID, 'INBOUND'),
         (B2C_FOLDER_ID, 'B2C'),
-        (PROCESSED_FOLDER_ID, 'PROCESSED'),
         (TOP_FOLDER_ID, 'AUTO')
     ]
 
@@ -395,17 +395,16 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         int(row_b2c['출고건수']), int(row_b2c['총출고수량'])
                     ))
 
-            if src_folder != PROCESSED_FOLDER_ID:
-                try:
-                    service.files().update(
-                        fileId=file_id,
-                        addParents=PROCESSED_FOLDER_ID,
-                        removeParents=src_folder,
-                        supportsAllDrives=True,
-                        fields='id, parents'
-                    ).execute()
-                except Exception as move_e:
-                    error_logs.append(f"이동 실패 ({file_name}): {move_e}")
+            try:
+                service.files().update(
+                    fileId=file_id,
+                    addParents=PROCESSED_FOLDER_ID,
+                    removeParents=src_folder,
+                    supportsAllDrives=True,
+                    fields='id, parents'
+                ).execute()
+            except Exception as move_e:
+                error_logs.append(f"이동 실패 ({file_name}): {move_e}")
 
             conn.commit()
             new_files_processed = True
