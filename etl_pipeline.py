@@ -9,7 +9,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import openpyxl
 
-# 구글 드라이브 폴더 ID
 TOP_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'       # 대시보드 업로드
 B2C_FOLDER_ID = '1ArGfyeVpZDJYUrdlGNSCrhj734JrqGW9'        # B2C 폴더
 INBOUND_FOLDER_ID = '1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp'    # 입고 폴더
@@ -17,7 +16,7 @@ B2B_FOLDER_ID = '1wpqrIBC8HnWTU20rShcg0Yvkcc1VIsml'        # B2B 폴더
 PROCESSED_FOLDER_ID = '1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ'  # 처리완료 폴더
 
 DB_PATH = 'wms_dashboard.db'
-IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0' # 이천375 1층 구글 시트 ID
+IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
 
 def get_drive_service(creds_dict):
     creds = Credentials.from_service_account_info(
@@ -120,7 +119,6 @@ def list_files_in_folder(service, folder_id):
         return []
 
 def read_excel_fast(fh):
-    """셀 병합 및 공백 대응 초경량 엑셀 읽기"""
     try:
         wb = openpyxl.load_workbook(fh, read_only=True, data_only=True)
         sheet = wb.active
@@ -147,16 +145,19 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn = sqlite3.connect(DB_PATH, timeout=30)
     
-    # 1. 고유 송장 단위 원본 데이터 테이블 (중복 없는 오차 0%)
+    # ★ 1. B2C 정밀 원본 송장 테이블 (요청된 B2C 세부 항목 전체 적용)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS shipment_raw (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
-        출고박스종류 TEXT, 송장번호 TEXT,
+        출고박스종류 TEXT, 송장번호 TEXT, 마감일시 TEXT, 마감자 TEXT, 주문일시 TEXT,
+        결제일시 TEXT, 등록일시 TEXT, 할당일시 TEXT, 출력일시 TEXT, 브랜드 TEXT,
+        배송계약태그 TEXT, 주문번호 TEXT, 개별주문번호 TEXT, 피킹지시서번호 TEXT,
+        품고추적번호 TEXT, CS TEXT,
         PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호)
     )
     """)
 
-    # 2. SKU 수량 단위 테이블
+    # 2. B2C SKU 요약 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -165,17 +166,19 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 3. 입고 요약 테이블
+    # ★ 3. 입고 정밀 요약 테이블 (요청된 입고 세부 항목 전체 적용)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS inbound_summary (
-        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
-        입고건수 INTEGER, 바코드수 INTEGER, 입고완료수량 INTEGER,
-        PLT수 REAL, BOX수 REAL, 파적BOX수 REAL,
-        PRIMARY KEY (영업마감일자, 센터, 고객사, 상태)
+        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, 입고번호 TEXT,
+        입고방법 TEXT, SKU명 TEXT, 바코드 TEXT, 소비기한 TEXT, 로트 TEXT,
+        기본로케이션 TEXT, 예정수량 INTEGER, 요청SKU수량 INTEGER, 총예정수량 INTEGER,
+        총검수완료수량 INTEGER, 입고건수 INTEGER, 바코드수 INTEGER, 입고완료수량 INTEGER,
+        PLT수 REAL, BOX수 REAL, 파적BOX수 REAL, 등록일시 TEXT, 변경자 TEXT,
+        최종변경일시 TEXT, 입고완료일시 TEXT,
+        PRIMARY KEY (영업마감일자, 센터, 고객사, 상태, 입고번호, SKU명, 바코드)
     )
     """)
 
-    # ★ B2C, INBOUND 폴더뿐만 아니라 PROCESSED(처리완료) 폴더의 파일까지 스캔하여 57개 파일 전체를 오차 없이 자동 반영! ★
     folder_mapping = [
         (INBOUND_FOLDER_ID, 'INBOUND'),
         (B2C_FOLDER_ID, 'B2C'),
@@ -219,32 +222,39 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 df = read_excel_fast(fh)
             
             df_cols_no_space = [str(c).replace(" ", "").strip() for c in df.columns]
-            is_inbound = (category == 'INBOUND') or any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량']) or ('입고요청서' in file_name)
+            is_inbound = (category == 'INBOUND') or any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량', '입고방법']) or ('입고요청서' in file_name)
 
             if is_inbound:
+                # --- 입고 데이터 컬럼 매핑 (c, h, i, j, k, L, m, n, o, p, r, s, t, u열 반영) ---
                 col_map_inbound = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
                     if '상태' == clean_c: col_map_inbound[orig_c] = '상태'
                     elif '센터' == clean_c: col_map_inbound[orig_c] = '센터'
                     elif '고객사' == clean_c: col_map_inbound[orig_c] = '고객사'
-                    elif '입고번호' == clean_c: col_map_inbound[orig_c] = '입고 번호'
+                    elif '입고번호' == clean_c: col_map_inbound[orig_c] = '입고번호'
+                    elif '입고방법' in clean_c: col_map_inbound[orig_c] = '입고방법'
                     elif 'SKU명' in clean_c or '상품명' in clean_c: col_map_inbound[orig_c] = 'SKU명'
                     elif '바코드' == clean_c: col_map_inbound[orig_c] = '바코드'
-                    elif '예정수량' == clean_c: col_map_inbound[orig_c] = '예정 수량'
-                    elif '총검수완료수량' == clean_c: col_map_inbound[orig_c] = '총 검수 완료 수량'
-                    elif '입고완료일시' == clean_c: col_map_inbound[orig_c] = '입고 완료 일시'
-                    elif '최종변경일시' == clean_c: col_map_inbound[orig_c] = '최종 변경 일시'
-                    elif '등록일시' == clean_c: col_map_inbound[orig_c] = '등록 일시'
+                    elif '소비기한' in clean_c or '유통기한' in clean_c: col_map_inbound[orig_c] = '소비기한'
+                    elif '로트' in clean_c or 'LOT' in clean_c.upper(): col_map_inbound[orig_c] = '로트'
+                    elif '로케이션' in clean_c: col_map_inbound[orig_c] = '기본로케이션'
+                    elif '예정수량' == clean_c: col_map_inbound[orig_c] = '예정수량'
+                    elif '요청SKU' in clean_c or '요청sku' in clean_c: col_map_inbound[orig_c] = '요청SKU수량'
+                    elif '총예정수량' in clean_c: col_map_inbound[orig_c] = '총예정수량'
+                    elif '총검수완료수량' in clean_c or '검수완료' in clean_c: col_map_inbound[orig_c] = '총검수완료수량'
+                    elif '등록일시' == clean_c: col_map_inbound[orig_c] = '등록일시'
+                    elif '변경자' in clean_c: col_map_inbound[orig_c] = '변경자'
+                    elif '최종변경일시' in clean_c: col_map_inbound[orig_c] = '최종변경일시'
+                    elif '입고완료일시' in clean_c: col_map_inbound[orig_c] = '입고완료일시'
 
                 df_in = df.rename(columns=col_map_inbound)
                 df_in = df_in.loc[:, ~df_in.columns.duplicated()]
 
-                if '상태' not in df_in.columns:
-                    df_in['상태'] = '입고 완료'
+                if '상태' not in df_in.columns: df_in['상태'] = '입고 완료'
 
                 s_date = None
-                for candidate in ['입고 완료 일시', '최종 변경 일시', '등록 일시']:
+                for candidate in ['입고완료일시', '최종변경일시', '등록일시']:
                     if candidate in df_in.columns:
                         s_date = df_in[candidate]
                         break
@@ -257,40 +267,36 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
                 df_in['영업마감일자'] = df_in['영업마감일자'].fillna(datetime.now().strftime('%Y-%m-%d'))
 
-                for tc in ['영업마감일자', '센터', '고객사', '상태', '입고 번호', 'SKU명', '바코드']:
-                    if tc not in df_in.columns: df_in[tc] = '미지정'
-                    df_in[tc] = df_in[tc].fillna('미지정')
+                req_cols_ib = [
+                    '영업마감일자', '센터', '고객사', '상태', '입고번호', '입고방법', 'SKU명', '바코드',
+                    '소비기한', '로트', '기본로케이션', '예정수량', '요청SKU수량', '총예정수량',
+                    '총검수완료수량', '등록일시', '변경자', '최종변경일시', '입고완료일시'
+                ]
+                for tc in req_cols_ib:
+                    if tc not in df_in.columns: df_in[tc] = '미지정' if '수량' not in tc else 0
+                    df_in[tc] = df_in[tc].fillna('미지정' if '수량' not in tc else 0)
 
-                df_in['총 검수 완료 수량'] = pd.to_numeric(df_in.get('총 검수 완료 수량', 0), errors='coerce').fillna(0)
+                for num_c in ['예정수량', '요청SKU수량', '총예정수량', '총검수완료수량']:
+                    df_in[num_c] = pd.to_numeric(df_in[num_c], errors='coerce').fillna(0)
 
-                in_grp = df_in.groupby(['영업마감일자', '센터', '고객사', '상태', '입고 번호']).agg(
-                    바코드수=('바코드', 'nunique'),
-                    입고완료수량=('총 검수 완료 수량', 'first')
-                ).reset_index()
-
-                in_sum = in_grp.groupby(['영업마감일자', '센터', '고객사', '상태']).agg(
-                    입고건수=('입고 번호', 'nunique'),
-                    바코드수=('바코드수', 'sum'),
-                    입고완료수량=('입고완료수량', 'sum')
-                ).reset_index()
-
-                in_sum['PLT수'] = 0.0
-                in_sum['BOX수'] = 0.0
-                in_sum['파적BOX수'] = 0.0
-
-                for _, row_in in in_sum.iterrows():
+                for _, row_in in df_in.iterrows():
                     conn.execute("""
                     INSERT OR REPLACE INTO inbound_summary
-                    (영업마감일자, 센터, 고객사, 상태, 입고건수, 바코드수, 입고완료수량, PLT수, BOX수, 파적BOX수)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (영업마감일자, 센터, 고객사, 상태, 입고번호, 입고방법, SKU명, 바코드, 소비기한, 로트,
+                     기본로케이션, 예정수량, 요청SKU수량, 총예정수량, 총검수완료수량, 입고건수, 바코드수, 입고완료수량,
+                     PLT수, BOX수, 파적BOX수, 등록일시, 변경자, 최종변경일시, 입고완료일시)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, 0.0, 0.0, 0.0, ?, ?, ?, ?)
                     """, (
                         row_in['영업마감일자'], row_in['센터'], row_in['고객사'], row_in['상태'],
-                        int(row_in['입고건수']), int(row_in['바코드수']), int(row_in['입고완료수량']),
-                        float(row_in['PLT수']), float(row_in['BOX수']), float(row_in['파적BOX수'])
+                        str(row_in['입고번호']), str(row_in['입고방법']), str(row_in['SKU명']), str(row_in['바코드']),
+                        str(row_in['소비기한']), str(row_in['로트']), str(row_in['기본로케이션']),
+                        int(row_in['예정수량']), int(row_in['요청SKU수량']), int(row_in['총예정수량']), int(row_in['총검수완료수량']),
+                        int(row_in['총검수완료수량']), str(row_in['등록일시']), str(row_in['변경자']),
+                        str(row_in['최종변경일시']), str(row_in['입고완료일시'])
                     ))
 
             else:
-                # --- B2C 출고 정밀 파싱 ---
+                # --- B2C 출고 데이터 컬럼 매핑 (c, d, h, i, L, m, r, s, t, v, y, aj열 반영) ---
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -298,12 +304,26 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         continue  # B열 '송장 상세' 제외
                     if '센터' in clean_c: col_map_b2c[orig_c] = '센터'
                     elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
-                    elif '배송' in clean_c or '유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
-                    elif '플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매처'
+                    elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
+                    elif '판매플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매처'
                     elif '출고박스' in clean_c or '박스' in clean_c: col_map_b2c[orig_c] = '출고박스종류'
-                    elif 'SKU' in clean_c or '상품' in clean_c: col_map_b2c[orig_c] = 'SKU명'
+                    elif 'SKU' in clean_c or '상품명' in clean_c: col_map_b2c[orig_c] = 'SKU명'
                     elif '바코드' in clean_c: col_map_b2c[orig_c] = '바코드'
-                    elif '송장' in clean_c or '운송장' in clean_c: col_map_b2c[orig_c] = '송장번호'
+                    elif '송장번호' in clean_c or '운송장' in clean_c: col_map_b2c[orig_c] = '송장번호'
+                    elif '마감일시' in clean_c or '마감일' in clean_c: col_map_b2c[orig_c] = '마감일시'
+                    elif '마감자' == clean_c: col_map_b2c[orig_c] = '마감자'
+                    elif '주문일시' in clean_c or '주문일' in clean_c: col_map_b2c[orig_c] = '주문일시'
+                    elif '결제일시' in clean_c or '결제일' in clean_c: col_map_b2c[orig_c] = '결제일시'
+                    elif '등록일시' in clean_c or '등록일' in clean_c: col_map_b2c[orig_c] = '등록일시'
+                    elif '할당일시' in clean_c or '할당일' in clean_c: col_map_b2c[orig_c] = '할당일시'
+                    elif '출력일시' in clean_c or '출력일' in clean_c: col_map_b2c[orig_c] = '출력일시'
+                    elif '브랜드' in clean_c: col_map_b2c[orig_c] = '브랜드'
+                    elif '배송계약' in clean_c or '태그' in clean_c: col_map_b2c[orig_c] = '배송계약태그'
+                    elif '개별주문' in clean_c or '개별주문번호' in clean_c: col_map_b2c[orig_c] = '개별주문번호'
+                    elif '주문번호' in clean_c: col_map_b2c[orig_c] = '주문번호'
+                    elif '피킹지시서' in clean_c: col_map_b2c[orig_c] = '피킹지시서번호'
+                    elif '품고추적' in clean_c or '품고' in clean_c: col_map_b2c[orig_c] = '품고추적번호'
+                    elif 'CS' in clean_c or 'cs' in clean_c: col_map_b2c[orig_c] = 'CS'
                     elif '출고수량' in clean_c or '수량' in clean_c or '수' in clean_c: col_map_b2c[orig_c] = '총출고수량'
 
                 df_b2c_f = df.rename(columns=col_map_b2c)
@@ -311,9 +331,8 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 df_b2c_f = df_b2c_f.ffill()
 
                 date_col_name = None
-                for c in df_b2c_f.columns:
-                    clean_str = str(c).replace(" ", "").strip()
-                    if any(k in clean_str for k in ['마감', '출고일', '일시', '일자', '날짜', 'Date', 'date']):
+                for c in ['마감일시', '주문일시', '등록일시']:
+                    if c in df_b2c_f.columns:
                         date_col_name = c
                         break
 
@@ -326,27 +345,42 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
                 df_b2c_f['영업마감일자'] = df_b2c_f['영업마감일자'].fillna(datetime.now().strftime('%Y-%m-%d'))
 
-                for tc in ['센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드', '송장번호']:
+                req_cols_b2c = [
+                    '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드', '송장번호',
+                    '마감일시', '마감자', '주문일시', '결제일시', '등록일시', '할당일시', '출력일시',
+                    '브랜드', '배송계약태그', '주문번호', '개별주문번호', '피킹지시서번호', '품고추적번호', 'CS'
+                ]
+                for tc in req_cols_b2c:
                     if tc not in df_b2c_f.columns: df_b2c_f[tc] = '미지정'
                     df_b2c_f[tc] = df_b2c_f[tc].fillna('미지정')
 
-                if '총출고수량' not in df_b2c_f.columns:
-                    df_b2c_f['총출고수량'] = 1
+                if '총출고수량' not in df_b2c_f.columns: df_b2c_f['총출고수량'] = 1
                 df_b2c_f['총출고수량'] = pd.to_numeric(df_b2c_f['총출고수량'], errors='coerce').fillna(1)
 
                 valid_mask = ~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)
                 df_b2c_valid = df_b2c_f[valid_mask]
 
-                # ★ 1. 고유 송장 단위 원본 데이터 저장 (중복 0% 정밀 보장)
-                shipment_distinct = df_b2c_valid[['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호']].drop_duplicates()
+                # ★ 1. 세부 시간/주문 컬럼 포함 고유 송장 저장
+                shipment_distinct = df_b2c_valid[
+                    ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호',
+                     '마감일시', '마감자', '주문일시', '결제일시', '등록일시', '할당일시', '출력일시',
+                     '브랜드', '배송계약태그', '주문번호', '개별주문번호', '피킹지시서번호', '품고추적번호', 'CS']
+                ].drop_duplicates(subset=['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호'])
+
                 for _, row_s in shipment_distinct.iterrows():
                     conn.execute("""
                     INSERT OR REPLACE INTO shipment_raw
-                    (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호,
+                     마감일시, 마감자, 주문일시, 결제일시, 등록일시, 할당일시, 출력일시,
+                     브랜드, 배송계약태그, 주문번호, 개별주문번호, 피킹지시서번호, 품고추적번호, CS)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        row_s['영업마감일자'], row_s['센터'], row_s['고객사'],
-                        row_s['배송속성'], row_s['판매처'], row_s['출고박스종류'], row_s['송장번호']
+                        row_s['영업마감일자'], row_s['센터'], row_s['고객사'], row_s['배송속성'],
+                        row_s['판매처'], row_s['출고박스종류'], row_s['송장번호'], str(row_s['마감일시']),
+                        str(row_s['마감자']), str(row_s['주문일시']), str(row_s['결제일시']),
+                        str(row_s['등록일시']), str(row_s['할당일시']), str(row_s['출력일시']),
+                        str(row_s['브랜드']), str(row_s['배송계약태그']), str(row_s['주문번호']),
+                        str(row_s['개별주문번호']), str(row_s['피킹지시서번호']), str(row_s['품고추적번호']), str(row_s['CS'])
                     ))
 
                 # ★ 2. SKU 수량 단위 요약 저장
@@ -368,7 +402,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         int(row_b2c['출고건수']), int(row_b2c['총출고수량'])
                     ))
 
-            # 처리 완료 폴더로 이동 (이미 처리완료에 있는 파일은 이동 생략)
             if src_folder != PROCESSED_FOLDER_ID:
                 try:
                     service.files().update(
@@ -381,7 +414,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 except Exception as move_e:
                     error_logs.append(f"이동 실패 ({file_name}): {move_e}")
 
-            # 매 파일마다 안전 커밋
             conn.commit()
             new_files_processed = True
         except Exception as file_e:
