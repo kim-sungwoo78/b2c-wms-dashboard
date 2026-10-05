@@ -1,287 +1,370 @@
 import os
 import io
-import json
+import time
 import sqlite3
 import pandas as pd
-import streamlit as st
 from datetime import datetime, timedelta
-import etl_pipeline
-import importlib
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
-importlib.reload(etl_pipeline)
+MAIN_UPLOAD_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'
+PROCESSED_FOLDER_ID = '1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ'
+DB_PATH = 'wms_dashboard.db'
 
-st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide")
+# 이천375 1층 구글 시트 ID
+IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
 
-st.markdown("""
-<style>
-    .sticky-table-container {
-        max-height: 600px;
-        overflow-y: auto;
-        overflow-x: auto;
-        border: 1px solid #374151;
-        border-radius: 8px;
-        background-color: #0e1117;
-    }
-    .sticky-table {
-        width: 100%;
-        border-collapse: separate;
-        border-spacing: 0;
-        font-size: 13px;
-        color: #e5e7eb;
-    }
-    .sticky-table th, .sticky-table td {
-        padding: 8px 12px;
-        text-align: right;
-        border-bottom: 1px solid #1f2937;
-        border-right: 1px solid #1f2937;
-        white-space: nowrap;
-        background-color: #0e1117;
-    }
-    .sticky-table thead tr th {
-        position: sticky; top: 0; z-index: 20;
-        background-color: #1f2937 !important; color: #9ca3af; font-weight: bold;
-    }
-    .sticky-table tr.total-row td {
-        position: sticky; top: 35px; z-index: 15;
-        background-color: #1e293b !important; color: #facc15 !important;
-        font-weight: bold; border-bottom: 2px solid #eab308 !important;
-    }
-    .sticky-table th.freeze-col-1, .sticky-table td.freeze-col-1 {
-        position: sticky; left: 0; z-index: 10;
-        background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: left;
-    }
-    .sticky-table th.freeze-col-2, .sticky-table td.freeze-col-2 {
-        position: sticky; left: 140px; z-index: 10;
-        background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: left;
-    }
-    .sticky-table th.freeze-col-3, .sticky-table td.freeze-col-3,
-    .sticky-table th.freeze-col-2-total, .sticky-table td.freeze-col-2-total {
-        position: sticky; left: 280px; z-index: 10;
-        background-color: #1e1b4b !important; color: #a5b4fc !important;
-        font-weight: bold; border-right: 2px solid #4f46e5 !important; text-align: right;
-    }
-    .sticky-table thead tr th.freeze-col-1, .sticky-table thead tr th.freeze-col-2,
-    .sticky-table thead tr th.freeze-col-3, .sticky-table thead tr th.freeze-col-2-total {
-        z-index: 30 !important;
-    }
-    .sticky-table tr.subtotal-row td {
-        background-color: #0f172a !important; color: #38bdf8 !important; font-weight: bold;
-    }
-    .sticky-table .month-sum-col {
-        background-color: #172554 !important; color: #60a5fa !important;
-        font-weight: bold !important; border-right: 2px solid #2563eb !important; border-left: 2px solid #2563eb !important;
-    }
-</style>
-""", unsafe_allow_html=True)
+def get_drive_service(creds_dict):
+    creds = Credentials.from_service_account_info(
+        creds_dict, 
+        scopes=[
+            'https://www.googleapis.com/auth/drive',
+            'https://www.googleapis.com/auth/spreadsheets.readonly'
+        ]
+    )
+    return build('drive', 'v3', credentials=creds)
 
-DB_PATH = "wms_dashboard.db"
+def get_sheets_service(creds_dict):
+    creds = Credentials.from_service_account_info(
+        creds_dict, 
+        scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
+    )
+    return build('sheets', '4', credentials=creds)
 
-def run_sync():
-    if "gcp_service_account" in st.secrets:
-        try:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            service = etl_pipeline.get_drive_service(creds_dict)
-            sheets_service = etl_pipeline.get_sheets_service(creds_dict)
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+def download_db_from_drive(service):
+    query = f"'{MAIN_UPLOAD_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
+    results = service.files().list(
+        q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
+    ).execute()
+    files = results.get('files', [])
 
-            def update_progress(current, total, filename, eta):
-                if total > 0:
-                    pct = int((current / total) * 100)
-                    progress_bar.progress(pct)
-                    mins, secs = divmod(eta, 60)
-                    eta_str = f"{mins}분 {secs}초" if mins > 0 else f"{secs}초"
-                    status_text.markdown(f"⏳ **동기화 및 구글 시트 매칭 중 ({pct}%)** - `{current}/{total}`개 완료\n\n📄 **처리 중**: `{filename}` | ⏱️ **남은 시간**: 약 **{eta_str}**")
-                else:
-                    status_text.info("처리 중입니다...")
-
-            etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
-            
-            progress_bar.empty()
-            status_text.empty()
-            st.cache_data.clear()
-            return True
-        except Exception as e:
-            st.sidebar.error(f"동기화 에러: {e}")
-            return False
+    if files:
+        file_id = files[0]['id']
+        request = service.files().get_media(fileId=file_id)
+        with open(DB_PATH, 'wb') as f:
+            downloader = MediaIoBaseDownload(f, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+        return True
     return False
 
-if "initial_synced" not in st.session_state:
-    with st.spinner("구글 드라이브 데이터베이스 로드 중..."):
-        if "gcp_service_account" in st.secrets:
-            try:
-                creds_dict = dict(st.secrets["gcp_service_account"])
-                service = etl_pipeline.get_drive_service(creds_dict)
-                etl_pipeline.download_db_from_drive(service)
-            except Exception:
-                pass
-        st.session_state["initial_synced"] = True
+def upload_db_to_drive(service):
+    if not os.path.exists(DB_PATH):
+        return
+    query = f"'{MAIN_UPLOAD_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
+    results = service.files().list(
+        q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
+    ).execute()
+    files = results.get('files', [])
 
-@st.cache_data(ttl=300)
-def load_b2c_data():
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        df = pd.read_sql("SELECT * FROM daily_summary", conn)
-    except Exception:
-        df = pd.DataFrame()
-    finally:
-        conn.close()
-    return df
+    media = MediaFileUpload(DB_PATH, mimetype='application/x-sqlite3', resumable=True)
 
-@st.cache_data(ttl=300)
-def load_inbound_data():
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        df = pd.read_sql("SELECT * FROM inbound_summary", conn)
-    except Exception:
-        df = pd.DataFrame()
-    finally:
-        conn.close()
-    return df
-
-st.title("🏢 센터 통합 물류 운영 대시보드")
-
-if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
-    run_sync()
-    st.rerun()
-
-df_b2c = load_b2c_data()
-df_inbound = load_inbound_data()
-
-main_mode = st.radio("📌 운영 모드 선택:", ["🏢 메인 : 센터 종합 현황", "🚚 B2C 출고 현황", "📦 입고 현황"], horizontal=True)
-
-def render_sticky_pivot(df, index_names, key_suffix=""):
-    html = ['<div class="sticky-table-container"><table class="sticky-table"><thead><tr>']
-    num_indices = len(index_names)
-    
-    for idx_i, idx_name in enumerate(index_names, 1):
-        html.append(f'<th class="freeze-col-{idx_i}">{idx_name}</th>')
-    
-    cols = [c for c in df.columns]
-    for c in cols:
-        is_total_col = ("총 " in str(c) or "합계" in str(c)) and "월" not in str(c)
-        is_m_sum = ("월 합계" in str(c) or ("월" in str(c) and "일자" not in str(c) and "-" not in str(c))) and not is_total_col
-        
-        if is_total_col:
-            freeze_cls = f' class="freeze-col-{num_indices + 1}"' if num_indices == 2 else ' class="freeze-col-2-total"'
-            html.append(f'<th{freeze_cls}>{c}</th>')
-        else:
-            col_cls = ' class="month-sum-col"' if is_m_sum else ''
-            html.append(f'<th{col_cls}>{c}</th>')
-            
-    html.append('</tr></thead><tbody>')
-    
-    for idx_val, row in df.iterrows():
-        is_total = "합계" in str(idx_val)
-        is_subtotal = "소계" in str(idx_val)
-        
-        row_class = ' class="total-row"' if is_total else (' class="subtotal-row"' if is_subtotal else '')
-        html.append(f'<tr{row_class}>')
-        
-        if isinstance(idx_val, tuple):
-            for idx_i, v in enumerate(idx_val, 1):
-                html.append(f'<td class="freeze-col-{idx_i}">{v}</td>')
-        else:
-            html.append(f'<td class="freeze-col-1">{idx_val}</td>')
-            
-        for c_name, val in zip(cols, row):
-            is_total_col = ("총 " in str(c_name) or "합계" in str(c_name)) and "월" not in str(c_name)
-            is_m_sum = ("월 합계" in str(c_name) or ("월" in str(c_name) and "-" not in str(c_name))) and not is_total_col
-            
-            val_str = f"{int(val):,}" if pd.notnull(val) and isinstance(val, (int, float)) else str(val)
-            
-            if is_total_col:
-                freeze_cls = f' class="freeze-col-{num_indices + 1}"' if num_indices == 2 else ' class="freeze-col-2-total"'
-                html.append(f'<td{freeze_cls}>{val_str}</td>')
-            else:
-                td_cls = ' class="month-sum-col"' if is_m_sum else ''
-                html.append(f'<td{td_cls}>{val_str}</td>')
-                
-        html.append('</tr>')
-        
-    html.append('</tbody></table></div>')
-    st.markdown("".join(html), unsafe_allow_html=True)
-
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='현황데이터')
-        
-    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-    st.download_button(
-        label="💾 현재 표 데이터 엑셀 다운로드",
-        data=excel_buffer.getvalue(),
-        file_name=f"센터물류현황_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"dl_table_{key_suffix}"
-    )
-
-if main_mode == "🏢 메인 : 센터 종합 현황":
-    st.header("📊 센터 종합 일별 / 월별 실적 요약")
-    
-    total_b2c_qty = df_b2c['출고건수'].sum() if not df_b2c.empty and '출고건수' in df_b2c.columns else 0
-    total_inbound_qty = df_inbound['입고완료수량'].sum() if not df_inbound.empty and '입고완료수량' in df_inbound.columns else 0
-    total_plt_qty = df_inbound['PLT수'].sum() if not df_inbound.empty and 'PLT수' in df_inbound.columns else 0
-    
-    kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("🚚 총 B2C 출고건수", f"{total_b2c_qty:,} 건")
-    kpi2.metric("📦 총 입고 완료 수량", f"{total_inbound_qty:,} EA")
-    kpi3.metric("🚜 총 입고 PLT 수", f"{total_plt_qty:,} PLT")
-    
-    st.markdown("---")
-    st.subheader("📋 B2C 출고 센터별 일자 현황")
-    
-    if not df_b2c.empty:
-        pivot_b2c_main = pd.pivot_table(df_b2c, index=['센터'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
-        pivot_b2c_main['총 출고건수'] = pivot_b2c_main.sum(axis=1)
-        cols_b2c_m = ['총 출고건수'] + [c for c in pivot_b2c_main.columns if c != '총 출고건수']
-        render_sticky_pivot(pivot_b2c_main[cols_b2c_m], ['센터'], key_suffix="main_b2c_summary")
-        
-    if not df_inbound.empty:
-        st.markdown("---")
-        st.subheader("📋 입고 센터별 일자 현황")
-        pivot_main_in = pd.pivot_table(df_inbound, index=['센터', '고객사'], columns='영업마감일자', values='입고완료수량', aggfunc='sum', fill_value=0)
-        pivot_main_in['총 입고완료수량'] = pivot_main_in.sum(axis=1)
-        cols_in_m = ['총 입고완료수량'] + [c for c in pivot_main_in.columns if c != '총 입고완료수량']
-        render_sticky_pivot(pivot_main_in[cols_in_m], ['센터', '고객사'], key_suffix="main_in_summary")
-
-elif main_mode == "🚚 B2C 출고 현황":
-    st.header("🚚 B2C 출고 상세 현황")
-    if not df_b2c.empty:
-        pivot_df = pd.pivot_table(df_b2c, index=['센터'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
-        pivot_df['총 출고건수'] = pivot_df.sum(axis=1)
-        cols_order = ['총 출고건수'] + [c for c in pivot_df.columns if c != '총 출고건수']
-        render_sticky_pivot(pivot_df[cols_order], ['센터'], key_suffix="b2c_main")
-
-elif main_mode == "📦 입고 현황":
-    st.header("📦 입고 검수 및 PLT / BOX 정산 현황 (구글 시트 자동 매칭)")
-    if not df_inbound.empty:
-        col_in1, col_in2 = st.columns(2)
-        with col_in1:
-            metric_val = st.radio("조회 항목 선택:", ["입고완료수량 (EA)", "PLT수 (PLT)", "BOX수 (BOX)", "입고건수 (건)"], horizontal=True)
-        
-        col_map_dict = {
-            "입고완료수량 (EA)": "입고완료수량",
-            "PLT수 (PLT)": "PLT수",
-            "BOX수 (BOX)": "BOX수",
-            "입고건수 (건)": "입고건수"
-        }
-        target_val = col_map_dict[metric_val]
-        
-        if target_val in df_inbound.columns:
-            pivot_inbound = pd.pivot_table(df_inbound, index=['센터', '고객사'], columns='영업마감일자', values=target_val, aggfunc='sum', fill_value=0)
-            total_col_name = f"총 {target_val}"
-            pivot_inbound[total_col_name] = pivot_inbound.sum(axis=1)
-            
-            cols_in_order = [total_col_name] + [c for c in pivot_inbound.columns if c != total_col_name]
-            pivot_inbound = pivot_inbound[cols_in_order]
-            
-            total_series_in = pivot_inbound.sum(axis=0)
-            total_df_in = pd.DataFrame([total_series_in.values], columns=pivot_inbound.columns, index=pd.MultiIndex.from_tuples([("★ 전체 합계", "전체")], names=['센터', '고객사']))
-            
-            final_inbound = pd.concat([total_df_in, pivot_inbound])
-            render_sticky_pivot(final_inbound, ['센터', '고객사'], key_suffix="inbound_tab")
-        else:
-            st.warning("선택한 입고 항목 컬럼이 데이터에 없습니다.")
+    if files:
+        file_id = files[0]['id']
+        service.files().update(
+            fileId=file_id, media_body=media, supportsAllDrives=True
+        ).execute()
     else:
-        st.info("입고 데이터가 존재하지 않습니다. 구글 드라이브에 입고요청서 엑셀 파일을 올린 후 [🔄 드라이브 & 구글시트 동기화]를 눌러주세요.")
+        file_metadata = {
+            'name': DB_PATH,
+            'parents': [MAIN_UPLOAD_FOLDER_ID]
+        }
+        service.files().create(
+            body=file_metadata, media_body=media, supportsAllDrives=True
+        ).execute()
+
+def fetch_google_sheets_ib(sheets_service):
+    try:
+        sheet = sheets_service.spreadsheets()
+        result = sheet.values().get(spreadsheetId=IB_SHEET_ID, range='IB!A1:Z3000').execute()
+        values = result.get('values', [])
+        if not values:
+            return pd.DataFrame()
+        
+        headers = [str(h).replace(" ", "").strip() for h in values[0]]
+        data = values[1:]
+        
+        data_fixed = []
+        for row in data:
+            if len(row) < len(headers):
+                row = row + [''] * (len(headers) - len(row))
+            data_fixed.append(row[:len(headers)])
+            
+        df_sheet = pd.DataFrame(data_fixed, columns=headers)
+        return df_sheet
+    except Exception as e:
+        print(f"Sheets Read Error: {e}")
+        return pd.DataFrame()
+
+def process_and_update(service, sheets_service=None, progress_callback=None):
+    download_db_from_drive(service)
+
+    conn = sqlite3.connect(DB_PATH)
+    
+    # B2C Raw 테이블
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS raw_shipments (
+        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, `배송 속성` TEXT,
+        `판매 플랫폼` TEXT, `출고 박스` TEXT, SKU명 TEXT, 바코드 TEXT,
+        `송장 번호` TEXT, `출고 수량` INTEGER,
+        PRIMARY KEY (영업마감일자, `송장 번호`, SKU명, 바코드)
+    )
+    """)
+    
+    # B2C 요약 테이블
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS daily_summary (
+        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
+        출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
+        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드)
+    )
+    """)
+
+    # 입고 Raw 테이블
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS raw_inbound (
+        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, `입고 번호` TEXT,
+        SKU명 TEXT, 바코드 TEXT, `예정 수량` INTEGER, `총 검수 완료 수량` INTEGER, `입고 완료 일시` TEXT,
+        PRIMARY KEY (영업마감일자, `입고 번호`, SKU명, 바코드)
+    )
+    """)
+
+    # 입고 요약 테이블
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS inbound_summary (
+        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
+        입고건수 INTEGER, 바코드수 INTEGER, 입고완료수량 INTEGER,
+        PLT수 REAL, BOX수 REAL, 파적BOX수 REAL,
+        PRIMARY KEY (영업마감일자, 센터, 고객사, 상태)
+    )
+    """)
+
+    query = f"'{MAIN_UPLOAD_FOLDER_ID}' in parents and trashed = false and name != '{DB_PATH}'"
+    results = service.files().list(
+        q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
+    ).execute()
+    files = results.get('files', [])
+
+    target_files = [f for f in files if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv')]
+    total_count = len(target_files)
+
+    new_files_processed = False
+    start_time = time.time()
+
+    for idx, f in enumerate(target_files, 1):
+        file_id, file_name = f['id'], f['name']
+        
+        if progress_callback:
+            elapsed = time.time() - start_time
+            avg_time = elapsed / (idx - 1) if idx > 1 else 3.0
+            rem_files = total_count - (idx - 1)
+            eta_seconds = int(avg_time * rem_files)
+            
+            progress_callback(
+                current=idx - 1, 
+                total=total_count, 
+                filename=file_name, 
+                eta=eta_seconds
+            )
+
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.seek(0)
+
+        if file_name.lower().endswith('.csv'):
+            df = pd.read_csv(fh)
+        else:
+            df = pd.read_excel(fh, engine='openpyxl')
+        
+        df.columns = [str(c).replace(" ", "").strip() for c in df.columns]
+
+        # --- 입고 파일 판별 ---
+        if '입고번호' in df.columns or '총검수완료수량' in df.columns or '입고요청서' in file_name:
+            if '상태' not in df.columns:
+                df['상태'] = '입고 완료'
+
+            # 날짜 대체 처리: 입고완료일시 -> 최종변경일시 -> 등록일시
+            date_col = None
+            if '입고완료일시' in df.columns:
+                date_col = '입고완료일시'
+            elif '최종변경일시' in df.columns:
+                date_col = '최종변경일시'
+            elif '등록일시' in df.columns:
+                date_col = '등록일시'
+
+            if date_col:
+                s_date = df[date_col]
+                if '최종변경일시' in df.columns:
+                    s_date = s_date.fillna(df['최종변경일시'])
+                if '등록일시' in df.columns:
+                    s_date = s_date.fillna(df['등록일시'])
+                
+                df['dt_temp'] = pd.to_datetime(s_date, errors='coerce')
+                df['영업마감일자'] = (df['dt_temp'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
+            else:
+                df['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
+
+            df['영업마감일자'] = df['영업마감일자'].fillna(datetime.now().strftime('%Y-%m-%d'))
+
+            col_map_inbound = {
+                '센터': '센터', '고객사': '고객사', '상태': '상태', '입고번호': '입고 번호',
+                'SKU명': 'SKU명', '상품명': 'SKU명', '바코드': '바코드',
+                '예정수량': '예정 수량', '총검수완료수량': '총 검수 완료 수량', '입고완료일시': '입고 완료 일시'
+            }
+            for k, v in col_map_inbound.items():
+                if k in df.columns and v not in df.columns:
+                    df[v] = df[k]
+
+            target_in_cols = ['영업마감일자', '센터', '고객사', '상태', '입고 번호', 'SKU명', '바코드', '예정 수량', '총 검수 완료 수량', '입고 완료 일시']
+            for tc in target_in_cols:
+                if tc not in df.columns:
+                    df[tc] = ''
+
+            for fill_col in ['영업마감일자', '상태', '입고 번호', 'SKU명', '바코드']:
+                df[fill_col] = df[fill_col].fillna('')
+
+            df['예정 수량'] = pd.to_numeric(df['예정 수량'], errors='coerce').fillna(0)
+            df['총 검수 완료 수량'] = pd.to_numeric(df['총 검수 완료 수량'], errors='coerce').fillna(0)
+
+            insert_inbound_sql = """
+            INSERT OR IGNORE INTO raw_inbound 
+            (영업마감일자, 센터, 고객사, 상태, `입고 번호`, SKU명, 바코드, `예정 수량`, `총 검수 완료 수량`, `입고 완료 일시`)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            conn.executemany(insert_inbound_sql, df[target_in_cols].to_numpy().tolist())
+
+        else:
+            # --- B2C 출고 파일 처리 ---
+            date_col = None
+            for c in df.columns:
+                if any(k in c for k in ['마감일시', '마감일자', '출고일시', '출고일자', '일시', '일자']):
+                    date_col = c
+                    break
+
+            if date_col:
+                df['dt_temp'] = pd.to_datetime(df[date_col], errors='coerce')
+                df['영업마감일자'] = (df['dt_temp'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
+            else:
+                df['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
+
+            col_map = {
+                '센터': '센터', '고객사': '고객사', '배송속성': '배송 속성', '배송유형': '배송 속성',
+                '판매플랫폼': '판매 플랫폼', '판매처': '판매 플랫폼', '출고박스': '출고 박스',
+                '박스종류': '출고 박스', 'SKU명': 'SKU명', '상품명': 'SKU명',
+                '바코드': '바코드', '송장번호': '송장 번호', '출고수량': '출고 수량', '수량': '출고 수량'
+            }
+            for k, v in col_map.items():
+                if k in df.columns and v not in df.columns:
+                    df[v] = df[k]
+
+            target_cols = ['영업마감일자', '센터', '고객사', '배송 속성', '판매 플랫폼', '출고 박스', 'SKU명', '바코드', '송장 번호', '출고 수량']
+            for tc in target_cols:
+                if tc not in df.columns:
+                    df[tc] = ''
+
+            for fill_col in ['영업마감일자', 'SKU명', '바코드', '송장 번호']:
+                df[fill_col] = df[fill_col].fillna('')
+
+            insert_sql = """
+            INSERT OR IGNORE INTO raw_shipments 
+            (영업마감일자, 센터, 고객사, `배송 속성`, `판매 플랫폼`, `출고 박스`, SKU명, 바코드, `송장 번호`, `출고 수량`)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            conn.executemany(insert_sql, df[target_cols].to_numpy().tolist())
+
+        # 처리 완료 파일 이동
+        service.files().update(
+            fileId=file_id,
+            addParents=PROCESSED_FOLDER_ID,
+            removeParents=MAIN_UPLOAD_FOLDER_ID,
+            supportsAllDrives=True,
+            fields='id, parents'
+        ).execute()
+
+        new_files_processed = True
+
+    if progress_callback and total_count > 0:
+        progress_callback(current=total_count, total=total_count, filename="구글 시트 연동 및 통합 DB 집계 중...", eta=0)
+
+    # 1. B2C 요약 재집계
+    conn.execute("DELETE FROM daily_summary;")
+    conn.execute("""
+    INSERT OR REPLACE INTO daily_summary
+    SELECT 
+        영업마감일자,
+        COALESCE(센터, '미지정') AS 센터,
+        COALESCE(고객사, '미지정') AS 고객사,
+        COALESCE(`배송 속성`, '미지정') AS 배송속성,
+        COALESCE(`판매 플랫폼`, '미지정') AS 판매처,
+        COALESCE(`출고 박스`, '미지정') AS 출고박스종류,
+        COALESCE(SKU명, '미지정') AS SKU명,
+        COALESCE(바코드, '미지정') AS 바코드,
+        COUNT(DISTINCT `송장 번호`) AS 출고건수,
+        SUM(CAST(COALESCE(`출고 수량`, 1) AS INTEGER)) AS 총출고수량
+    FROM raw_shipments
+    WHERE 영업마감일자 IS NOT NULL AND 영업마감일자 != ''
+    GROUP BY 영업마감일자, 센터, 고객사, `배송 속성`, `판매 플랫폼`, 출고박스종류, SKU명, 바코드;
+    """)
+
+    # 2. 입고 + 구글시트 연동 요약 재집계
+    df_sheet = pd.DataFrame()
+    if sheets_service:
+        df_sheet = fetch_google_sheets_ib(sheets_service)
+
+    df_raw_inbound = pd.read_sql("SELECT * FROM raw_inbound", conn)
+    if not df_raw_inbound.empty:
+        inbound_grp = df_raw_inbound.groupby(['영업마감일자', '센터', '고객사', '상태', '입고 번호']).agg(
+            바코드수=('바코드', 'nunique'),
+            입고완료수량=('총 검수 완료 수량', lambda x: pd.to_numeric(x, errors='coerce').sum())
+        ).reset_index()
+
+        if not df_sheet.empty:
+            match_col = '작업번호' if '작업번호' in df_sheet.columns else ('입고번호' if '입고번호' in df_sheet.columns else None)
+            if match_col:
+                cols_to_keep = [match_col]
+                for c in ['PLT', 'BOX', '파적BOX']:
+                    if c in df_sheet.columns:
+                        cols_to_keep.append(c)
+                
+                df_sheet_sub = df_sheet[cols_to_keep].copy()
+                rename_dict = {match_col: '입고 번호', 'PLT': 'PLT수', 'BOX': 'BOX수', '파적BOX': '파적BOX수'}
+                df_sheet_sub.rename(columns=rename_dict, inplace=True)
+
+                for col_c in ['PLT수', 'BOX수', '파적BOX수']:
+                    if col_c in df_sheet_sub.columns:
+                        df_sheet_sub[col_c] = pd.to_numeric(df_sheet_sub[col_c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+                    else:
+                        df_sheet_sub[col_c] = 0
+
+                inbound_grp = pd.merge(inbound_grp, df_sheet_sub, on='입고 번호', how='left').fillna(0)
+            else:
+                inbound_grp['PLT수'] = 0
+                inbound_grp['BOX수'] = 0
+                inbound_grp['파적BOX수'] = 0
+        else:
+            inbound_grp['PLT수'] = 0
+            inbound_grp['BOX수'] = 0
+            inbound_grp['파적BOX수'] = 0
+
+        final_inbound_summary = inbound_grp.groupby(['영업마감일자', '센터', '고객사', '상태']).agg(
+            입고건수=('입고 번호', 'nunique'),
+            바코드수=('바코드수', 'sum'),
+            입고완료수량=('입고완료수량', 'sum'),
+            PLT수=('PLT수', 'sum'),
+            BOX수=('BOX수', 'sum'),
+            파적BOX수=('파적BOX수', 'sum')
+        ).reset_index()
+
+        conn.execute("DELETE FROM inbound_summary;")
+        final_inbound_summary.to_sql('inbound_summary', conn, if_exists='append', index=False)
+
+    conn.commit()
+    conn.close()
+
+    upload_db_to_drive(service)
