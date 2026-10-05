@@ -12,8 +12,20 @@ importlib.reload(etl_pipeline)
 
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide")
 
+# CSS: 상단 헤더 버튼 스타일 및 2D/3D 틀고정 테이블 스타일
 st.markdown("""
 <style>
+    /* 상단 모드 선택 버튼 스타일 */
+    .mode-header-container {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 20px;
+        background-color: #111827;
+        padding: 8px;
+        border-radius: 10px;
+        border: 1px solid #374151;
+    }
+    
     .sticky-table-container {
         max-height: 600px;
         overflow-y: auto;
@@ -149,7 +161,35 @@ if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
 df_b2c = load_b2c_data()
 df_inbound = load_inbound_data()
 
-main_mode = st.radio("📌 운영 모드 선택:", ["🏢 메인 : 센터 종합 현황", "🚚 B2C 출고 현황", "📦 입고 현황"], horizontal=True)
+# --- 상단 버튼/텍스트박스 형태의 운영 모드 선택 UI ---
+if 'main_mode_selection' not in st.session_state:
+    st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
+
+btn_col1, btn_col2, btn_col3 = st.columns(3)
+
+with btn_col1:
+    is_active = (st.session_state['main_mode_selection'] == "🏢 메인 : 센터 종합 현황")
+    btn_type = "primary" if is_active else "secondary"
+    if st.button("🏢 메인 : 센터 종합 현황", type=btn_type, use_container_width=True):
+        st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
+        st.rerun()
+
+with btn_col2:
+    is_active = (st.session_state['main_mode_selection'] == "🚚 B2C 출고 현황")
+    btn_type = "primary" if is_active else "secondary"
+    if st.button("🚚 B2C 출고 현황", type=btn_type, use_container_width=True):
+        st.session_state['main_mode_selection'] = "🚚 B2C 출고 현황"
+        st.rerun()
+
+with btn_col3:
+    is_active = (st.session_state['main_mode_selection'] == "📦 입고 현황")
+    btn_type = "primary" if is_active else "secondary"
+    if st.button("📦 입고 현황", type=btn_type, use_container_width=True):
+        st.session_state['main_mode_selection'] = "📦 입고 현황"
+        st.rerun()
+
+main_mode = st.session_state['main_mode_selection']
+st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
 
 # 2D/3D 스티키 테이블 렌더링 함수
 def render_sticky_pivot(df, index_names, key_suffix=""):
