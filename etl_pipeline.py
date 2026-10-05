@@ -122,7 +122,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 입고 Raw 테이블 (상태 열 포함)
+    # 입고 Raw 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS raw_inbound (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, `입고 번호` TEXT,
@@ -131,7 +131,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 입고 + 구글시트 통합 요약 테이블 (상태 구분 포함)
+    # 입고 요약 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS inbound_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
@@ -184,24 +184,28 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         
         df.columns = [str(c).replace(" ", "").strip() for c in df.columns]
 
-        # --- 입고 파일 처리 ---
+        # --- 입고 파일 판별 ---
         if '입고번호' in df.columns or '총검수완료수량' in df.columns or '입고요청서' in file_name:
-            # 상태 및 날짜 우선순위 처리 (승인대기는 최종 변경 일시 -> 없으면 등록일시)
             if '상태' not in df.columns:
                 df['상태'] = '입고 완료'
 
-            date_src = None
-            if '입고완료일시' in df.columns and '최종변경일시' in df.columns:
-                date_src = df['입고완료일시'].fillna(df['최종변경일시'])
+            # 날짜 대체 처리: 입고완료일시 -> 최종변경일시 -> 등록일시
+            date_col = None
+            if '입고완료일시' in df.columns:
+                date_col = '입고완료일시'
             elif '최종변경일시' in df.columns:
-                date_src = df['최종변경일시']
+                date_col = '최종변경일시'
             elif '등록일시' in df.columns:
-                date_src = df['등록일시']
+                date_col = '등록일시'
 
-            if date_src is not None:
+            if date_col:
+                s_date = df[date_col]
+                if '최종변경일시' in df.columns:
+                    s_date = s_date.fillna(df['최종변경일시'])
                 if '등록일시' in df.columns:
-                    date_src = date_src.fillna(df['등록일시'])
-                df['dt_temp'] = pd.to_datetime(date_src, errors='coerce')
+                    s_date = s_date.fillna(df['등록일시'])
+                
+                df['dt_temp'] = pd.to_datetime(s_date, errors='coerce')
                 df['영업마감일자'] = (df['dt_temp'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
             else:
                 df['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
@@ -274,6 +278,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             """
             conn.executemany(insert_sql, df[target_cols].to_numpy().tolist())
 
+        # 처리 완료 파일 이동
         service.files().update(
             fileId=file_id,
             addParents=PROCESSED_FOLDER_ID,
@@ -287,7 +292,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     if progress_callback and total_count > 0:
         progress_callback(current=total_count, total=total_count, filename="구글 시트 연동 및 통합 DB 집계 중...", eta=0)
 
-    # 1. B2C 요약 데이터 재집계
+    # 1. B2C 요약 재집계
     conn.execute("DELETE FROM daily_summary;")
     conn.execute("""
     INSERT OR REPLACE INTO daily_summary
@@ -307,20 +312,18 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     GROUP BY 영업마감일자, 센터, 고객사, `배송 속성`, `판매 플랫폼`, 출고박스종류, SKU명, 바코드;
     """)
 
-    # 2. 구글 시트 연동 및 입고 요약 DB 재집계 (입고번호 중복 제거 + 상태별 고유 건수)
+    # 2. 입고 + 구글시트 연동 요약 재집계
     df_sheet = pd.DataFrame()
     if sheets_service:
         df_sheet = fetch_google_sheets_ib(sheets_service)
 
     df_raw_inbound = pd.read_sql("SELECT * FROM raw_inbound", conn)
     if not df_raw_inbound.empty:
-        # 입고 번호 단위로 중복 제거하여 1차 그룹핑
         inbound_grp = df_raw_inbound.groupby(['영업마감일자', '센터', '고객사', '상태', '입고 번호']).agg(
             바코드수=('바코드', 'nunique'),
             입고완료수량=('총 검수 완료 수량', lambda x: pd.to_numeric(x, errors='coerce').sum())
         ).reset_index()
 
-        # 구글 시트 PLT / BOX 매칭 (작업번호 = 입고 번호)
         if not df_sheet.empty:
             match_col = '작업번호' if '작업번호' in df_sheet.columns else ('입고번호' if '입고번호' in df_sheet.columns else None)
             if match_col:
@@ -349,7 +352,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             inbound_grp['BOX수'] = 0
             inbound_grp['파적BOX수'] = 0
 
-        # 입고번호 고유 건수(nunique) 기반으로 최종 요약 집계
         final_inbound_summary = inbound_grp.groupby(['영업마감일자', '센터', '고객사', '상태']).agg(
             입고건수=('입고 번호', 'nunique'),
             바코드수=('바코드수', 'sum'),
