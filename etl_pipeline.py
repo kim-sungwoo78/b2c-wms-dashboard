@@ -127,7 +127,6 @@ def read_excel_fast(fh):
         rows = sheet.iter_rows(values_only=True)
         headers = list(next(rows))
         
-        # 중복 헤더 처리
         clean_headers = []
         counts = {}
         for h in headers:
@@ -142,6 +141,15 @@ def read_excel_fast(fh):
     except Exception:
         fh.seek(0)
         return pd.read_excel(fh, engine='openpyxl')
+
+def get_single_series(df, col_name, default_val='미지정'):
+    """DataFrame에서 단일 1차원 Series만 안전하게 추출"""
+    if col_name in df.columns:
+        res = df[col_name]
+        if isinstance(res, pd.DataFrame):
+            return res.iloc[:, 0]
+        return res
+    return pd.Series([default_val] * len(df), index=df.index)
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
     download_db_from_drive(service)
@@ -233,8 +241,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 s_date = None
                 for candidate in ['입고 완료 일시', '최종 변경 일시', '등록 일시']:
                     if candidate in df_in.columns:
-                        cand_col = df_in[candidate]
-                        s_date = cand_col.iloc[:, 0] if isinstance(cand_col, pd.DataFrame) else cand_col
+                        s_date = get_single_series(df_in, candidate)
                         break
 
                 if s_date is not None:
@@ -246,10 +253,9 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 df_in['영업마감일자'] = df_in['영업마감일자'].fillna(datetime.now().strftime('%Y-%m-%d'))
 
                 for tc in ['영업마감일자', '센터', '고객사', '상태', '입고 번호', 'SKU명', '바코드']:
-                    if tc not in df_in.columns: df_in[tc] = '미지정'
-                    df_in[tc] = df_in[tc].fillna('미지정')
+                    df_in[tc] = get_single_series(df_in, tc, '미지정').fillna('미지정')
 
-                df_in['총 검수 완료 수량'] = pd.to_numeric(df_in['총 검수 완료 수량'], errors='coerce').fillna(0)
+                df_in['총 검수 완료 수량'] = pd.to_numeric(get_single_series(df_in, '총 검수 완료 수량', 0), errors='coerce').fillna(0)
 
                 in_grp = df_in.groupby(['영업마감일자', '센터', '고객사', '상태', '입고 번호']).agg(
                     바코드수=('바코드', 'nunique'),
@@ -278,12 +284,12 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     ))
 
             else:
-                # --- B2C 출고 파싱 정밀 매칭 (송장 상세 제외!) ---
+                # --- B2C 출고 파싱 정밀 매칭 (1D Series 보장) ---
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
                     if '상세' in clean_c: 
-                        continue  # '송장 상세' B열 제외!
+                        continue  # B열 '송장 상세' 제외
                     if '센터' in clean_c: col_map_b2c[orig_c] = '센터'
                     elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
                     elif '배송' in clean_c or '유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
@@ -295,8 +301,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     elif '출고수량' in clean_c or '수량' in clean_c or '수' in clean_c: col_map_b2c[orig_c] = '총출고수량'
 
                 df_b2c_f = df.rename(columns=col_map_b2c)
-
-                # 셀 병합 대비 위쪽 값으로 채우기 (Forward Fill)
                 df_b2c_f = df_b2c_f.ffill()
 
                 date_col_name = None
@@ -307,10 +311,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         break
 
                 if date_col_name is not None:
-                    raw_date_data = df_b2c_f[date_col_name]
-                    if isinstance(raw_date_data, pd.DataFrame):
-                        raw_date_data = raw_date_data.iloc[:, 0]
-                    
+                    raw_date_data = get_single_series(df_b2c_f, date_col_name)
                     df_b2c_f['dt_temp'] = pd.to_datetime(raw_date_data, errors='coerce')
                     df_b2c_f['영업마감일자'] = (df_b2c_f['dt_temp'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
                 else:
@@ -318,21 +319,19 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
                 df_b2c_f['영업마감일자'] = df_b2c_f['영업마감일자'].fillna(datetime.now().strftime('%Y-%m-%d'))
 
-                for tc in ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드', '송장번호']:
-                    if tc not in df_b2c_f.columns: df_b2c_f[tc] = '미지정'
-                    df_b2c_f[tc] = df_b2c_f[tc].fillna('미지정')
+                # 주요 컬럼들을 1D Series로 안전하게 치환
+                for tc in ['센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드']:
+                    df_b2c_f[tc] = get_single_series(df_b2c_f, tc, '미지정').fillna('미지정')
 
-                sj_col = df_b2c_f['송장번호']
-                if isinstance(sj_col, pd.DataFrame):
-                    df_b2c_f['송장번호'] = sj_col.iloc[:, 0]
+                sj_series = get_single_series(df_b2c_f, '송장번호', '미지정')
+                df_b2c_f['송장번호'] = sj_series.fillna('미지정')
 
-                qty_col = df_b2c_f['총출고수량']
-                if isinstance(qty_col, pd.DataFrame):
-                    qty_col = qty_col.iloc[:, 0]
-                df_b2c_f['총출고수량'] = pd.to_numeric(qty_col, errors='coerce').fillna(1)
+                qty_series = get_single_series(df_b2c_f, '총출고수량', 1)
+                df_b2c_f['총출고수량'] = pd.to_numeric(qty_series, errors='coerce').fillna(1)
 
-                # 유효한 송장번호만 필터링 ('상세 보기'나 빈값 제외)
-                df_b2c_f = df_b2c_f[~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)]
+                # '상세 보기' 문구 필터링
+                valid_mask = ~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)
+                df_b2c_f = df_b2c_f[valid_mask]
 
                 b2c_sum = df_b2c_f.groupby(['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드']).agg(
                     출고건수=('송장번호', 'nunique'),
