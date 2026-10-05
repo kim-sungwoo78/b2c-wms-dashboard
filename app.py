@@ -12,18 +12,24 @@ importlib.reload(etl_pipeline)
 
 st.set_page_config(page_title="B2C 출고현황 동적 대시보드", layout="wide")
 
-# Streamlit Dataframe 행 상단 고정 CSS 타깃팅 보완
+# 엑셀 틀고정 기능 (컬럼 헤더 + 첫 번째 '★ 일별 합계' 행 상단 고정)
 st.markdown("""
 <style>
-    /* 테이블 첫 번째 데이터 행 Sticky 고정 */
-    div[data-testid="stDataFrame"] div[role="grid"] div[role="row"]:nth-child(2) {
+    /* 표 내부 첫 번째 행(★ 일별 합계) 엑셀 틀고정 스타일 */
+    div[data-testid="stDataFrame"] table tbody tr:nth-child(1) {
         position: sticky !important;
-        top: 35px !important;
-        z-index: 99 !important;
-        background-color: #1f2937 !important;
-        color: #facc15 !important;
+        top: 0px !important;
+        z-index: 100 !important;
+        background-color: #1a202c !important;
+        color: #f6ad55 !important;
         font-weight: bold !important;
-        border-bottom: 2px solid #eab308 !important;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.5) !important;
+    }
+    div[data-testid="stDataFrame"] table tbody tr:nth-child(1) td {
+        background-color: #1a202c !important;
+        color: #f6ad55 !important;
+        font-weight: bold !important;
+        border-bottom: 2px solid #ed8936 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -139,7 +145,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 SKU별 출고량"
 ])
 
-# Tab 1: 센터/고객사별 일자 출고현황
+# Tab 1: 센터/고객사별 일자 출고현황 (단일 표 & 틀고정)
 with tab1:
     st.header("센터 & 고객사별 일자 출고현황 (06시 영업마감 기준)")
     if not df_raw.empty:
@@ -199,15 +205,11 @@ with tab1:
             total_idx = pd.MultiIndex.from_tuples([("★ 일별 합계", "전체")], names=group_cols) if "보이기" in show_client else pd.Index(["★ 일별 합계"], name="센터")
             total_df = pd.DataFrame([total_series.values], columns=pivot_df.columns, index=total_idx)
 
-            # 상단 고정 안내 요약 카드 뷰 출력
-            st.markdown("#### 📌 선택 조건 일별 합계 요약")
-            st.dataframe(total_df, use_container_width=True, height=75)
-
-            st.markdown("#### 📋 상세 현황 (스크롤 가능)")
+            # 하나의 단일 데이터 표로 병합
             final_df = pd.concat([total_df, body_df])
             final_df.set_index('총 출고건수', append=True, inplace=True)
             
-            st.dataframe(final_df, use_container_width=True, height=500)
+            st.dataframe(final_df, use_container_width=True, height=600)
 
 # Tab 2: 배송속성 / 판매처별 현황
 with tab2:
@@ -221,12 +223,9 @@ with tab2:
         total_series2 = pivot_df2.sum(axis=0)
         total_df2 = pd.DataFrame([total_series2.values], columns=pivot_df2.columns, index=pd.Index(["★ 일별 합계"], name=target_col))
         
-        st.markdown("#### 📌 선택 조건 일별 합계 요약")
-        st.dataframe(total_df2, use_container_width=True, height=75)
-        
         final_df2 = pd.concat([total_df2, pivot_df2])
         final_df2.set_index('총 출고건수', append=True, inplace=True)
-        st.dataframe(final_df2, use_container_width=True, height=500)
+        st.dataframe(final_df2, use_container_width=True, height=600)
 
 # Tab 3: 출고박스별 현황
 with tab3:
@@ -237,12 +236,9 @@ with tab3:
         total_series3 = pivot_df3.sum(axis=0)
         total_df3 = pd.DataFrame([total_series3.values], columns=pivot_df3.columns, index=pd.Index(["★ 일별 합계"], name="출고박스 규격"))
         
-        st.markdown("#### 📌 선택 조건 일별 합계 요약")
-        st.dataframe(total_df3, use_container_width=True, height=75)
-        
         final_df3 = pd.concat([total_df3, pivot_df3])
         final_df3.set_index('총 출고건수', append=True, inplace=True)
-        st.dataframe(final_df3, use_container_width=True, height=500)
+        st.dataframe(final_df3, use_container_width=True, height=600)
 
 # Tab 4: SKU별 출고량
 with tab4:
