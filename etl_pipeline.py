@@ -120,14 +120,23 @@ def list_files_in_folder(service, folder_id):
         return []
 
 def read_excel_fast(fh):
-    """대용량 엑셀 메모리 절약 읽기"""
+    """셀 병합 및 공백 대응 초경량 엑셀 읽기"""
     try:
         wb = openpyxl.load_workbook(fh, read_only=True, data_only=True)
         sheet = wb.active
         rows = sheet.iter_rows(values_only=True)
-        headers = next(rows)
+        headers = list(next(rows))
+        
+        # 중복 헤더 처리
+        clean_headers = []
+        counts = {}
+        for h in headers:
+            h_str = str(h).strip() if h is not None else "Unnamed"
+            counts[h_str] = counts.get(h_str, 0) + 1
+            clean_headers.append(f"{h_str}_{counts[h_str]}" if counts[h_str] > 1 else h_str)
+
         data = [r for r in rows if any(v is not None for v in r)]
-        df = pd.DataFrame(data, columns=headers)
+        df = pd.DataFrame(data, columns=clean_headers)
         wb.close()
         return df
     except Exception:
@@ -222,19 +231,13 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     df_in['상태'] = '입고 완료'
 
                 s_date = None
-                if '입고 완료 일시' in df_in.columns:
-                    s_date = df_in['입고 완료 일시']
-                elif '최종 변경 일시' in df_in.columns:
-                    s_date = df_in['최종 변경 일시']
-                elif '등록 일시' in df_in.columns:
-                    s_date = df_in['등록 일시']
+                for candidate in ['입고 완료 일시', '최종 변경 일시', '등록 일시']:
+                    if candidate in df_in.columns:
+                        cand_col = df_in[candidate]
+                        s_date = cand_col.iloc[:, 0] if isinstance(cand_col, pd.DataFrame) else cand_col
+                        break
 
                 if s_date is not None:
-                    if '최종 변경 일시' in df_in.columns:
-                        s_date = s_date.fillna(df_in['최종 변경 일시'])
-                    if '등록 일시' in df_in.columns:
-                        s_date = s_date.fillna(df_in['등록 일시'])
-                    
                     df_in['dt_temp'] = pd.to_datetime(s_date, errors='coerce')
                     df_in['영업마감일자'] = (df_in['dt_temp'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
                 else:
@@ -275,10 +278,12 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     ))
 
             else:
-                # --- B2C 출고 유연한 매칭 ---
+                # --- B2C 출고 파싱 정밀 매칭 (송장 상세 제외!) ---
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
+                    if '상세' in clean_c: 
+                        continue  # '송장 상세' B열 제외!
                     if '센터' in clean_c: col_map_b2c[orig_c] = '센터'
                     elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
                     elif '배송' in clean_c or '유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
@@ -291,15 +296,22 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
                 df_b2c_f = df.rename(columns=col_map_b2c)
 
-                date_col = None
+                # 셀 병합 대비 위쪽 값으로 채우기 (Forward Fill)
+                df_b2c_f = df_b2c_f.ffill()
+
+                date_col_name = None
                 for c in df_b2c_f.columns:
                     clean_str = str(c).replace(" ", "").strip()
                     if any(k in clean_str for k in ['마감', '출고일', '일시', '일자', '날짜', 'Date', 'date']):
-                        date_col = c
+                        date_col_name = c
                         break
 
-                if date_col:
-                    df_b2c_f['dt_temp'] = pd.to_datetime(df_b2c_f[date_col], errors='coerce')
+                if date_col_name is not None:
+                    raw_date_data = df_b2c_f[date_col_name]
+                    if isinstance(raw_date_data, pd.DataFrame):
+                        raw_date_data = raw_date_data.iloc[:, 0]
+                    
+                    df_b2c_f['dt_temp'] = pd.to_datetime(raw_date_data, errors='coerce')
                     df_b2c_f['영업마감일자'] = (df_b2c_f['dt_temp'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
                 else:
                     df_b2c_f['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
@@ -310,7 +322,17 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     if tc not in df_b2c_f.columns: df_b2c_f[tc] = '미지정'
                     df_b2c_f[tc] = df_b2c_f[tc].fillna('미지정')
 
-                df_b2c_f['총출고수량'] = pd.to_numeric(df_b2c_f.get('총출고수량', 1), errors='coerce').fillna(1)
+                sj_col = df_b2c_f['송장번호']
+                if isinstance(sj_col, pd.DataFrame):
+                    df_b2c_f['송장번호'] = sj_col.iloc[:, 0]
+
+                qty_col = df_b2c_f['총출고수량']
+                if isinstance(qty_col, pd.DataFrame):
+                    qty_col = qty_col.iloc[:, 0]
+                df_b2c_f['총출고수량'] = pd.to_numeric(qty_col, errors='coerce').fillna(1)
+
+                # 유효한 송장번호만 필터링 ('상세 보기'나 빈값 제외)
+                df_b2c_f = df_b2c_f[~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)]
 
                 b2c_sum = df_b2c_f.groupby(['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드']).agg(
                     출고건수=('송장번호', 'nunique'),
