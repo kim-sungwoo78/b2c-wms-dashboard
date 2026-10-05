@@ -8,7 +8,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
-# 구글 드라이브 폴더 ID 지정
+# 구글 드라이브 폴더 ID
 TOP_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'       # 대시보드 업로드 (상위 폴더)
 B2C_FOLDER_ID = '1ArGfyeVpZDJYUrdlGNSCrhj734JrqGW9'        # B2C 폴더
 INBOUND_FOLDER_ID = '1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp'    # 입고 폴더
@@ -36,47 +36,53 @@ def get_sheets_service(creds_dict):
     return build('sheets', '4', credentials=creds)
 
 def download_db_from_drive(service):
-    query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
-    results = service.files().list(
-        q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
-    ).execute()
-    files = results.get('files', [])
+    try:
+        query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
+        results = service.files().list(
+            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
+        ).execute()
+        files = results.get('files', [])
 
-    if files:
-        file_id = files[0]['id']
-        request = service.files().get_media(fileId=file_id)
-        with open(DB_PATH, 'wb') as f:
-            downloader = MediaIoBaseDownload(f, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-        return True
+        if files:
+            file_id = files[0]['id']
+            request = service.files().get_media(fileId=file_id)
+            with open(DB_PATH, 'wb') as f:
+                downloader = MediaIoBaseDownload(f, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+            return True
+    except Exception as e:
+        print(f"DB Download Error: {e}")
     return False
 
 def upload_db_to_drive(service):
     if not os.path.exists(DB_PATH):
         return
-    query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
-    results = service.files().list(
-        q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
-    ).execute()
-    files = results.get('files', [])
-
-    media = MediaFileUpload(DB_PATH, mimetype='application/x-sqlite3', resumable=True)
-
-    if files:
-        file_id = files[0]['id']
-        service.files().update(
-            fileId=file_id, media_body=media, supportsAllDrives=True
+    try:
+        query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
+        results = service.files().list(
+            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
         ).execute()
-    else:
-        file_metadata = {
-            'name': DB_PATH,
-            'parents': [TOP_FOLDER_ID]
-        }
-        service.files().create(
-            body=file_metadata, media_body=media, supportsAllDrives=True
-        ).execute()
+        files = results.get('files', [])
+
+        media = MediaFileUpload(DB_PATH, mimetype='application/x-sqlite3', resumable=True)
+
+        if files:
+            file_id = files[0]['id']
+            service.files().update(
+                fileId=file_id, media_body=media, supportsAllDrives=True
+            ).execute()
+        else:
+            file_metadata = {
+                'name': DB_PATH,
+                'parents': [TOP_FOLDER_ID]
+            }
+            service.files().create(
+                body=file_metadata, media_body=media, supportsAllDrives=True
+            ).execute()
+    except Exception as e:
+        print(f"DB Upload Error: {e}")
 
 def fetch_google_sheets_ib(sheets_service):
     try:
@@ -106,7 +112,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn = sqlite3.connect(DB_PATH)
     
-    # B2C Raw 테이블
+    # Raw 테이블 생성
     conn.execute("""
     CREATE TABLE IF NOT EXISTS raw_shipments (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, `배송 속성` TEXT,
@@ -116,7 +122,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
     
-    # B2C 요약 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -125,7 +130,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 입고 Raw 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS raw_inbound (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, `입고 번호` TEXT,
@@ -134,7 +138,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 입고 요약 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS inbound_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
@@ -144,28 +147,30 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 각 폴더별 대상 파일 수집 (TOP_FOLDER, B2C_FOLDER, INBOUND_FOLDER 모두 검사)
+    # 폴더별 스캔
     folder_mapping = [
-        (B2C_FOLDER_ID, 'B2C'),
         (INBOUND_FOLDER_ID, 'INBOUND'),
+        (B2C_FOLDER_ID, 'B2C'),
         (TOP_FOLDER_ID, 'AUTO')
     ]
 
     all_target_files = []
     for folder_id, category in folder_mapping:
-        query = f"'{folder_id}' in parents and trashed = false and name != '{DB_PATH}'"
-        results = service.files().list(
-            q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
-        ).execute()
-        files = results.get('files', [])
-        for f in files:
-            if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv'):
-                f['category'] = category
-                f['source_folder_id'] = folder_id
-                all_target_files.append(f)
+        try:
+            query = f"'{folder_id}' in parents and trashed = false and name != '{DB_PATH}'"
+            results = service.files().list(
+                q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
+            ).execute()
+            files = results.get('files', [])
+            for f in files:
+                if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv'):
+                    f['category'] = category
+                    f['source_folder_id'] = folder_id
+                    all_target_files.append(f)
+        except Exception as e:
+            print(f"Folder list error ({folder_id}): {e}")
 
     total_count = len(all_target_files)
-    new_files_processed = False
     start_time = time.time()
 
     for idx, f in enumerate(all_target_files, 1):
@@ -309,19 +314,23 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 """
                 conn.executemany(insert_sql, df_b2c_f[target_cols].to_numpy().tolist())
 
-            # 처리 완료 폴더로 이동
+            # 처리 완료 폴더로 안전하게 이동
             try:
+                # 1. 파일의 현재 parent 폴더 목록 확인
+                file_metadata = service.files().get(fileId=file_id, fields='parents', supportsAllDrives=True).execute()
+                previous_parents = ",".join(file_metadata.get('parents', []))
+                
+                # 2. 부모 폴더 변경
                 service.files().update(
                     fileId=file_id,
                     addParents=PROCESSED_FOLDER_ID,
-                    removeParents=src_folder,
+                    removeParents=previous_parents,
                     supportsAllDrives=True,
                     fields='id, parents'
                 ).execute()
             except Exception as move_e:
-                print(f"Move error: {move_e}")
+                print(f"Move error for {file_name}: {move_e}")
 
-            new_files_processed = True
         except Exception as file_e:
             print(f"Error processing file {file_name}: {file_e}")
             continue
