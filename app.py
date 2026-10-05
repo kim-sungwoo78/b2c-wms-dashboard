@@ -94,7 +94,7 @@ def run_sync():
                     eta_str = f"{mins}분 {secs}초" if mins > 0 else f"{secs}초"
                     status_text.markdown(f"⏳ **동기화 및 구글 시트 매칭 중 ({pct}%)** - `{current}/{total}`개 완료\n\n📄 **처리 중**: `{filename}` | ⏱️ **남은 시간**: 약 **{eta_str}**")
                 else:
-                    status_text.info("처리할 새로운 엑셀 파일이 없지만 구글 시트 매칭을 최신화합니다.")
+                    status_text.info("처리 중입니다...")
 
             etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
             
@@ -149,7 +149,6 @@ if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
 df_b2c = load_b2c_data()
 df_inbound = load_inbound_data()
 
-# 최상단 메인 대메뉴 (센터 현황 / B2C 출고 / 입고 현황)
 main_mode = st.radio("📌 운영 모드 선택:", ["🏢 메인 : 센터 종합 현황", "🚚 B2C 출고 현황", "📦 입고 현황"], horizontal=True)
 
 def render_sticky_pivot(df, index_names, key_suffix=""):
@@ -161,7 +160,7 @@ def render_sticky_pivot(df, index_names, key_suffix=""):
     
     cols = [c for c in df.columns]
     for c in cols:
-        is_total_col = (c in ['총 출고건수', '총 입고완료수량', '총 PLT수', '총 BOX수'])
+        is_total_col = ("총 " in str(c) or "합계" in str(c)) and "월" not in str(c)
         is_m_sum = ("월 합계" in str(c) or ("월" in str(c) and "일자" not in str(c) and "-" not in str(c))) and not is_total_col
         
         if is_total_col:
@@ -187,7 +186,7 @@ def render_sticky_pivot(df, index_names, key_suffix=""):
             html.append(f'<td class="freeze-col-1">{idx_val}</td>')
             
         for c_name, val in zip(cols, row):
-            is_total_col = (c_name in ['총 출고건수', '총 입고완료수량', '총 PLT수', '총 BOX수'])
+            is_total_col = ("총 " in str(c_name) or "합계" in str(c_name)) and "월" not in str(c_name)
             is_m_sum = ("월 합계" in str(c_name) or ("월" in str(c_name) and "-" not in str(c_name))) and not is_total_col
             
             val_str = f"{int(val):,}" if pd.notnull(val) and isinstance(val, (int, float)) else str(val)
@@ -217,13 +216,12 @@ def render_sticky_pivot(df, index_names, key_suffix=""):
         key=f"dl_table_{key_suffix}"
     )
 
-# --- 1. 메인 센터 종합 현황 모드 ---
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 일별 / 월별 실적 요약")
     
-    total_b2c_qty = df_b2c['출고건수'].sum() if not df_b2c.empty else 0
-    total_inbound_qty = df_inbound['입고완료수량'].sum() if not df_inbound.empty else 0
-    total_plt_qty = df_inbound['PLT수'].sum() if not df_inbound.empty else 0
+    total_b2c_qty = df_b2c['출고건수'].sum() if not df_b2c.empty and '출고건수' in df_b2c.columns else 0
+    total_inbound_qty = df_inbound['입고완료수량'].sum() if not df_inbound.empty and '입고완료수량' in df_inbound.columns else 0
+    total_plt_qty = df_inbound['PLT수'].sum() if not df_inbound.empty and 'PLT수' in df_inbound.columns else 0
     
     kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric("🚚 총 B2C 출고건수", f"{total_b2c_qty:,} 건")
@@ -231,20 +229,22 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     kpi3.metric("🚜 총 입고 PLT 수", f"{total_plt_qty:,} PLT")
     
     st.markdown("---")
-    st.subheader("📋 입고 & B2C 출고 센터별 통합 비교표")
+    st.subheader("📋 B2C 출고 센터별 일자 현황")
     
-    if not df_b2c.empty or not df_inbound.empty:
-        df_b2c_sub = df_b2c.groupby(['영업마감일자', '센터'])['출고건수'].sum().reset_index()
-        df_b2c_sub.rename(columns={'출고건수': 'B2C출고건수'}, inplace=True)
+    if not df_b2c.empty:
+        pivot_b2c_main = pd.pivot_table(df_b2c, index=['센터'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
+        pivot_b2c_main['총 출고건수'] = pivot_b2c_main.sum(axis=1)
+        cols_b2c_m = ['총 출고건수'] + [c for c in pivot_b2c_main.columns if c != '총 출고건수']
+        render_sticky_pivot(pivot_b2c_main[cols_b2c_m], ['센터'], key_suffix="main_b2c_summary")
         
-        df_inbound_sub = df_inbound.groupby(['영업마감일자', '센터'])[['입고완료수량', 'PLT수']].sum().reset_index()
-        
-        merged_main = pd.merge(df_b2c_sub, df_inbound_sub, on=['영업마감일자', '센터'], how='outer').fillna(0)
-        
-        pivot_main = pd.pivot_table(merged_main, index=['센터'], columns='영업마감일자', values=['B2C출고건수', '입고완료수량'], aggfunc='sum', fill_value=0)
-        st.dataframe(pivot_main, use_container_width=True)
+    if not df_inbound.empty:
+        st.markdown("---")
+        st.subheader("📋 입고 센터별 일자 현황")
+        pivot_main_in = pd.pivot_table(df_inbound, index=['센터', '고객사'], columns='영업마감일자', values='입고완료수량', aggfunc='sum', fill_value=0)
+        pivot_main_in['총 입고완료수량'] = pivot_main_in.sum(axis=1)
+        cols_in_m = ['총 입고완료수량'] + [c for c in pivot_main_in.columns if c != '총 입고완료수량']
+        render_sticky_pivot(pivot_main_in[cols_in_m], ['센터', '고객사'], key_suffix="main_in_summary")
 
-# --- 2. B2C 출고 현황 모드 ---
 elif main_mode == "🚚 B2C 출고 현황":
     st.header("🚚 B2C 출고 상세 현황")
     if not df_b2c.empty:
@@ -253,7 +253,6 @@ elif main_mode == "🚚 B2C 출고 현황":
         cols_order = ['총 출고건수'] + [c for c in pivot_df.columns if c != '총 출고건수']
         render_sticky_pivot(pivot_df[cols_order], ['센터'], key_suffix="b2c_main")
 
-# --- 3. 입고 현황 모드 (구글 시트 연동) ---
 elif main_mode == "📦 입고 현황":
     st.header("📦 입고 검수 및 PLT / BOX 정산 현황 (구글 시트 자동 매칭)")
     if not df_inbound.empty:
@@ -269,17 +268,20 @@ elif main_mode == "📦 입고 현황":
         }
         target_val = col_map_dict[metric_val]
         
-        pivot_inbound = pd.pivot_table(df_inbound, index=['센터', '고객사'], columns='영업마감일자', values=target_val, aggfunc='sum', fill_value=0)
-        total_col_name = f"총 {target_val}"
-        pivot_inbound[total_col_name] = pivot_inbound.sum(axis=1)
-        
-        cols_in_order = [total_col_name] + [c for c in pivot_inbound.columns if c != total_col_name]
-        pivot_inbound = pivot_inbound[cols_in_order]
-        
-        total_series_in = pivot_inbound.sum(axis=0)
-        total_df_in = pd.DataFrame([total_series_in.values], columns=pivot_inbound.columns, index=pd.MultiIndex.from_tuples([("★ 전체 합계", "전체")], names=['센터', '고객사']))
-        
-        final_inbound = pd.concat([total_df_in, pivot_inbound])
-        render_sticky_pivot(final_inbound, ['센터', '고객사'], key_suffix="inbound_tab")
+        if target_val in df_inbound.columns:
+            pivot_inbound = pd.pivot_table(df_inbound, index=['센터', '고객사'], columns='영업마감일자', values=target_val, aggfunc='sum', fill_value=0)
+            total_col_name = f"총 {target_val}"
+            pivot_inbound[total_col_name] = pivot_inbound.sum(axis=1)
+            
+            cols_in_order = [total_col_name] + [c for c in pivot_inbound.columns if c != total_col_name]
+            pivot_inbound = pivot_inbound[cols_in_order]
+            
+            total_series_in = pivot_inbound.sum(axis=0)
+            total_df_in = pd.DataFrame([total_series_in.values], columns=pivot_inbound.columns, index=pd.MultiIndex.from_tuples([("★ 전체 합계", "전체")], names=['센터', '고객사']))
+            
+            final_inbound = pd.concat([total_df_in, pivot_inbound])
+            render_sticky_pivot(final_inbound, ['센터', '고객사'], key_suffix="inbound_tab")
+        else:
+            st.warning("선택한 입고 항목 컬럼이 데이터에 없습니다.")
     else:
         st.info("입고 데이터가 존재하지 않습니다. 구글 드라이브에 입고요청서 엑셀 파일을 올린 후 [🔄 드라이브 & 구글시트 동기화]를 눌러주세요.")
