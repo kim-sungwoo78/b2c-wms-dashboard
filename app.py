@@ -4,7 +4,7 @@ import json
 import sqlite3
 import pandas as pd
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 import etl_pipeline
 import importlib
 
@@ -30,7 +30,6 @@ def run_sync():
             creds_dict = dict(st.secrets["gcp_service_account"])
             service = etl_pipeline.get_drive_service(creds_dict)
             
-            # 진행 바 및 메시지 영역 UI 생성
             progress_bar = st.progress(0)
             status_text = st.empty()
 
@@ -198,7 +197,7 @@ with tab3:
         final_df3.set_index('총 출고건수', append=True, inplace=True)
         st.dataframe(final_df3, use_container_width=True)
 
-# Tab 4: SKU별 출고량
+# Tab 4: SKU별 출고량 (빠른 기간 선택 버튼 대안 A 적용)
 with tab4:
     st.header("🔍 SKU별 출고량 (기간 선택 집계)")
     if not df_raw.empty:
@@ -206,11 +205,49 @@ with tab4:
         min_date = df_raw['영업마감일자_dt'].min().date() if not df_raw['영업마감일자_dt'].isna().all() else datetime.now().date()
         max_date = df_raw['영업마감일자_dt'].max().date() if not df_raw['영업마감일자_dt'].isna().all() else datetime.now().date()
 
+        # 세션 상태 날짜 초기화
+        if 'sku_start_date' not in st.session_state:
+            st.session_state['sku_start_date'] = min_date
+        if 'sku_end_date' not in st.session_state:
+            st.session_state['sku_end_date'] = max_date
+
+        st.subheader("📅 빠른 기간 선택")
+        btn_col1, btn_col2, btn_col3, btn_col4, btn_col5 = st.columns(5)
+        
+        with btn_col1:
+            if st.button("오늘", key="btn_today", use_container_width=True):
+                st.session_state['sku_start_date'] = max_date
+                st.session_state['sku_end_date'] = max_date
+                st.rerun()
+        with btn_col2:
+            if st.button("일주일", key="btn_week", use_container_width=True):
+                st.session_state['sku_start_date'] = max(min_date, max_date - timedelta(days=7))
+                st.session_state['sku_end_date'] = max_date
+                st.rerun()
+        with btn_col3:
+            if st.button("1개월", key="btn_1m", use_container_width=True):
+                st.session_state['sku_start_date'] = max(min_date, max_date - timedelta(days=30))
+                st.session_state['sku_end_date'] = max_date
+                st.rerun()
+        with btn_col4:
+            if st.button("3개월", key="btn_3m", use_container_width=True):
+                st.session_state['sku_start_date'] = max(min_date, max_date - timedelta(days=90))
+                st.session_state['sku_end_date'] = max_date
+                st.rerun()
+        with btn_col5:
+            if st.button("전체 기간", key="btn_all", use_container_width=True):
+                st.session_state['sku_start_date'] = min_date
+                st.session_state['sku_end_date'] = max_date
+                st.rerun()
+
+        # 날짜 직접 지정 피커
         date_col1, date_col2 = st.columns(2)
         with date_col1:
-            start_date = st.date_input("📅 조회 시작일자:", value=min_date, key="tab4_start_date")
+            start_date = st.date_input("📅 조회 시작일자:", value=st.session_state['sku_start_date'], key="tab4_start_picker")
+            st.session_state['sku_start_date'] = start_date
         with date_col2:
-            end_date = st.date_input("📅 조회 종료일자:", value=max_date, key="tab4_end_date")
+            end_date = st.date_input("📅 조회 종료일자:", value=st.session_state['sku_end_date'], key="tab4_end_picker")
+            st.session_state['sku_end_date'] = end_date
 
         col1, col2 = st.columns(2)
         with col1:
