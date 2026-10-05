@@ -12,20 +12,8 @@ importlib.reload(etl_pipeline)
 
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide")
 
-# CSS: 상단 헤더 버튼 스타일 및 2D/3D 틀고정 테이블 스타일
 st.markdown("""
 <style>
-    /* 상단 모드 선택 버튼 스타일 */
-    .mode-header-container {
-        display: flex;
-        gap: 12px;
-        margin-bottom: 20px;
-        background-color: #111827;
-        padding: 8px;
-        border-radius: 10px;
-        border: 1px solid #374151;
-    }
-    
     .sticky-table-container {
         max-height: 600px;
         overflow-y: auto;
@@ -161,29 +149,26 @@ if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
 df_b2c = load_b2c_data()
 df_inbound = load_inbound_data()
 
-# --- 상단 버튼/텍스트박스 형태의 운영 모드 선택 UI ---
+# 상단 모드 버튼 UI
 if 'main_mode_selection' not in st.session_state:
     st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
 
 btn_col1, btn_col2, btn_col3 = st.columns(3)
 
 with btn_col1:
-    is_active = (st.session_state['main_mode_selection'] == "🏢 메인 : 센터 종합 현황")
-    btn_type = "primary" if is_active else "secondary"
+    btn_type = "primary" if (st.session_state['main_mode_selection'] == "🏢 메인 : 센터 종합 현황") else "secondary"
     if st.button("🏢 메인 : 센터 종합 현황", type=btn_type, use_container_width=True):
         st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
         st.rerun()
 
 with btn_col2:
-    is_active = (st.session_state['main_mode_selection'] == "🚚 B2C 출고 현황")
-    btn_type = "primary" if is_active else "secondary"
+    btn_type = "primary" if (st.session_state['main_mode_selection'] == "🚚 B2C 출고 현황") else "secondary"
     if st.button("🚚 B2C 출고 현황", type=btn_type, use_container_width=True):
         st.session_state['main_mode_selection'] = "🚚 B2C 출고 현황"
         st.rerun()
 
 with btn_col3:
-    is_active = (st.session_state['main_mode_selection'] == "📦 입고 현황")
-    btn_type = "primary" if is_active else "secondary"
+    btn_type = "primary" if (st.session_state['main_mode_selection'] == "📦 입고 현황") else "secondary"
     if st.button("📦 입고 현황", type=btn_type, use_container_width=True):
         st.session_state['main_mode_selection'] = "📦 입고 현황"
         st.rerun()
@@ -191,7 +176,6 @@ with btn_col3:
 main_mode = st.session_state['main_mode_selection']
 st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
 
-# 2D/3D 스티키 테이블 렌더링 함수
 def render_sticky_pivot(df, index_names, key_suffix=""):
     html = ['<div class="sticky-table-container"><table class="sticky-table"><thead><tr>']
     num_indices = len(index_names)
@@ -297,36 +281,93 @@ def inject_monthly_sum_columns(pivot_df):
 # 1. 메인 센터 종합 현황 모드
 # ==========================================
 if main_mode == "🏢 메인 : 센터 종합 현황":
-    st.header("📊 센터 종합 일별 / 월별 실적 요약")
+    st.header("📊 센터 종합 운영 실적 요약")
     
-    total_b2c_qty = df_b2c['출고건수'].sum() if not df_b2c.empty and '출고건수' in df_b2c.columns else 0
-    total_inbound_qty = df_inbound['입고완료수량'].sum() if not df_inbound.empty and '입고완료수량' in df_inbound.columns else 0
-    total_plt_qty = df_inbound['PLT수'].sum() if not df_inbound.empty and 'PLT수' in df_inbound.columns else 0
+    # 데이터 내 존재하는 전체 월(Month) 목록 추출
+    b2c_months = set(df_b2c['영업마감일자'].str.slice(0, 7).dropna().unique()) if not df_b2c.empty and '영업마감일자' in df_b2c.columns else set()
+    inbound_months = set(df_inbound['영업마감일자'].str.slice(0, 7).dropna().unique()) if not df_inbound.empty and '영업마감일자' in df_inbound.columns else set()
     
+    all_months = sorted(list(b2c_months.union(inbound_months)))
+    month_options = ["전체 기간"] + [f"{m[5:7]}월 ({m})" for m in all_months]
+    
+    col_filter1, col_filter2 = st.columns([2, 4])
+    with col_filter1:
+        selected_month_label = st.selectbox("📅 조회 월 선택:", month_options)
+        
+    # 선택된 월 필터링
+    filtered_b2c = df_b2c.copy() if not df_b2c.empty else pd.DataFrame()
+    filtered_inbound = df_inbound.copy() if not df_inbound.empty else pd.DataFrame()
+    
+    if selected_month_label != "전체 기간":
+        target_m = selected_month_label.split('(')[1].replace(')', '').strip()
+        if not filtered_b2c.empty and '영업마감일자' in filtered_b2c.columns:
+            filtered_b2c = filtered_b2c[filtered_b2c['영업마감일자'].str.startswith(target_m)]
+        if not filtered_inbound.empty and '영업마감일자' in filtered_inbound.columns:
+            filtered_inbound = filtered_inbound[filtered_inbound['영업마감일자'].str.startswith(target_m)]
+
+    # 3대 핵심 건수 지표 계산
+    total_b2c_cnt = filtered_b2c['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
+    total_inbound_cnt = filtered_inbound['입고건수'].sum() if not filtered_inbound.empty and '입고건수' in filtered_inbound.columns else 0
+    total_b2b_cnt = 0 # 추후 B2B 연동 예정
+
+    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
     kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("🚚 총 B2C 출고건수", f"{total_b2c_qty:,} 건")
-    kpi2.metric("📦 총 입고 완료 수량", f"{total_inbound_qty:,} EA")
-    kpi3.metric("🚜 총 입고 PLT 수", f"{total_plt_qty:,} PLT")
+    kpi1.metric("🚚 B2C 출고건수", f"{total_b2c_cnt:,} 건")
+    kpi2.metric("📦 입고건수", f"{total_inbound_cnt:,} 건")
+    kpi3.metric("🏭 B2B 건수 (연동 준비중)", f"{total_b2b_cnt:,} 건")
     
     st.markdown("---")
-    st.subheader("📋 B2C 출고 센터별 일자 현황")
+    st.subheader("📋 센터별 운영 항목 종합 비교표")
     
-    if not df_b2c.empty:
-        pivot_b2c_main = pd.pivot_table(df_b2c, index=['센터'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
-        pivot_b2c_main['총 출고건수'] = pivot_b2c_main.sum(axis=1)
-        cols_b2c_m = ['총 출고건수'] + [c for c in pivot_b2c_main.columns if c != '총 출고건수']
-        render_sticky_pivot(pivot_b2c_main[cols_b2c_m], ['센터'], key_suffix="main_b2c_summary")
+    # 센터별 3대 건수 종합 비교 데이터프레임 구축
+    summary_rows = []
+    
+    raw_centers = set()
+    if not df_b2c.empty and '센터' in df_b2c.columns:
+        raw_centers.update(df_b2c['센터'].dropna().unique())
+    if not df_inbound.empty and '센터' in df_inbound.columns:
+        raw_centers.update(df_inbound['센터'].dropna().unique())
         
-    if not df_inbound.empty:
-        st.markdown("---")
-        st.subheader("📋 입고 센터별 일자 현황")
-        pivot_main_in = pd.pivot_table(df_inbound, index=['센터', '고객사'], columns='영업마감일자', values='입고완료수량', aggfunc='sum', fill_value=0)
-        pivot_main_in['총 입고완료수량'] = pivot_main_in.sum(axis=1)
-        cols_in_m = ['총 입고완료수량'] + [c for c in pivot_main_in.columns if c != '총 입고완료수량']
-        render_sticky_pivot(pivot_main_in[cols_in_m], ['센터', '고객사'], key_suffix="main_in_summary")
+    for center_name in sorted(list(raw_centers)):
+        b2c_c = filtered_b2c[filtered_b2c['센터'] == center_name]['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
+        in_c = filtered_inbound[filtered_inbound['센터'] == center_name]['입고건수'].sum() if not filtered_inbound.empty and '입고건수' in filtered_inbound.columns else 0
+        b2b_c = 0
+        
+        summary_rows.append({
+            '센터': center_name,
+            'B2C 출고건수': b2c_c,
+            '입고건수': in_c,
+            'B2B 건수': b2b_c,
+            '총 작업건수': b2c_c + in_c + b2b_c
+        })
+        
+    if summary_rows:
+        df_summary = pd.DataFrame(summary_rows)
+        
+        # 합계 행 추가
+        total_row = pd.DataFrame([{
+            '센터': '★ 전체 합계',
+            'B2C 출고건수': df_summary['B2C 출고건수'].sum(),
+            '입고건수': df_summary['입고건수'].sum(),
+            'B2B 건수': df_summary['B2B 건수'].sum(),
+            '총 작업건수': df_summary['총 작업건수'].sum()
+        }])
+        
+        df_summary_final = pd.concat([total_row, df_summary]).reset_index(drop=True)
+        
+        st.dataframe(
+            df_summary_final.style.format({
+                'B2C 출고건수': '{:,}',
+                '입고건수': '{:,}',
+                'B2B 건수': '{:,}',
+                '총 작업건수': '{:,}'
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
 
 # ==========================================
-# 2. B2C 출고 현황 모드 (기존 4개 서브탭 원복)
+# 2. B2C 출고 현황 모드
 # ==========================================
 elif main_mode == "🚚 B2C 출고 현황":
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -336,7 +377,6 @@ elif main_mode == "🚚 B2C 출고 현황":
         "🔍 SKU별 출고량"
     ])
 
-    # Tab 1: 센터/고객사별 출고현황
     with tab1:
         st.header("센터 & 고객사별 출고현황 (06시 영업마감 기준)")
         if not df_b2c.empty:
@@ -419,7 +459,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 final_df = pd.concat([total_df, body_df])
                 render_sticky_pivot(final_df, group_cols, key_suffix="tab1")
 
-    # Tab 2: 배송속성 / 판매처별 현황
     with tab2:
         st.header("배송 속성 및 판매처별 출고현황")
         if not df_b2c.empty:
@@ -449,7 +488,6 @@ elif main_mode == "🚚 B2C 출고 현황":
             final_df2 = pd.concat([total_df2, pivot_df2])
             render_sticky_pivot(final_df2, [target_col], key_suffix="tab2")
 
-    # Tab 3: 출고박스별 현황
     with tab3:
         st.header("출고박스 규격별 사용 현황")
         if not df_b2c.empty:
@@ -473,7 +511,6 @@ elif main_mode == "🚚 B2C 출고 현황":
             final_df3 = pd.concat([total_df3, pivot_df3])
             render_sticky_pivot(final_df3, ["출고박스 규격"], key_suffix="tab3")
 
-    # Tab 4: SKU별 출고량
     with tab4:
         st.header("🔍 SKU별 출고량 (기간 선택 집계)")
         if not df_b2c.empty:
@@ -573,7 +610,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 )
 
 # ==========================================
-# 3. 입고 현황 모드 (입고 전용 서브 탭 제공)
+# 3. 입고 현황 모드
 # ==========================================
 elif main_mode == "📦 입고 현황":
     in_tab1, in_tab2 = st.tabs([
