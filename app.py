@@ -29,7 +29,25 @@ def run_sync():
         try:
             creds_dict = dict(st.secrets["gcp_service_account"])
             service = etl_pipeline.get_drive_service(creds_dict)
-            etl_pipeline.process_and_update(service)
+            
+            # 진행 바 및 메시지 영역 UI 생성
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def update_progress(current, total, filename, eta):
+                if total > 0:
+                    pct = int((current / total) * 100)
+                    progress_bar.progress(pct)
+                    mins, secs = divmod(eta, 60)
+                    eta_str = f"{mins}분 {secs}초" if mins > 0 else f"{secs}초"
+                    status_text.markdown(f"⏳ **데이터 동기화 중 ({pct}%)** - `{current}/{total}`개 완료\n\n📄 **처리 중**: `{filename}` | ⏱️ **남은 시간**: 약 **{eta_str}**")
+                else:
+                    status_text.info("처리할 새로운 엑셀 파일이 없습니다.")
+
+            etl_pipeline.process_and_update(service, progress_callback=update_progress)
+            
+            progress_bar.empty()
+            status_text.empty()
             st.cache_data.clear()
             return True
         except Exception as e:
@@ -37,7 +55,7 @@ def run_sync():
             return False
     return False
 
-# 최초 접속 시 드라이브에서 DB 가져오기 (없으면 초기 생성)
+# 최초 접속 시 드라이브에서 DB 가져오기
 if "initial_synced" not in st.session_state:
     with st.spinner("구글 드라이브 데이터베이스 로드 중..."):
         if "gcp_service_account" in st.secrets:
@@ -64,14 +82,13 @@ st.title("🚚 B2C 출고현황 동적 대시보드")
 
 # --- 사이드바 동기화 & 대시보드 상태 ---
 if st.sidebar.button("🔄 드라이브 동기화 / 새로고침"):
-    with st.spinner("새 파일 동기화 및 데이터 업데이트 중..."):
-        run_sync()
+    run_sync()
     st.rerun()
 
 df_raw = load_data()
 
 if df_raw.empty:
-    st.sidebar.warning("⚠️️ 집계된 데이터가 없습니다.")
+    st.sidebar.warning("⚠️ 집계된 데이터가 없습니다.")
     st.info("구글 드라이브 폴더에 새 엑셀 파일을 올린 후 [🔄 드라이브 동기화 / 새로고침] 버튼을 눌러주세요.")
 else:
     st.sidebar.success(f"데이터 로드 성공! (총 {len(df_raw):,}개 집계 레코드)")
