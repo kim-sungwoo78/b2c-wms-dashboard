@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+import openpyxl
 
 # 구글 드라이브 폴더 ID
 TOP_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'       # 대시보드 업로드
@@ -33,7 +34,7 @@ def get_sheets_service(creds_dict):
         creds_dict, 
         scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
     )
-    return build('sheets', 'v4', credentials=creds) # '4' -> 'v4' 수정 완료
+    return build('sheets', 'v4', credentials=creds)
 
 def download_db_from_drive(service):
     try:
@@ -118,6 +119,20 @@ def list_files_in_folder(service, folder_id):
         print(f"Folder list error ({folder_id}): {e}")
         return []
 
+def read_excel_lightweight(fh):
+    """대용량 엑셀 파일을 메모리 절약 모드로 안전하게 읽어오는 함수"""
+    try:
+        wb = openpyxl.load_workbook(fh, read_only=True, data_only=True)
+        sheet = wb.active
+        data = sheet.values
+        headers = next(data)
+        df = pd.DataFrame(data, columns=headers)
+        wb.close()
+        return df
+    except Exception:
+        fh.seek(0)
+        return pd.read_excel(fh, engine='openpyxl')
+
 def process_and_update(service, sheets_service=None, progress_callback=None):
     download_db_from_drive(service)
 
@@ -179,7 +194,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             if file_name.lower().endswith('.csv'):
                 df = pd.read_csv(fh)
             else:
-                df = pd.read_excel(fh, engine='openpyxl')
+                df = read_excel_lightweight(fh)
             
             df_cols_no_space = [str(c).replace(" ", "").strip() for c in df.columns]
             is_inbound = (category == 'INBOUND') or any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량']) or ('입고요청서' in file_name)
@@ -259,6 +274,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     ))
 
             else:
+                # --- B2C 출고 집계 ---
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
