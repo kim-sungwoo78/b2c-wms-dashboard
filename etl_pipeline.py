@@ -36,8 +36,6 @@ def get_sheets_service(creds_dict):
     return build('sheets', '4', credentials=creds)
 
 def download_db_from_drive(service):
-    if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 1000:
-        return True
     try:
         query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
         results = service.files().list(
@@ -45,7 +43,7 @@ def download_db_from_drive(service):
         ).execute()
         files = results.get('files', [])
 
-        if files and not os.path.exists(DB_PATH):
+        if files:
             file_id = files[0]['id']
             request = service.files().get_media(fileId=file_id)
             with open(DB_PATH, 'wb') as f:
@@ -125,28 +123,12 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn = sqlite3.connect(DB_PATH, timeout=30)
     
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS raw_shipments (
-        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, `배송 속성` TEXT,
-        `판매 플랫폼` TEXT, `출고 박스` TEXT, SKU명 TEXT, 바코드 TEXT,
-        `송장 번호` TEXT, `출고 수량` INTEGER,
-        PRIMARY KEY (영업마감일자, `송장 번호`, SKU명, 바코드)
-    )
-    """)
-    
+    # 요약 집계 테이블만 경량으로 생성
     conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
         출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
         PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드)
-    )
-    """)
-
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS raw_inbound (
-        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, `입고 번호` TEXT,
-        SKU명 TEXT, 바코드 TEXT, `예정 수량` INTEGER, `총 검수 완료 수량` INTEGER, `입고 완료 일시` TEXT,
-        PRIMARY KEY (영업마감일자, `입고 번호`, SKU명, 바코드)
     )
     """)
 
@@ -245,37 +227,43 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
                 df_in['영업마감일자'] = df_in['영업마감일자'].fillna(datetime.now().strftime('%Y-%m-%d'))
 
-                target_in_cols = ['영업마감일자', '센터', '고객사', '상태', '입고 번호', 'SKU명', '바코드', '예정 수량', '총 검수 완료 수량', '입고 완료 일시']
-                for tc in target_in_cols:
-                    if tc not in df_in.columns:
-                        df_in[tc] = ''
+                for tc in ['영업마감일자', '센터', '고객사', '상태', '입고 번호', 'SKU명', '바코드']:
+                    if tc not in df_in.columns: df_in[tc] = '미지정'
+                    df_in[tc] = df_in[tc].fillna('미지정')
 
-                for fill_col in ['영업마감일자', '상태', '입고 번호', 'SKU명', '바코드']:
-                    df_in[fill_col] = df_in[fill_col].fillna('')
-
-                df_in['예정 수량'] = pd.to_numeric(df_in['예정 수량'], errors='coerce').fillna(0)
                 df_in['총 검수 완료 수량'] = pd.to_numeric(df_in['총 검수 완료 수량'], errors='coerce').fillna(0)
 
-                insert_inbound_sql = """
-                INSERT OR IGNORE INTO raw_inbound 
-                (영업마감일자, 센터, 고객사, 상태, `입고 번호`, SKU명, 바코드, `예정 수량`, `총 검수 완료 수량`, `입고 완료 일시`)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """
-                conn.executemany(insert_inbound_sql, df_in[target_in_cols].to_numpy().tolist())
+                # 요약 집계
+                in_grp = df_in.groupby(['영업마감일자', '센터', '고객사', '상태', '입고 번호']).agg(
+                    바코드수=('바코드', 'nunique'),
+                    입고완료수량=('총 검수 완료 수량', 'first')
+                ).reset_index()
+
+                in_sum = in_grp.groupby(['영업마감일자', '센터', '고객사', '상태']).agg(
+                    입고건수=('입고 번호', 'nunique'),
+                    바코드수=('바코드수', 'sum'),
+                    입고완료수량=('입고완료수량', 'sum'),
+                    PLT수=('입고완료수량', lambda x: 0),
+                    BOX수=('입고완료수량', lambda x: 0),
+                    파적BOX수=('입고완료수량', lambda x: 0)
+                ).reset_index()
+
+                in_sum.to_sql('inbound_summary', conn, if_exists='append', index=False)
 
             else:
+                # --- B2C 출고 요약 파싱 ---
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
                     if '센터' == clean_c: col_map_b2c[orig_c] = '센터'
                     elif '고객사' == clean_c: col_map_b2c[orig_c] = '고객사'
-                    elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송 속성'
-                    elif '판매플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매 플랫폼'
-                    elif '출고박스' in clean_c or '박스종류' in clean_c: col_map_b2c[orig_c] = '출고 박스'
+                    elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
+                    elif '판매플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매처'
+                    elif '출고박스' in clean_c or '박스종류' in clean_c: col_map_b2c[orig_c] = '출고박스종류'
                     elif 'SKU명' in clean_c or '상품명' in clean_c: col_map_b2c[orig_c] = 'SKU명'
                     elif '바코드' == clean_c: col_map_b2c[orig_c] = '바코드'
-                    elif '송장번호' == clean_c: col_map_b2c[orig_c] = '송장 번호'
-                    elif '출고수량' in clean_c or '수량' in clean_c: col_map_b2c[orig_c] = '출고 수량'
+                    elif '송장번호' == clean_c: col_map_b2c[orig_c] = '송장번호'
+                    elif '출고수량' in clean_c or '수량' in clean_c: col_map_b2c[orig_c] = '총출고수량'
 
                 df_b2c_f = df.rename(columns=col_map_b2c)
 
@@ -291,20 +279,18 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 else:
                     df_b2c_f['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
 
-                target_cols = ['영업마감일자', '센터', '고객사', '배송 속성', '판매 플랫폼', '출고 박스', 'SKU명', '바코드', '송장 번호', '출고 수량']
-                for tc in target_cols:
-                    if tc not in df_b2c_f.columns:
-                        df_b2c_f[tc] = ''
+                for tc in ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드', '송장번호']:
+                    if tc not in df_b2c_f.columns: df_b2c_f[tc] = '미지정'
+                    df_b2c_f[tc] = df_b2c_f[tc].fillna('미지정')
 
-                for fill_col in ['영업마감일자', 'SKU명', '바코드', '송장 번호']:
-                    df_b2c_f[fill_col] = df_b2c_f[fill_col].fillna('')
+                df_b2c_f['총출고수량'] = pd.to_numeric(df_b2c_f.get('총출고수량', 1), errors='coerce').fillna(1)
 
-                insert_sql = """
-                INSERT OR IGNORE INTO raw_shipments 
-                (영업마감일자, 센터, 고객사, `배송 속성`, `판매 플랫폼`, `출고 박스`, SKU명, 바코드, `송장 번호`, `출고 수량`)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """
-                conn.executemany(insert_sql, df_b2c_f[target_cols].to_numpy().tolist())
+                b2c_sum = df_b2c_f.groupby(['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드']).agg(
+                    출고건수=('송장번호', 'nunique'),
+                    총출고수량=('총출고수량', 'sum')
+                ).reset_index()
+
+                b2c_sum.to_sql('daily_summary', conn, if_exists='append', index=False)
 
             # 처리 완료 폴더로 이동
             try:
@@ -316,84 +302,32 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     fields='id, parents'
                 ).execute()
             except Exception as move_e:
-                print(f"Move error for {file_name}: {move_e}")
+                print(f"Move error: {move_e}")
 
             new_files_processed = True
         except Exception as file_e:
             print(f"Error processing file {file_name}: {file_e}")
             continue
 
-    # 1. B2C 요약 재집계
-    conn.execute("DELETE FROM daily_summary;")
-    conn.execute("""
-    INSERT OR REPLACE INTO daily_summary
-    SELECT 
-        영업마감일자,
-        COALESCE(센터, '미지정') AS 센터,
-        COALESCE(고객사, '미지정') AS 고객사,
-        COALESCE(`배송 속성`, '미지정') AS 배송속성,
-        COALESCE(`판매 플랫폼`, '미지정') AS 판매처,
-        COALESCE(`출고 박스`, '미지정') AS 출고박스종류,
-        COALESCE(SKU명, '미지정') AS SKU명,
-        COALESCE(바코드, '미지정') AS 바코드,
-        COUNT(DISTINCT `송장 번호`) AS 출고건수,
-        SUM(CAST(COALESCE(`출고 수량`, 1) AS INTEGER)) AS 총출고수량
-    FROM raw_shipments
-    WHERE 영업마감일자 IS NOT NULL AND 영업마감일자 != ''
-    GROUP BY 영업마감일자, 센터, 고객사, `배송 속성`, `판매 플랫폼`, 출고박스종류, SKU명, 바코드;
-    """)
-
-    # 2. 입고 요약 재집계
+    # 3. 구글 시트 연동 PLT/BOX 매칭
     df_sheet = pd.DataFrame()
     if sheets_service:
         df_sheet = fetch_google_sheets_ib(sheets_service)
 
-    df_raw_inbound = pd.read_sql("SELECT * FROM raw_inbound", conn)
-    if not df_raw_inbound.empty:
-        inbound_grp = df_raw_inbound.groupby(['영업마감일자', '센터', '고객사', '상태', '입고 번호']).agg(
-            바코드수=('바코드', 'nunique'),
-            입고완료수량=('총 검수 완료 수량', 'first')
-        ).reset_index()
-
-        if not df_sheet.empty:
+    if not df_sheet.empty:
+        try:
             match_col = '작업번호' if '작업번호' in df_sheet.columns else ('입고번호' if '입고번호' in df_sheet.columns else None)
             if match_col:
                 cols_to_keep = [match_col]
                 for c in ['PLT', 'BOX', '파적BOX']:
-                    if c in df_sheet.columns:
-                        cols_to_keep.append(c)
-                
+                    if c in df_sheet.columns: cols_to_keep.append(c)
                 df_sheet_sub = df_sheet[cols_to_keep].copy()
-                rename_dict = {match_col: '입고 번호', 'PLT': 'PLT수', 'BOX': 'BOX수', '파적BOX': '파적BOX수'}
-                df_sheet_sub.rename(columns=rename_dict, inplace=True)
-
+                df_sheet_sub.rename(columns={match_col: '입고 번호', 'PLT': 'PLT수', 'BOX': 'BOX수', '파적BOX': '파적BOX수'}, inplace=True)
                 for col_c in ['PLT수', 'BOX수', '파적BOX수']:
                     if col_c in df_sheet_sub.columns:
                         df_sheet_sub[col_c] = pd.to_numeric(df_sheet_sub[col_c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-                    else:
-                        df_sheet_sub[col_c] = 0
-
-                inbound_grp = pd.merge(inbound_grp, df_sheet_sub, on='입고 번호', how='left').fillna(0)
-            else:
-                inbound_grp['PLT수'] = 0
-                inbound_grp['BOX수'] = 0
-                inbound_grp['파적BOX수'] = 0
-        else:
-            inbound_grp['PLT수'] = 0
-            inbound_grp['BOX수'] = 0
-            inbound_grp['파적BOX수'] = 0
-
-        final_inbound_summary = inbound_grp.groupby(['영업마감일자', '센터', '고객사', '상태']).agg(
-            입고건수=('입고 번호', 'nunique'),
-            바코드수=('바코드수', 'sum'),
-            입고완료수량=('입고완료수량', 'sum'),
-            PLT수=('PLT수', 'sum'),
-            BOX수=('BOX수', 'sum'),
-            파적BOX수=('파적BOX수', 'sum')
-        ).reset_index()
-
-        conn.execute("DELETE FROM inbound_summary;")
-        final_inbound_summary.to_sql('inbound_summary', conn, if_exists='append', index=False)
+        except Exception as e:
+            print(f"Sheet match error: {e}")
 
     conn.commit()
     conn.close()
