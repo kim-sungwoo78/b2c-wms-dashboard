@@ -12,16 +12,18 @@ importlib.reload(etl_pipeline)
 
 st.set_page_config(page_title="B2C 출고현황 동적 대시보드", layout="wide")
 
-# 표의 첫 번째 데이터 행(★ 일별 합계) 상단 고정 CSS
+# Streamlit Dataframe 행 상단 고정 CSS 타깃팅 보완
 st.markdown("""
 <style>
-    [data-testid="stDataFrame"] table tbody tr:first-child {
-        position: sticky !important; 
-        top: 0 !important; 
-        z-index: 10 !important;
-        background-color: #262730 !important; 
+    /* 테이블 첫 번째 데이터 행 Sticky 고정 */
+    div[data-testid="stDataFrame"] div[role="grid"] div[role="row"]:nth-child(2) {
+        position: sticky !important;
+        top: 35px !important;
+        z-index: 99 !important;
+        background-color: #1f2937 !important;
+        color: #facc15 !important;
         font-weight: bold !important;
-        border-bottom: 2px solid #4a5568 !important;
+        border-bottom: 2px solid #eab308 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -137,7 +139,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 SKU별 출고량"
 ])
 
-# Tab 1: 센터/고객사별 일자 출고현황 (소계 처리 및 일별합계 고정)
+# Tab 1: 센터/고객사별 일자 출고현황
 with tab1:
     st.header("센터 & 고객사별 일자 출고현황 (06시 영업마감 기준)")
     if not df_raw.empty:
@@ -166,10 +168,9 @@ with tab1:
             pivot_df = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
             pivot_df['총 출고건수'] = pivot_df.sum(axis=1)
 
-            # --- 소계(부분합) 행 삽입 로직 ---
+            # --- 소계(부분합) 행 생성 ---
             subtotal_dfs = []
             
-            # 1) '375' 그룹 (1층 네이버, 1층 코어)
             c_375 = [c for c in pivot_df.index.get_level_values('센터').unique() if '1층' in str(c) or '375 1' in str(c)]
             if c_375:
                 df_375 = pivot_df.loc[pivot_df.index.get_level_values('센터').isin(c_375)]
@@ -178,7 +179,6 @@ with tab1:
                 sub_idx_375 = ("375 소계", "소계") if "보이기" in show_client else "375 소계"
                 subtotal_dfs.append(pd.DataFrame([sum_375.values], columns=pivot_df.columns, index=pd.MultiIndex.from_tuples([sub_idx_375], names=group_cols) if "보이기" in show_client else pd.Index([sub_idx_375], name="센터")))
 
-            # 2) 'XFC' 그룹 (XFC 네이버, XFC 코어)
             c_xfc = [c for c in pivot_df.index.get_level_values('센터').unique() if 'XFC' in str(c).upper()]
             if c_xfc:
                 df_xfc = pivot_df.loc[pivot_df.index.get_level_values('센터').isin(c_xfc)]
@@ -187,7 +187,6 @@ with tab1:
                 sub_idx_xfc = ("XFC 소계", "소계") if "보이기" in show_client else "XFC 소계"
                 subtotal_dfs.append(pd.DataFrame([sum_xfc.values], columns=pivot_df.columns, index=pd.MultiIndex.from_tuples([sub_idx_xfc], names=group_cols) if "보이기" in show_client else pd.Index([sub_idx_xfc], name="센터")))
 
-            # 3) 기타 센터들
             c_other = [c for c in pivot_df.index.get_level_values('센터').unique() if c not in c_375 and c not in c_xfc]
             if c_other:
                 df_other = pivot_df.loc[pivot_df.index.get_level_values('센터').isin(c_other)]
@@ -200,10 +199,15 @@ with tab1:
             total_idx = pd.MultiIndex.from_tuples([("★ 일별 합계", "전체")], names=group_cols) if "보이기" in show_client else pd.Index(["★ 일별 합계"], name="센터")
             total_df = pd.DataFrame([total_series.values], columns=pivot_df.columns, index=total_idx)
 
+            # 상단 고정 안내 요약 카드 뷰 출력
+            st.markdown("#### 📌 선택 조건 일별 합계 요약")
+            st.dataframe(total_df, use_container_width=True, height=75)
+
+            st.markdown("#### 📋 상세 현황 (스크롤 가능)")
             final_df = pd.concat([total_df, body_df])
             final_df.set_index('총 출고건수', append=True, inplace=True)
             
-            st.dataframe(final_df, use_container_width=True)
+            st.dataframe(final_df, use_container_width=True, height=500)
 
 # Tab 2: 배송속성 / 판매처별 현황
 with tab2:
@@ -216,9 +220,13 @@ with tab2:
         pivot_df2['총 출고건수'] = pivot_df2.sum(axis=1)
         total_series2 = pivot_df2.sum(axis=0)
         total_df2 = pd.DataFrame([total_series2.values], columns=pivot_df2.columns, index=pd.Index(["★ 일별 합계"], name=target_col))
+        
+        st.markdown("#### 📌 선택 조건 일별 합계 요약")
+        st.dataframe(total_df2, use_container_width=True, height=75)
+        
         final_df2 = pd.concat([total_df2, pivot_df2])
         final_df2.set_index('총 출고건수', append=True, inplace=True)
-        st.dataframe(final_df2, use_container_width=True)
+        st.dataframe(final_df2, use_container_width=True, height=500)
 
 # Tab 3: 출고박스별 현황
 with tab3:
@@ -228,9 +236,13 @@ with tab3:
         pivot_df3['총 출고건수'] = pivot_df3.sum(axis=1)
         total_series3 = pivot_df3.sum(axis=0)
         total_df3 = pd.DataFrame([total_series3.values], columns=pivot_df3.columns, index=pd.Index(["★ 일별 합계"], name="출고박스 규격"))
+        
+        st.markdown("#### 📌 선택 조건 일별 합계 요약")
+        st.dataframe(total_df3, use_container_width=True, height=75)
+        
         final_df3 = pd.concat([total_df3, pivot_df3])
         final_df3.set_index('총 출고건수', append=True, inplace=True)
-        st.dataframe(final_df3, use_container_width=True)
+        st.dataframe(final_df3, use_container_width=True, height=500)
 
 # Tab 4: SKU별 출고량
 with tab4:
