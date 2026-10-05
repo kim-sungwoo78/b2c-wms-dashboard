@@ -101,10 +101,13 @@ def run_sync():
             progress_bar.empty()
             status_text.empty()
             st.cache_data.clear()
+            st.success("✅ 동기화 및 데이터 업데이트가 완료되었습니다!")
             return True
         except Exception as e:
-            st.sidebar.error(f"동기화 에러: {e}")
+            st.error(f"❌ 동기화 중 에러 발생: {e}")
             return False
+    else:
+        st.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
 if "initial_synced" not in st.session_state:
@@ -283,7 +286,6 @@ def inject_monthly_sum_columns(pivot_df):
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
     
-    # 데이터 내 존재하는 전체 월(Month) 목록 추출
     b2c_months = set(df_b2c['영업마감일자'].str.slice(0, 7).dropna().unique()) if not df_b2c.empty and '영업마감일자' in df_b2c.columns else set()
     inbound_months = set(df_inbound['영업마감일자'].str.slice(0, 7).dropna().unique()) if not df_inbound.empty and '영업마감일자' in df_inbound.columns else set()
     
@@ -294,7 +296,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     with col_filter1:
         selected_month_label = st.selectbox("📅 조회 월 선택:", month_options)
         
-    # 선택된 월 필터링
     filtered_b2c = df_b2c.copy() if not df_b2c.empty else pd.DataFrame()
     filtered_inbound = df_inbound.copy() if not df_inbound.empty else pd.DataFrame()
     
@@ -305,10 +306,9 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         if not filtered_inbound.empty and '영업마감일자' in filtered_inbound.columns:
             filtered_inbound = filtered_inbound[filtered_inbound['영업마감일자'].str.startswith(target_m)]
 
-    # 3대 핵심 건수 지표 계산
     total_b2c_cnt = filtered_b2c['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
     total_inbound_cnt = filtered_inbound['입고건수'].sum() if not filtered_inbound.empty and '입고건수' in filtered_inbound.columns else 0
-    total_b2b_cnt = 0 # 추후 B2B 연동 예정
+    total_b2b_cnt = 0
 
     st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
     kpi1, kpi2, kpi3 = st.columns(3)
@@ -319,7 +319,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     st.markdown("---")
     st.subheader("📋 센터별 운영 항목 종합 비교표")
     
-    # 센터별 3대 건수 종합 비교 데이터프레임 구축
     summary_rows = []
     
     raw_centers = set()
@@ -344,7 +343,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     if summary_rows:
         df_summary = pd.DataFrame(summary_rows)
         
-        # 합계 행 추가
         total_row = pd.DataFrame([{
             '센터': '★ 전체 합계',
             'B2C 출고건수': df_summary['B2C 출고건수'].sum(),
