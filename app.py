@@ -12,24 +12,58 @@ importlib.reload(etl_pipeline)
 
 st.set_page_config(page_title="B2C 출고현황 동적 대시보드", layout="wide")
 
-# 엑셀 틀고정 기능 (컬럼 헤더 + 첫 번째 '★ 일별 합계' 행 상단 고정)
+# HTML/CSS 기반 테이블 틀고정 스타일 정의
 st.markdown("""
 <style>
-    /* 표 내부 첫 번째 행(★ 일별 합계) 엑셀 틀고정 스타일 */
-    div[data-testid="stDataFrame"] table tbody tr:nth-child(1) {
-        position: sticky !important;
-        top: 0px !important;
-        z-index: 100 !important;
-        background-color: #1a202c !important;
-        color: #f6ad55 !important;
-        font-weight: bold !important;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.5) !important;
+    .sticky-table-container {
+        max-height: 600px;
+        overflow-y: auto;
+        overflow-x: auto;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        background-color: #0e1117;
     }
-    div[data-testid="stDataFrame"] table tbody tr:nth-child(1) td {
-        background-color: #1a202c !important;
-        color: #f6ad55 !important;
-        font-weight: bold !important;
-        border-bottom: 2px solid #ed8936 !important;
+    .sticky-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 13px;
+        color: #e5e7eb;
+    }
+    .sticky-table th, .sticky-table td {
+        padding: 8px 12px;
+        text-align: right;
+        border-bottom: 1px solid #1f2937;
+        border-right: 1px solid #1f2937;
+        white-space: nowrap;
+    }
+    .sticky-table th:first-child, .sticky-table td:first-child {
+        text-align: left;
+    }
+    /* 컬럼 헤더 상단 고정 */
+    .sticky-table thead tr th {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background-color: #1f2937;
+        color: #9ca3af;
+        font-weight: bold;
+    }
+    /* ★ 일별 합계 행 상단 고정 (헤더 바로 밑 35px 위치) */
+    .sticky-table tr.total-row td {
+        position: sticky;
+        top: 35px;
+        z-index: 10;
+        background-color: #1e293b !important;
+        color: #facc15 !important;
+        font-weight: bold;
+        border-bottom: 2px solid #eab308 !important;
+    }
+    /* 소계 행 스타일 */
+    .sticky-table tr.subtotal-row td {
+        background-color: #111827;
+        color: #38bdf8;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -137,6 +171,39 @@ if not df_raw.empty:
             use_container_width=True
         )
 
+# HTML 스티키 테이블 생성 함수
+def render_sticky_pivot(df, index_names):
+    html = ['<div class="sticky-table-container"><table class="sticky-table"><thead><tr>']
+    
+    for idx_name in index_names:
+        html.append(f'<th>{idx_name}</th>')
+    
+    cols = [c for c in df.columns]
+    for c in cols:
+        html.append(f'<th>{c}</th>')
+    html.append('</tr></thead><tbody>')
+    
+    for idx_val, row in df.iterrows():
+        is_total = "★ 일별 합계" in str(idx_val)
+        is_subtotal = "소계" in str(idx_val)
+        
+        row_class = ' class="total-row"' if is_total else (' class="subtotal-row"' if is_subtotal else '')
+        html.append(f'<tr{row_class}>')
+        
+        if isinstance(idx_val, tuple):
+            for v in idx_val:
+                html.append(f'<td style="text-align:left;">{v}</td>')
+        else:
+            html.append(f'<td style="text-align:left;">{idx_val}</td>')
+            
+        for val in row:
+            val_str = f"{int(val):,}" if pd.notnull(val) and isinstance(val, (int, float)) else str(val)
+            html.append(f'<td>{val_str}</td>')
+        html.append('</tr>')
+        
+    html.append('</tbody></table></div>')
+    st.markdown("".join(html), unsafe_allow_html=True)
+
 # --- 메인 탭 화면 ---
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 센터/고객사별 일자 출고현황", 
@@ -145,7 +212,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 SKU별 출고량"
 ])
 
-# Tab 1: 센터/고객사별 일자 출고현황 (단일 표 & 틀고정)
+# Tab 1: 센터/고객사별 일자 출고현황 (틀고정 완벽 구현)
 with tab1:
     st.header("센터 & 고객사별 일자 출고현황 (06시 영업마감 기준)")
     if not df_raw.empty:
@@ -205,11 +272,10 @@ with tab1:
             total_idx = pd.MultiIndex.from_tuples([("★ 일별 합계", "전체")], names=group_cols) if "보이기" in show_client else pd.Index(["★ 일별 합계"], name="센터")
             total_df = pd.DataFrame([total_series.values], columns=pivot_df.columns, index=total_idx)
 
-            # 하나의 단일 데이터 표로 병합
             final_df = pd.concat([total_df, body_df])
-            final_df.set_index('총 출고건수', append=True, inplace=True)
             
-            st.dataframe(final_df, use_container_width=True, height=600)
+            # 틀고정 스티키 테이블 출력
+            render_sticky_pivot(final_df, group_cols)
 
 # Tab 2: 배송속성 / 판매처별 현황
 with tab2:
@@ -224,8 +290,7 @@ with tab2:
         total_df2 = pd.DataFrame([total_series2.values], columns=pivot_df2.columns, index=pd.Index(["★ 일별 합계"], name=target_col))
         
         final_df2 = pd.concat([total_df2, pivot_df2])
-        final_df2.set_index('총 출고건수', append=True, inplace=True)
-        st.dataframe(final_df2, use_container_width=True, height=600)
+        render_sticky_pivot(final_df2, [target_col])
 
 # Tab 3: 출고박스별 현황
 with tab3:
@@ -237,8 +302,7 @@ with tab3:
         total_df3 = pd.DataFrame([total_series3.values], columns=pivot_df3.columns, index=pd.Index(["★ 일별 합계"], name="출고박스 규격"))
         
         final_df3 = pd.concat([total_df3, pivot_df3])
-        final_df3.set_index('총 출고건수', append=True, inplace=True)
-        st.dataframe(final_df3, use_container_width=True, height=600)
+        render_sticky_pivot(final_df3, ["출고박스 규격"])
 
 # Tab 4: SKU별 출고량
 with tab4:
