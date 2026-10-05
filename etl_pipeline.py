@@ -36,6 +36,8 @@ def get_sheets_service(creds_dict):
     return build('sheets', '4', credentials=creds)
 
 def download_db_from_drive(service):
+    if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 1000:
+        return True
     try:
         query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
         results = service.files().list(
