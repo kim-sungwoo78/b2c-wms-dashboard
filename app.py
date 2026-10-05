@@ -5,12 +5,10 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
 
-# 페이지 기본 설정
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
 
 DB_PATH = "wms_dashboard.db"
 
-# 데이터베이스 기본 테이블 안전 생성
 def init_local_db():
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -36,8 +34,7 @@ def init_local_db():
             영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, 입고번호 TEXT,
             입고방법 TEXT, SKU명 TEXT, 바코드 TEXT, 소비기한 TEXT, 로트 TEXT,
             기본로케이션 TEXT, 예정수량 INTEGER, 요청SKU수량 INTEGER, 총예정수량 INTEGER,
-            총검수완료수량 INTEGER, 입고건수 INTEGER, 바코드수 INTEGER, 입고완료수량 INTEGER,
-            PLT수 REAL, BOX수 REAL, 파적BOX수 REAL, 등록일시 TEXT, 변경자 TEXT,
+            총검수완료수량 INTEGER, PLT수 REAL, BOX수 REAL, 파적BOX수 REAL, 등록일시 TEXT, 변경자 TEXT,
             최종변경일시 TEXT, 입고완료일시 TEXT,
             PRIMARY KEY (영업마감일자, 센터, 고객사, 상태, 입고번호, SKU명, 바코드)
         )
@@ -49,7 +46,6 @@ def init_local_db():
 
 init_local_db()
 
-# 동기화 실행 함수
 def run_sync():
     if "gcp_service_account" in st.secrets:
         try:
@@ -76,7 +72,6 @@ def run_sync():
         st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
-# B2C 출고 데이터 로드
 @st.cache_data(ttl=60)
 def load_shipment_orders():
     if not os.path.exists(DB_PATH):
@@ -115,19 +110,29 @@ def load_b2c_sku_data():
     except Exception:
         return pd.DataFrame()
 
+# ★ 입고 고유 입고번호 정밀 집계 (COUNT DISTINCT 적용) ★
 @st.cache_data(ttl=60)
 def load_inbound_data():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
-        df = pd.read_sql("SELECT * FROM inbound_summary", conn)
+        df = pd.read_sql("""
+            SELECT 영업마감일자, 센터, 고객사, 상태,
+                   COUNT(DISTINCT 입고번호) AS 입고건수,
+                   COUNT(DISTINCT 바코드) AS 바코드수,
+                   SUM(총검수완료수량) AS 입고완료수량,
+                   SUM(PLT수) AS PLT수,
+                   SUM(BOX수) AS BOX수,
+                   SUM(파적BOX수) AS 파적BOX수
+            FROM inbound_summary
+            GROUP BY 영업마감일자, 센터, 고객사, 상태
+        """, conn)
         conn.close()
         return df
     except Exception:
         return pd.DataFrame()
 
-# CSS 스타일링
 st.markdown("""
 <style>
     .sticky-table-container {
@@ -317,9 +322,7 @@ def inject_monthly_sum_columns(pivot_df):
         
     return new_df
 
-# ==========================================
 # 1. 메인 센터 종합 현황 모드
-# ==========================================
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
     
@@ -362,14 +365,12 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     filtered_b2c = df_b2c_orders.copy() if not df_b2c_orders.empty else pd.DataFrame()
     filtered_inbound = df_inbound.copy() if not df_inbound.empty else pd.DataFrame()
 
-    # 센터 필터 적용
     if selected_centers_filter:
         if not filtered_b2c.empty and '센터' in filtered_b2c.columns:
             filtered_b2c = filtered_b2c[filtered_b2c['센터'].isin(selected_centers_filter)]
         if not filtered_inbound.empty and '센터' in filtered_inbound.columns:
             filtered_inbound = filtered_inbound[filtered_inbound['센터'].isin(selected_centers_filter)]
 
-    # 월 필터 적용
     if selected_m != "누적":
         m_digit = selected_m.replace("월", "").zfill(2)
         if not filtered_b2c.empty and '영업마감일자' in filtered_b2c.columns:
