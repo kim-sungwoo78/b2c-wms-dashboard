@@ -119,13 +119,14 @@ def list_files_in_folder(service, folder_id):
         print(f"Folder list error ({folder_id}): {e}")
         return []
 
-def read_excel_lightweight(fh):
-    """대용량 엑셀 파일을 메모리 절약 모드로 안전하게 읽어오는 함수"""
+def read_excel_fast(fh):
+    """대용량 엑셀 메모리 절약 읽기"""
     try:
         wb = openpyxl.load_workbook(fh, read_only=True, data_only=True)
         sheet = wb.active
-        data = sheet.values
-        headers = next(data)
+        rows = sheet.iter_rows(values_only=True)
+        headers = next(rows)
+        data = [r for r in rows if any(v is not None for v in r)]
         df = pd.DataFrame(data, columns=headers)
         wb.close()
         return df
@@ -171,8 +172,8 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 all_target_files.append(f)
 
     total_count = len(all_target_files)
-    start_time = time.time()
     new_files_processed = False
+    error_logs = []
 
     for idx, f in enumerate(all_target_files, 1):
         file_id, file_name = f['id'], f['name']
@@ -194,7 +195,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             if file_name.lower().endswith('.csv'):
                 df = pd.read_csv(fh)
             else:
-                df = read_excel_lightweight(fh)
+                df = read_excel_fast(fh)
             
             df_cols_no_space = [str(c).replace(" ", "").strip() for c in df.columns]
             is_inbound = (category == 'INBOUND') or any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량']) or ('입고요청서' in file_name)
@@ -274,25 +275,26 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     ))
 
             else:
-                # --- B2C 출고 집계 ---
+                # --- B2C 출고 유연한 매칭 ---
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
-                    if '센터' == clean_c: col_map_b2c[orig_c] = '센터'
-                    elif '고객사' == clean_c: col_map_b2c[orig_c] = '고객사'
-                    elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
-                    elif '판매플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매처'
-                    elif '출고박스' in clean_c or '박스종류' in clean_c: col_map_b2c[orig_c] = '출고박스종류'
-                    elif 'SKU명' in clean_c or '상품명' in clean_c: col_map_b2c[orig_c] = 'SKU명'
-                    elif '바코드' == clean_c: col_map_b2c[orig_c] = '바코드'
-                    elif '송장번호' == clean_c: col_map_b2c[orig_c] = '송장번호'
-                    elif '출고수량' in clean_c or '수량' in clean_c: col_map_b2c[orig_c] = '총출고수량'
+                    if '센터' in clean_c: col_map_b2c[orig_c] = '센터'
+                    elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
+                    elif '배송' in clean_c or '유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
+                    elif '플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매처'
+                    elif '출고박스' in clean_c or '박스' in clean_c: col_map_b2c[orig_c] = '출고박스종류'
+                    elif 'SKU' in clean_c or '상품' in clean_c: col_map_b2c[orig_c] = 'SKU명'
+                    elif '바코드' in clean_c: col_map_b2c[orig_c] = '바코드'
+                    elif '송장' in clean_c or '운송장' in clean_c: col_map_b2c[orig_c] = '송장번호'
+                    elif '출고수량' in clean_c or '수량' in clean_c or '수' in clean_c: col_map_b2c[orig_c] = '총출고수량'
 
                 df_b2c_f = df.rename(columns=col_map_b2c)
 
                 date_col = None
                 for c in df_b2c_f.columns:
-                    if any(k in str(c) for k in ['마감일시', '마감일자', '출고일시', '출고일자', '일시', '일자']):
+                    clean_str = str(c).replace(" ", "").strip()
+                    if any(k in clean_str for k in ['마감', '출고일', '일시', '일자', '날짜', 'Date', 'date']):
                         date_col = c
                         break
 
@@ -301,6 +303,8 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     df_b2c_f['영업마감일자'] = (df_b2c_f['dt_temp'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
                 else:
                     df_b2c_f['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
+
+                df_b2c_f['영업마감일자'] = df_b2c_f['영업마감일자'].fillna(datetime.now().strftime('%Y-%m-%d'))
 
                 for tc in ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드', '송장번호']:
                     if tc not in df_b2c_f.columns: df_b2c_f[tc] = '미지정'
@@ -334,11 +338,11 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     fields='id, parents'
                 ).execute()
             except Exception as move_e:
-                print(f"Move error: {move_e}")
+                error_logs.append(f"이동 실패 ({file_name}): {move_e}")
 
             new_files_processed = True
         except Exception as file_e:
-            print(f"Error processing file {file_name}: {file_e}")
+            error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
             continue
 
     # 구글 시트 PLT / BOX 매칭
@@ -366,3 +370,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     if new_files_processed:
         upload_db_to_drive(service)
+
+    if error_logs:
+        raise Exception(" | ".join(error_logs))
