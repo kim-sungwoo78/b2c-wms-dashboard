@@ -365,7 +365,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 
                 df_sheet_sub = df_sheet[cols_to_keep].copy()
                 rename_dict = {match_col: '입고 번호', 'PLT': 'PLT수', 'BOX': 'BOX수', '파적BOX': '파적BOX수'}
-                df_sheet_sub.rename(columns=rename_dict, inplace=Replace) if False else df_sheet_sub.rename(columns=rename_dict, inplace=True)
+                df_sheet_sub.rename(columns=rename_dict, inplace=True)
 
                 for col_c in ['PLT수', 'BOX수', '파적BOX수']:
                     if col_c in df_sheet_sub.columns:
