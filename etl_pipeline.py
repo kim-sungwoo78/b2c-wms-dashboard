@@ -189,7 +189,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             if '상태' not in df.columns:
                 df['상태'] = '입고 완료'
 
-            # 날짜 대체 처리: 입고완료일시 -> 최종변경일시 -> 등록일시
             date_col = None
             if '입고완료일시' in df.columns:
                 date_col = '입고완료일시'
@@ -278,7 +277,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             """
             conn.executemany(insert_sql, df[target_cols].to_numpy().tolist())
 
-        # 처리 완료 파일 이동
         service.files().update(
             fileId=file_id,
             addParents=PROCESSED_FOLDER_ID,
@@ -319,9 +317,10 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     df_raw_inbound = pd.read_sql("SELECT * FROM raw_inbound", conn)
     if not df_raw_inbound.empty:
+        # 입고 번호 단위로 중복 제거하여 1차 그룹핑 (총검수완료수량은 first 값 사용)
         inbound_grp = df_raw_inbound.groupby(['영업마감일자', '센터', '고객사', '상태', '입고 번호']).agg(
             바코드수=('바코드', 'nunique'),
-            입고완료수량=('총 검수 완료 수량', lambda x: pd.to_numeric(x, errors='coerce').sum())
+            입고완료수량=('총 검수 완료 수량', 'first')
         ).reset_index()
 
         if not df_sheet.empty:
