@@ -1,6 +1,5 @@
 import os
 import io
-import json
 import sqlite3
 import pandas as pd
 import streamlit as st
@@ -8,15 +7,9 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide")
 
-# etl_pipeline 안전 임포트
-try:
-    import etl_pipeline
-except Exception as e:
-    st.error(f"⚠️ etl_pipeline 모듈 로드 오류: {e}")
-
 DB_PATH = "wms_dashboard.db"
 
-# CSS 스티키 테이블 스타일
+# CSS 스티키 테이블 스타일 정의
 st.markdown("""
 <style>
     .sticky-table-container {
@@ -69,7 +62,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def init_local_db():
+def init_db_tables():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
@@ -90,13 +83,14 @@ def init_local_db():
         conn.commit()
         conn.close()
     except Exception as e:
-        st.sidebar.error(f"DB 초기화 오류: {e}")
+        pass
 
-init_local_db()
+init_db_tables()
 
 def run_sync():
     if "gcp_service_account" in st.secrets:
         try:
+            import etl_pipeline
             creds_dict = dict(st.secrets["gcp_service_account"])
             service = etl_pipeline.get_drive_service(creds_dict)
             sheets_service = etl_pipeline.get_sheets_service(creds_dict)
@@ -116,10 +110,10 @@ def run_sync():
             st.sidebar.error(f"❌ 동기화 에러: {e}")
             return False
     else:
-        st.sidebar.error("시크릿 계정이 없습니다.")
+        st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=60)
 def load_b2c_data():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
@@ -131,7 +125,7 @@ def load_b2c_data():
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=60)
 def load_inbound_data():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
@@ -152,7 +146,6 @@ if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
 df_b2c = load_b2c_data()
 df_inbound = load_inbound_data()
 
-# 상단 모드 버튼 UI
 if 'main_mode_selection' not in st.session_state:
     st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
 
@@ -280,9 +273,7 @@ def inject_monthly_sum_columns(pivot_df):
         
     return new_df
 
-# ==========================================
-# 1. 메인 센터 종합 현황 모드
-# ==========================================
+# 메인 센터 종합 현황 모드
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
     
@@ -320,7 +311,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     st.subheader("📋 센터별 운영 항목 종합 비교표")
     
     summary_rows = []
-    
     raw_centers = set()
     if not df_b2c.empty and '센터' in df_b2c.columns:
         raw_centers.update(df_b2c['센터'].dropna().unique())
@@ -342,7 +332,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         
     if summary_rows:
         df_summary = pd.DataFrame(summary_rows)
-        
         total_row = pd.DataFrame([{
             '센터': '★ 전체 합계',
             'B2C 출고건수': df_summary['B2C 출고건수'].sum(),
@@ -350,9 +339,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
             'B2B 건수': df_summary['B2B 건수'].sum(),
             '총 작업건수': df_summary['총 작업건수'].sum()
         }])
-        
         df_summary_final = pd.concat([total_row, df_summary]).reset_index(drop=True)
-        
         st.dataframe(
             df_summary_final.style.format({
                 'B2C 출고건수': '{:,}',
@@ -364,9 +351,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
             hide_index=True
         )
 
-# ==========================================
-# 2. B2C 출고 현황 모드
-# ==========================================
+# B2C 출고 현황 모드
 elif main_mode == "🚚 B2C 출고 현황":
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 센터/고객사별 출고현황", 
@@ -379,7 +364,6 @@ elif main_mode == "🚚 B2C 출고 현황":
         st.header("센터 & 고객사별 출고현황 (06시 영업마감 기준)")
         if not df_b2c.empty:
             raw_centers = sorted(list(df_b2c['센터'].dropna().unique()))
-            
             center_options = []
             if any('1층' in str(c) or '375 1' in str(c) for c in raw_centers):
                 center_options.append("375 소계")
@@ -607,9 +591,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     key="dl_table_tab4"
                 )
 
-# ==========================================
-# 3. 입고 현황 모드
-# ==========================================
+# 입고 현황 모드
 elif main_mode == "📦 입고 현황":
     in_tab1, in_tab2 = st.tabs([
         "📊 센터/고객사별 입고 현황",
