@@ -240,11 +240,12 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 in_sum = in_grp.groupby(['영업마감일자', '센터', '고객사', '상태']).agg(
                     입고건수=('입고 번호', 'nunique'),
                     바코드수=('바코드수', 'sum'),
-                    입고완료수량=('입고완료수량', 'sum'),
-                    PLT수=('입고완료수량', lambda x: 0),
-                    BOX수=('입고완료수량', lambda x: 0),
-                    파적BOX수=('입고완료수량', lambda x: 0)
+                    입고완료수량=('입고완료수량', 'sum')
                 ).reset_index()
+
+                in_sum['PLT수'] = 0.0
+                in_sum['BOX수'] = 0.0
+                in_sum['파적BOX수'] = 0.0
 
                 in_sum.to_sql('inbound_summary', conn, if_exists='append', index=False)
 
