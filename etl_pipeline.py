@@ -123,7 +123,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn = sqlite3.connect(DB_PATH, timeout=30)
     
-    # 요약 집계 테이블만 경량으로 생성
     conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -233,7 +232,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
                 df_in['총 검수 완료 수량'] = pd.to_numeric(df_in['총 검수 완료 수량'], errors='coerce').fillna(0)
 
-                # 요약 집계
                 in_grp = df_in.groupby(['영업마감일자', '센터', '고객사', '상태', '입고 번호']).agg(
                     바코드수=('바코드', 'nunique'),
                     입고완료수량=('총 검수 완료 수량', 'first')
@@ -251,7 +249,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 in_sum.to_sql('inbound_summary', conn, if_exists='append', index=False)
 
             else:
-                # --- B2C 출고 요약 파싱 ---
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -309,7 +306,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             print(f"Error processing file {file_name}: {file_e}")
             continue
 
-    # 3. 구글 시트 연동 PLT/BOX 매칭
+    # 구글 시트 PLT / BOX 매칭
     df_sheet = pd.DataFrame()
     if sheets_service:
         df_sheet = fetch_google_sheets_ib(sheets_service)
