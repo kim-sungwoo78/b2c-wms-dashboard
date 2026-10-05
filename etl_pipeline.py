@@ -39,7 +39,7 @@ def download_db_from_drive(service):
     try:
         query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
         results = service.files().list(
-            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True
+            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
         ).execute()
         files = results.get('files', [])
 
@@ -62,7 +62,7 @@ def upload_db_to_drive(service):
     try:
         query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
         results = service.files().list(
-            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True
+            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
         ).execute()
         files = results.get('files', [])
 
@@ -110,7 +110,7 @@ def fetch_google_sheets_ib(sheets_service):
 def list_files_in_folder(service, folder_id):
     query = f"'{folder_id}' in parents and trashed = false and name != '{DB_PATH}'"
     results = service.files().list(
-        q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True
+        q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
     ).execute()
     return results.get('files', [])
 
@@ -163,15 +163,21 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     all_target_files = []
     for f_id, category in folder_mapping:
-        files = list_files_in_folder(service, f_id)
-        for f in files:
-            if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv'):
-                f['category'] = category
-                f['source_folder_id'] = f_id
-                all_target_files.append(f)
+        try:
+            files = list_files_in_folder(service, f_id)
+            for f in files:
+                if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv'):
+                    f['category'] = category
+                    f['source_folder_id'] = f_id
+                    all_target_files.append(f)
+        except Exception as e:
+            print(f"Folder list error ({f_id}): {e}")
 
     total_count = len(all_target_files)
     start_time = time.time()
+
+    if progress_callback:
+        progress_callback(current=0, total=total_count, filename=f"총 {total_count}개 감지됨", eta=0)
 
     for idx, f in enumerate(all_target_files, 1):
         file_id, file_name = f['id'], f['name']
@@ -185,7 +191,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             eta_seconds = int(avg_time * rem_files)
             
             progress_callback(
-                current=idx - 1, 
+                current=idx, 
                 total=total_count, 
                 filename=file_name, 
                 eta=eta_seconds
@@ -314,7 +320,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 """
                 conn.executemany(insert_sql, df_b2c_f[target_cols].to_numpy().tolist())
 
-            # 안전한 파일 이동
+            # 처리 완료 폴더로 안전 이동
             try:
                 service.files().update(
                     fileId=file_id,
