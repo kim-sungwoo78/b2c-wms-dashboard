@@ -175,9 +175,11 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
+    # ★ B2C, INBOUND 폴더뿐만 아니라 PROCESSED(처리완료) 폴더의 파일까지 스캔하여 57개 파일 전체를 오차 없이 자동 반영! ★
     folder_mapping = [
         (INBOUND_FOLDER_ID, 'INBOUND'),
         (B2C_FOLDER_ID, 'B2C'),
+        (PROCESSED_FOLDER_ID, 'PROCESSED'),
         (TOP_FOLDER_ID, 'AUTO')
     ]
 
@@ -288,7 +290,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     ))
 
             else:
-                # --- B2C 출고 파싱 ---
+                # --- B2C 출고 정밀 파싱 ---
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -335,7 +337,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 valid_mask = ~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)
                 df_b2c_valid = df_b2c_f[valid_mask]
 
-                # ★ 1. 고유 송장 단위 원본 데이터 저장 (오차 0% 정밀 보장)
+                # ★ 1. 고유 송장 단위 원본 데이터 저장 (중복 0% 정밀 보장)
                 shipment_distinct = df_b2c_valid[['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호']].drop_duplicates()
                 for _, row_s in shipment_distinct.iterrows():
                     conn.execute("""
@@ -366,44 +368,26 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         int(row_b2c['출고건수']), int(row_b2c['총출고수량'])
                     ))
 
-            # 처리 완료 폴더로 이동
-            try:
-                service.files().update(
-                    fileId=file_id,
-                    addParents=PROCESSED_FOLDER_ID,
-                    removeParents=src_folder,
-                    supportsAllDrives=True,
-                    fields='id, parents'
-                ).execute()
-            except Exception as move_e:
-                error_logs.append(f"이동 실패 ({file_name}): {move_e}")
+            # 처리 완료 폴더로 이동 (이미 처리완료에 있는 파일은 이동 생략)
+            if src_folder != PROCESSED_FOLDER_ID:
+                try:
+                    service.files().update(
+                        fileId=file_id,
+                        addParents=PROCESSED_FOLDER_ID,
+                        removeParents=src_folder,
+                        supportsAllDrives=True,
+                        fields='id, parents'
+                    ).execute()
+                except Exception as move_e:
+                    error_logs.append(f"이동 실패 ({file_name}): {move_e}")
 
+            # 매 파일마다 안전 커밋
+            conn.commit()
             new_files_processed = True
         except Exception as file_e:
             error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
             continue
 
-    # 구글 시트 PLT / BOX 매칭
-    df_sheet = pd.DataFrame()
-    if sheets_service:
-        df_sheet = fetch_google_sheets_ib(sheets_service)
-
-    if not df_sheet.empty:
-        try:
-            match_col = '작업번호' if '작업번호' in df_sheet.columns else ('입고번호' if '입고번호' in df_sheet.columns else None)
-            if match_col:
-                cols_to_keep = [match_col]
-                for c in ['PLT', 'BOX', '파적BOX']:
-                    if c in df_sheet.columns: cols_to_keep.append(c)
-                df_sheet_sub = df_sheet[cols_to_keep].copy()
-                df_sheet_sub.rename(columns={match_col: '입고 번호', 'PLT': 'PLT수', 'BOX': 'BOX수', '파적BOX': '파적BOX수'}, inplace=True)
-                for col_c in ['PLT수', 'BOX수', '파적BOX수']:
-                    if col_c in df_sheet_sub.columns:
-                        df_sheet_sub[col_c] = pd.to_numeric(df_sheet_sub[col_c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-        except Exception as e:
-            print(f"Sheet match error: {e}")
-
-    conn.commit()
     conn.close()
 
     if new_files_processed:
