@@ -6,9 +6,6 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
 import etl_pipeline
-import importlib
-
-importlib.reload(etl_pipeline)
 
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide")
 
@@ -76,6 +73,28 @@ st.markdown("""
 
 DB_PATH = "wms_dashboard.db"
 
+def init_local_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS daily_summary (
+        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
+        출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
+        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드)
+    )
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS inbound_summary (
+        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
+        입고건수 INTEGER, 바코드수 INTEGER, 입고완료수량 INTEGER,
+        PLT수 REAL, BOX수 REAL, 파적BOX수 REAL,
+        PRIMARY KEY (영업마감일자, 센터, 고객사, 상태)
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+init_local_db()
+
 def run_sync():
     if "gcp_service_account" in st.secrets:
         try:
@@ -101,24 +120,24 @@ def run_sync():
         st.sidebar.error("시크릿 계정이 없습니다.")
     return False
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def load_b2c_data():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
     try:
-        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
+        conn = sqlite3.connect(DB_PATH, timeout=5)
         df = pd.read_sql("SELECT * FROM daily_summary", conn)
         conn.close()
         return df
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def load_inbound_data():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
     try:
-        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
+        conn = sqlite3.connect(DB_PATH, timeout=5)
         df = pd.read_sql("SELECT * FROM inbound_summary", conn)
         conn.close()
         return df
