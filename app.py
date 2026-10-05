@@ -12,7 +12,7 @@ importlib.reload(etl_pipeline)
 
 st.set_page_config(page_title="B2C 출고현황 동적 대시보드", layout="wide")
 
-# CSS: 2D 틀고정 및 월별 합계 열 강조 스타일
+# CSS: 2D/3D 틀고정 (상단 헤더/합계 고정 + 좌측 센터/고객사/총출고건수 열 고정)
 st.markdown("""
 <style>
     .sticky-table-container {
@@ -60,38 +60,68 @@ st.markdown("""
         border-bottom: 2px solid #eab308 !important;
     }
 
-    /* 3. 좌측 1번째 열 (센터) 고정 */
+    /* 3. 좌측 1번째 열 고정 */
     .sticky-table th.freeze-col-1, 
     .sticky-table td.freeze-col-1 {
         position: sticky;
         left: 0;
         z-index: 10;
         background-color: #111827 !important;
-        border-right: 2px solid #374151 !important;
+        border-right: 1px solid #374151 !important;
         text-align: left;
     }
 
-    /* 4. 좌측 2번째 열 (고객사) 고정 */
+    /* 4. 좌측 2번째 열 고정 */
     .sticky-table th.freeze-col-2, 
     .sticky-table td.freeze-col-2 {
         position: sticky;
         left: 140px;
         z-index: 10;
         background-color: #111827 !important;
-        border-right: 2px solid #374151 !important;
+        border-right: 1px solid #374151 !important;
         text-align: left;
     }
 
-    /* 5. 교차 모서리 z-index 최우선 처리 */
+    /* 5. 좌측 3번째 열 (고객사 상세일 때 총 출고건수 위치) 고정 */
+    .sticky-table th.freeze-col-3, 
+    .sticky-table td.freeze-col-3 {
+        position: sticky;
+        left: 280px;
+        z-index: 10;
+        background-color: #1e1b4b !important;
+        color: #a5b4fc !important;
+        font-weight: bold;
+        border-right: 2px solid #4f46e5 !important;
+        text-align: right;
+    }
+
+    /* 센터 요약일 때 총 출고건수(2번째 열 위치) 강조 */
+    .sticky-table th.freeze-col-2-total, 
+    .sticky-table td.freeze-col-2-total {
+        position: sticky;
+        left: 140px;
+        z-index: 10;
+        background-color: #1e1b4b !important;
+        color: #a5b4fc !important;
+        font-weight: bold;
+        border-right: 2px solid #4f46e5 !important;
+        text-align: right;
+    }
+
+    /* 6. 교차 모서리 z-index 최우선 처리 */
     .sticky-table thead tr th.freeze-col-1,
-    .sticky-table thead tr th.freeze-col-2 {
+    .sticky-table thead tr th.freeze-col-2,
+    .sticky-table thead tr th.freeze-col-3,
+    .sticky-table thead tr th.freeze-col-2-total {
         z-index: 30 !important;
-        background-color: #1f2937 !important;
     }
     .sticky-table tr.total-row td.freeze-col-1,
-    .sticky-table tr.total-row td.freeze-col-2 {
+    .sticky-table tr.total-row td.freeze-col-2,
+    .sticky-table tr.total-row td.freeze-col-3,
+    .sticky-table tr.total-row td.freeze-col-2-total {
         z-index: 25 !important;
         background-color: #1e293b !important;
+        color: #facc15 !important;
     }
 
     /* 소계 행 스타일 */
@@ -177,7 +207,7 @@ if st.sidebar.button("🔄 드라이브 동기화 / 새로고침"):
 df_raw = load_data()
 
 if df_raw.empty:
-    st.sidebar.warning("⚠️ 집계된 데이터가 없습니다.")
+    st.sidebar.warning("⚠️️ 집계된 데이터가 없습니다.")
     st.info("구글 드라이브 폴더에 새 엑셀 파일을 올린 후 [🔄 드라이브 동기화 / 새로고침] 버튼을 눌러주세요.")
 else:
     st.sidebar.success(f"데이터 로드 성공! (총 {len(df_raw):,}개 집계 레코드)")
@@ -215,19 +245,29 @@ if not df_raw.empty:
             use_container_width=True
         )
 
-# 2D 틀고정 HTML 스티키 테이블 렌더링 및 하단 엑셀 다운로드 버튼 함수
+# 2D/3D 틀고정 HTML 스티키 테이블 렌더링 함수
 def render_sticky_pivot(df, index_names, key_suffix=""):
     html = ['<div class="sticky-table-container"><table class="sticky-table"><thead><tr>']
     
+    # 좌측 고정 열 개수 판단 (인덱스 + 총 출고건수까지 고정)
+    num_indices = len(index_names)
+    
     for idx_i, idx_name in enumerate(index_names, 1):
-        freeze_cls = f' class="freeze-col-{idx_i}"' if idx_i <= 2 else ''
+        freeze_cls = f' class="freeze-col-{idx_i}"'
         html.append(f'<th{freeze_cls}>{idx_name}</th>')
     
     cols = [c for c in df.columns]
     for c in cols:
-        is_m_sum = "월 합계" in str(c) or ("월" in str(c) and "일자" not in str(c) and "-" not in str(c))
-        col_cls = ' class="month-sum-col"' if is_m_sum else ''
-        html.append(f'<th{col_cls}>{c}</th>')
+        is_total_col = (c == '총 출고건수')
+        is_m_sum = ("월 합계" in str(c) or ("월" in str(c) and "일자" not in str(c) and "-" not in str(c))) and not is_total_col
+        
+        if is_total_col:
+            freeze_cls = f' class="freeze-col-{num_indices + 1}"' if num_indices == 2 else ' class="freeze-col-2-total"'
+            html.append(f'<th{freeze_cls}>{c}</th>')
+        else:
+            col_cls = ' class="month-sum-col"' if is_m_sum else ''
+            html.append(f'<th{col_cls}>{c}</th>')
+            
     html.append('</tr></thead><tbody>')
     
     for idx_val, row in df.iterrows():
@@ -239,17 +279,25 @@ def render_sticky_pivot(df, index_names, key_suffix=""):
         
         if isinstance(idx_val, tuple):
             for idx_i, v in enumerate(idx_val, 1):
-                freeze_cls = f' class="freeze-col-{idx_i}"' if idx_i <= 2 else ''
+                freeze_cls = f' class="freeze-col-{idx_i}"'
                 html.append(f'<td{freeze_cls}>{v}</td>')
         else:
             freeze_cls = ' class="freeze-col-1"'
             html.append(f'<td{freeze_cls}>{idx_val}</td>')
             
         for c_name, val in zip(cols, row):
-            is_m_sum = "월 합계" in str(c_name) or ("월" in str(c_name) and "-" not in str(c_name))
-            td_cls = ' class="month-sum-col"' if is_m_sum else ''
+            is_total_col = (c_name == '총 출고건수')
+            is_m_sum = ("월 합계" in str(c_name) or ("월" in str(c_name) and "-" not in str(c_name))) and not is_total_col
+            
             val_str = f"{int(val):,}" if pd.notnull(val) and isinstance(val, (int, float)) else str(val)
-            html.append(f'<td{td_cls}>{val_str}</td>')
+            
+            if is_total_col:
+                freeze_cls = f' class="freeze-col-{num_indices + 1}"' if num_indices == 2 else ' class="freeze-col-2-total"'
+                html.append(f'<td{freeze_cls}>{val_str}</td>')
+            else:
+                td_cls = ' class="month-sum-col"' if is_m_sum else ''
+                html.append(f'<td{td_cls}>{val_str}</td>')
+                
         html.append('</tr>')
         
     html.append('</tbody></table></div>')
@@ -284,7 +332,7 @@ def expand_selected_centers(selected_list, all_centers):
             expanded.add(item)
     return list(expanded)
 
-# 월별 합계 컬럼 동적 삽입 함수
+# 월별 합계 컬럼 동적 삽입 및 총 출고건수 위치 조정 함수
 def inject_monthly_sum_columns(pivot_df):
     date_cols = [c for c in pivot_df.columns if c != '총 출고건수']
     date_cols_sorted = sorted(date_cols)
@@ -296,14 +344,16 @@ def inject_monthly_sum_columns(pivot_df):
         
     new_df = pd.DataFrame(index=pivot_df.index)
     
+    # 1. 총 출고건수를 제일 좌측(첫 번째 데이터 열)로배치
+    if '총 출고건수' in pivot_df.columns:
+        new_df['총 출고건수'] = pivot_df['총 출고건수']
+
+    # 2. 월별 합계 및 일자별 컬럼 순서 배치
     for m_key, m_dates in month_groups.items():
         m_label = f"{m_key[5:7]}월 합계"
         new_df[m_label] = pivot_df[m_dates].sum(axis=1)
         for d in m_dates:
             new_df[d] = pivot_df[d]
-            
-    if '총 출고건수' in pivot_df.columns:
-        new_df['총 출고건수'] = pivot_df['총 출고건수']
         
     return new_df
 
@@ -360,6 +410,10 @@ with tab1:
                 filtered_df['연월'] = filtered_df['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
                 pivot_df = pd.pivot_table(filtered_df, index=group_cols, columns='연월', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_df['총 출고건수'] = pivot_df.sum(axis=1)
+                
+                # '총 출고건수' 컬럼을 좌측 첫 번째 위치로 이동
+                cols_order = ['총 출고건수'] + [c for c in pivot_df.columns if c != '총 출고건수']
+                pivot_df = pivot_df[cols_order]
             else:
                 pivot_df = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_df['총 출고건수'] = pivot_df.sum(axis=1)
@@ -416,6 +470,8 @@ with tab2:
             df_tab2['연월'] = df_tab2['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
             pivot_df2 = pd.pivot_table(df_tab2, index=[target_col], columns='연월', values='출고건수', aggfunc='sum', fill_value=0)
             pivot_df2['총 출고건수'] = pivot_df2.sum(axis=1)
+            cols_order2 = ['총 출고건수'] + [c for c in pivot_df2.columns if c != '총 출고건수']
+            pivot_df2 = pivot_df2[cols_order2]
         else:
             pivot_df2 = pd.pivot_table(df_tab2, index=[target_col], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
             pivot_df2['총 출고건수'] = pivot_df2.sum(axis=1)
@@ -439,6 +495,8 @@ with tab3:
             df_tab3['연월'] = df_tab3['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
             pivot_df3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='연월', values='출고건수', aggfunc='sum', fill_value=0)
             pivot_df3['총 출고건수'] = pivot_df3.sum(axis=1)
+            cols_order3 = ['총 출고건수'] + [c for c in pivot_df3.columns if c != '총 출고건수']
+            pivot_df3 = pivot_df3[cols_order3]
         else:
             pivot_df3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
             pivot_df3['총 출고건수'] = pivot_df3.sum(axis=1)
