@@ -75,14 +75,14 @@ st.markdown("""
     .sticky-table th.freeze-col-2, 
     .sticky-table td.freeze-col-2 {
         position: sticky;
-        left: 140px; /* 1번째 열 너비 고려 */
+        left: 140px;
         z-index: 10;
         background-color: #111827 !important;
         border-right: 2px solid #374151 !important;
         text-align: left;
     }
 
-    /* 5. 교차 모서리 (좌측 고정 열 + 상단 고정 헤더/합계) z-index 최우선 처리 */
+    /* 5. 교차 모서리 z-index 최우선 처리 */
     .sticky-table thead tr th.freeze-col-1,
     .sticky-table thead tr th.freeze-col-2 {
         z-index: 30 !important;
@@ -210,8 +210,6 @@ if not df_raw.empty:
 def render_sticky_pivot(df, index_names):
     html = ['<div class="sticky-table-container"><table class="sticky-table"><thead><tr>']
     
-    num_freeze_cols = len(index_names)
-    
     for idx_i, idx_name in enumerate(index_names, 1):
         freeze_cls = f' class="freeze-col-{idx_i}"' if idx_i <= 2 else ''
         html.append(f'<th{freeze_cls}>{idx_name}</th>')
@@ -244,6 +242,21 @@ def render_sticky_pivot(df, index_names):
     html.append('</tbody></table></div>')
     st.markdown("".join(html), unsafe_allow_html=True)
 
+# 센터 확장 변환 함수 (소계 선택 시 포함된 센터 목록으로 확장)
+def expand_selected_centers(selected_list, all_centers):
+    expanded = set()
+    c_375_all = [c for c in all_centers if '1층' in str(c) or '375 1' in str(c)]
+    c_xfc_all = [c for c in all_centers if 'XFC' in str(c).upper()]
+
+    for item in selected_list:
+        if item == "375 소계":
+            expanded.update(c_375_all)
+        elif item == "XFC 소계":
+            expanded.update(c_xfc_all)
+        else:
+            expanded.add(item)
+    return list(expanded)
+
 # --- 메인 탭 화면 ---
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 센터/고객사별 일자 출고현황", 
@@ -252,18 +265,29 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 SKU별 출고량"
 ])
 
-# Tab 1: 센터/고객사별 일자 출고현황 (2D 틀고정)
+# Tab 1: 센터/고객사별 일자 출고현황
 with tab1:
     st.header("센터 & 고객사별 일자 출고현황 (06시 영업마감 기준)")
     if not df_raw.empty:
+        raw_centers = sorted(list(df_raw['센터'].dropna().unique()))
+        
+        # 드롭다운 옵션에 소계 항목 추가
+        center_options = []
+        if any('1층' in str(c) or '375 1' in str(c) for c in raw_centers):
+            center_options.append("375 소계")
+        if any('XFC' in str(c).upper() for c in raw_centers):
+            center_options.append("XFC 소계")
+        center_options.extend(raw_centers)
+
         col1, col2, col3 = st.columns([2, 2, 2])
         with col1:
-            centers = st.multiselect("1. 센터 선택 (미선택 시 전체)", sorted(list(df_raw['센터'].dropna().unique())), key="tab1_centers")
+            selected_center_input = st.multiselect("1. 센터 선택 (미선택 시 전체)", center_options, key="tab1_centers")
+            expanded_centers = expand_selected_centers(selected_center_input, raw_centers) if selected_center_input else []
         with col2:
             show_client = st.radio("2. 고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"])
         with col3:
             if "보이기" in show_client:
-                available_clients_df = df_raw[df_raw['센터'].isin(centers)] if centers else df_raw
+                available_clients_df = df_raw[df_raw['센터'].isin(expanded_centers)] if expanded_centers else df_raw
                 available_clients = sorted(list(available_clients_df['고객사'].dropna().unique()))
                 clients = st.multiselect("3. 고객사 선택 (미선택 시 전체)", available_clients, key="tab1_clients")
             else:
@@ -271,11 +295,14 @@ with tab1:
                 st.selectbox("3. 고객사 선택", ["고객사 숨김 상태"], disabled=True)
 
         filtered_df = df_raw.copy()
-        if centers: filtered_df = filtered_df[filtered_df['센터'].isin(centers)]
-        if "보이기" in show_client and clients: filtered_df = filtered_df[filtered_df['고객사'].isin(clients)]
+        if expanded_centers: 
+            filtered_df = filtered_df[filtered_df['센터'].isin(expanded_centers)]
+        if "보이기" in show_client and clients: 
+            filtered_df = filtered_df[filtered_df['고객사'].isin(clients)]
 
         group_cols = ['센터']
-        if "보이기" in show_client: group_cols.append('고객사')
+        if "보이기" in show_client: 
+            group_cols.append('고객사')
 
         if not filtered_df.empty:
             pivot_df = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
@@ -394,11 +421,20 @@ with tab4:
             end_date = st.date_input("📅 조회 종료일자:", value=st.session_state['sku_end_date'], key="tab4_end_picker")
             st.session_state['sku_end_date'] = end_date
 
+        raw_centers_tab4 = sorted(list(df_raw['센터'].dropna().unique()))
+        center_options_tab4 = []
+        if any('1층' in str(c) or '375 1' in str(c) for c in raw_centers_tab4):
+            center_options_tab4.append("375 소계")
+        if any('XFC' in str(c).upper() for c in raw_centers_tab4):
+            center_options_tab4.append("XFC 소계")
+        center_options_tab4.extend(raw_centers_tab4)
+
         col1, col2 = st.columns(2)
         with col1:
-            selected_centers = st.multiselect("센터 선택 (다중 선택 가능)", sorted(list(df_raw['센터'].dropna().unique())), key="tab4_centers")
+            selected_centers_input_tab4 = st.multiselect("센터 선택 (다중 선택 가능)", center_options_tab4, key="tab4_centers")
+            expanded_centers_tab4 = expand_selected_centers(selected_centers_input_tab4, raw_centers_tab4) if selected_centers_input_tab4 else []
         
-        filtered_by_center = df_raw[df_raw['센터'].isin(selected_centers)] if selected_centers else df_raw
+        filtered_by_center = df_raw[df_raw['센터'].isin(expanded_centers_tab4)] if expanded_centers_tab4 else df_raw
         available_clients = sorted(list(filtered_by_center['고객사'].dropna().unique()))
         
         with col2:
@@ -409,8 +445,8 @@ with tab4:
         if start_date and end_date:
             sku_df = sku_df[(sku_df['영업마감일자_dt'].dt.date >= start_date) & (sku_df['영업마감일자_dt'].dt.date <= end_date)]
 
-        if selected_centers:
-            sku_df = sku_df[sku_df['센터'].isin(selected_centers)]
+        if expanded_centers_tab4:
+            sku_df = sku_df[sku_df['센터'].isin(expanded_centers_tab4)]
         if selected_clients:
             sku_df = sku_df[sku_df['고객사'].isin(selected_clients)]
             
