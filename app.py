@@ -35,7 +35,7 @@ def init_local_db():
 
 init_local_db()
 
-# 동기화 버튼 클릭 시에만 etl_pipeline 동적 임포트
+# 동기화 실행
 def run_sync():
     if "gcp_service_account" in st.secrets:
         try:
@@ -275,59 +275,95 @@ def inject_monthly_sum_columns(pivot_df):
         
     return new_df
 
-# 메인 센터 종합 현황 모드
+# ==========================================
+# 1. 메인 센터 종합 현황 모드
+# ==========================================
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
     
-    b2c_months = set(df_b2c['영업마감일자'].str.slice(0, 7).dropna().unique()) if not df_b2c.empty and '영업마감일자' in df_b2c.columns else set()
-    inbound_months = set(df_inbound['영업마감일자'].str.slice(0, 7).dropna().unique()) if not df_inbound.empty and '영업마감일자' in df_inbound.columns else set()
-    
-    all_months = sorted(list(b2c_months.union(inbound_months)))
-    month_options = ["전체 기간"] + [f"{m[5:7]}월 ({m})" for m in all_months]
-    
-    col_filter1, col_filter2 = st.columns([2, 4])
-    with col_filter1:
-        selected_month_label = st.selectbox("📅 조회 월 선택:", month_options)
+    if 'selected_month_num' not in st.session_state:
+        st.session_state['selected_month_num'] = "누적"
         
-    filtered_b2c = df_b2c.copy() if not df_b2c.empty else pd.DataFrame()
-    filtered_inbound = df_inbound.copy() if not df_inbound.empty else pd.DataFrame()
+    st.markdown("##### 🗓️ 기준 월 선택")
+    month_cols = st.columns(13)
+    months_list = [f"{i}월" for i in range(1, 13)] + ["누적"]
     
-    if selected_month_label != "전체 기간":
-        target_m = selected_month_label.split('(')[1].replace(')', '').strip()
-        if not filtered_b2c.empty and '영업마감일자' in filtered_b2c.columns:
-            filtered_b2c = filtered_b2c[filtered_b2c['영업마감일자'].str.startswith(target_m)]
-        if not filtered_inbound.empty and '영업마감일자' in filtered_inbound.columns:
-            filtered_inbound = filtered_inbound[filtered_inbound['영업마감일자'].str.startswith(target_m)]
+    for idx, m_name in enumerate(months_list):
+        with month_cols[idx]:
+            is_active = (st.session_state['selected_month_num'] == m_name)
+            btn_style = "primary" if is_active else "secondary"
+            if st.button(m_name, key=f"btn_month_{m_name}", type=btn_style, use_container_width=True):
+                st.session_state['selected_month_num'] = m_name
+                st.rerun()
 
-    total_b2c_cnt = filtered_b2c['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
-    total_inbound_cnt = filtered_inbound['입고건수'].sum() if not filtered_inbound.empty and '입고건수' in filtered_inbound.columns else 0
-    total_b2b_cnt = 0
-
-    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-    kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("🚚 B2C 출고건수", f"{total_b2c_cnt:,} 건")
-    kpi2.metric("📦 입고건수", f"{total_inbound_cnt:,} 건")
-    kpi3.metric("🏭 B2B 건수 (연동 준비중)", f"{total_b2b_cnt:,} 건")
+    selected_m = st.session_state['selected_month_num']
     
-    st.markdown("---")
-    st.subheader("📋 센터별 운영 항목 종합 비교표")
-    
-    summary_rows = []
     raw_centers = set()
     if not df_b2c.empty and '센터' in df_b2c.columns:
         raw_centers.update(df_b2c['센터'].dropna().unique())
     if not df_inbound.empty and '센터' in df_inbound.columns:
         raw_centers.update(df_inbound['센터'].dropna().unique())
         
-    for center_name in sorted(list(raw_centers)):
+    sorted_centers = sorted(list(raw_centers))
+    
+    selected_centers_filter = st.multiselect(
+        "🏢 센터 선택 (미선택 시 전체 센터 조회):", 
+        sorted_centers, 
+        default=[],
+        key="main_center_filter"
+    )
+
+    filtered_b2c = df_b2c.copy() if not df_b2c.empty else pd.DataFrame()
+    filtered_inbound = df_inbound.copy() if not df_inbound.empty else pd.DataFrame()
+
+    # 센터 필터 적용
+    if selected_centers_filter:
+        if not filtered_b2c.empty and '센터' in filtered_b2c.columns:
+            filtered_b2c = filtered_b2c[filtered_b2c['센터'].isin(selected_centers_filter)]
+        if not filtered_inbound.empty and '센터' in filtered_inbound.columns:
+            filtered_inbound = filtered_inbound[filtered_inbound['센터'].isin(selected_centers_filter)]
+
+    # 월 필터 적용
+    if selected_m != "누적":
+        m_digit = selected_m.replace("월", "").zfill(2)
+        if not filtered_b2c.empty and '영업마감일자' in filtered_b2c.columns:
+            filtered_b2c = filtered_b2c[filtered_b2c['영업마감일자'].str.slice(5, 7) == m_digit]
+        if not filtered_inbound.empty and '영업마감일자' in filtered_inbound.columns:
+            filtered_inbound = filtered_inbound[filtered_inbound['영업마감일자'].str.slice(5, 7) == m_digit]
+
+    # ★ 메인 종합현황용 입고 필터: '입고완료' 및 '승인대기' 상태만 합산! ★
+    if not filtered_inbound.empty and '상태' in filtered_inbound.columns:
+        main_inbound_df = filtered_inbound[
+            filtered_inbound['상태'].astype(str).str.contains('입고완료|입고 완료|승인대기|승인 대기', na=False)
+        ]
+    else:
+        main_inbound_df = filtered_inbound
+
+    total_b2c_cnt = filtered_b2c['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
+    total_inbound_cnt = main_inbound_df['입고건수'].sum() if not main_inbound_df.empty and '입고건수' in main_inbound_df.columns else 0
+    total_b2b_cnt = 0
+
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+    kpi1, kpi2, kpi3 = st.columns(3)
+    kpi1.metric("🚚 B2C 출고건수", f"{total_b2c_cnt:,} 건")
+    kpi2.metric("📦 입고건수 (입고완료/승인대기)", f"{total_inbound_cnt:,} 건")
+    kpi3.metric("🏭 B2B 건수 (연동 준비중)", f"{total_b2b_cnt:,} 건")
+    
+    st.markdown("---")
+    st.subheader("📋 센터별 운영 항목 종합 비교표")
+    
+    summary_rows = []
+    centers_to_loop = selected_centers_filter if selected_centers_filter else sorted_centers
+        
+    for center_name in centers_to_loop:
         b2c_c = filtered_b2c[filtered_b2c['센터'] == center_name]['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
-        in_c = filtered_inbound[filtered_inbound['센터'] == center_name]['입고건수'].sum() if not filtered_inbound.empty and '입고건수' in filtered_inbound.columns else 0
+        in_c = main_inbound_df[main_inbound_df['센터'] == center_name]['입고건수'].sum() if not main_inbound_df.empty and '입고건수' in main_inbound_df.columns else 0
         b2b_c = 0
         
         summary_rows.append({
             '센터': center_name,
             'B2C 출고건수': b2c_c,
-            '입고건수': in_c,
+            '입고건수 (입고완료/승인대기)': in_c,
             'B2B 건수': b2b_c,
             '총 작업건수': b2c_c + in_c + b2b_c
         })
@@ -337,7 +373,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         total_row = pd.DataFrame([{
             '센터': '★ 전체 합계',
             'B2C 출고건수': df_summary['B2C 출고건수'].sum(),
-            '입고건수': df_summary['입고건수'].sum(),
+            '입고건수 (입고완료/승인대기)': df_summary['입고건수 (입고완료/승인대기)'].sum(),
             'B2B 건수': df_summary['B2B 건수'].sum(),
             '총 작업건수': df_summary['총 작업건수'].sum()
         }])
@@ -345,7 +381,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         st.dataframe(
             df_summary_final.style.format({
                 'B2C 출고건수': '{:,}',
-                '입고건수': '{:,}',
+                '입고건수 (입고완료/승인대기)': '{:,}',
                 'B2B 건수': '{:,}',
                 '총 작업건수': '{:,}'
             }),
