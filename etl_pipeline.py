@@ -36,6 +36,8 @@ def get_sheets_service(creds_dict):
     return build('sheets', '4', credentials=creds)
 
 def download_db_from_drive(service):
+    if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 1000:
+        return True
     try:
         query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
         results = service.files().list(
@@ -108,18 +110,21 @@ def fetch_google_sheets_ib(sheets_service):
         return pd.DataFrame()
 
 def list_files_in_folder(service, folder_id):
-    query = f"'{folder_id}' in parents and trashed = false and name != '{DB_PATH}'"
-    results = service.files().list(
-        q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
-    ).execute()
-    return results.get('files', [])
+    try:
+        query = f"'{folder_id}' in parents and trashed = false and name != '{DB_PATH}'"
+        results = service.files().list(
+            q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
+        ).execute()
+        return results.get('files', [])
+    except Exception as e:
+        print(f"Folder list error ({folder_id}): {e}")
+        return []
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
     download_db_from_drive(service)
 
     conn = sqlite3.connect(DB_PATH)
     
-    # Raw 및 요약 테이블 생성
     conn.execute("""
     CREATE TABLE IF NOT EXISTS raw_shipments (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, `배송 속성` TEXT,
@@ -154,7 +159,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 하위 폴더별 개별 스캔
     folder_mapping = [
         (INBOUND_FOLDER_ID, 'INBOUND'),
         (B2C_FOLDER_ID, 'B2C'),
@@ -163,21 +167,16 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     all_target_files = []
     for f_id, category in folder_mapping:
-        try:
-            files = list_files_in_folder(service, f_id)
-            for f in files:
-                if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv'):
-                    f['category'] = category
-                    f['source_folder_id'] = f_id
-                    all_target_files.append(f)
-        except Exception as e:
-            print(f"Folder list error ({f_id}): {e}")
+        files = list_files_in_folder(service, f_id)
+        for f in files:
+            if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv'):
+                f['category'] = category
+                f['source_folder_id'] = f_id
+                all_target_files.append(f)
 
     total_count = len(all_target_files)
     start_time = time.time()
-
-    if progress_callback:
-        progress_callback(current=0, total=total_count, filename=f"총 {total_count}개 감지됨", eta=0)
+    new_files_processed = False
 
     for idx, f in enumerate(all_target_files, 1):
         file_id, file_name = f['id'], f['name']
@@ -185,17 +184,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         src_folder = f['source_folder_id']
 
         if progress_callback:
-            elapsed = time.time() - start_time
-            avg_time = elapsed / (idx - 1) if idx > 1 else 3.0
-            rem_files = total_count - (idx - 1)
-            eta_seconds = int(avg_time * rem_files)
-            
-            progress_callback(
-                current=idx, 
-                total=total_count, 
-                filename=file_name, 
-                eta=eta_seconds
-            )
+            progress_callback(current=idx, total=total_count, filename=file_name, eta=0)
 
         try:
             request = service.files().get_media(fileId=file_id)
@@ -212,11 +201,9 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 df = pd.read_excel(fh, engine='openpyxl')
             
             df_cols_no_space = [str(c).replace(" ", "").strip() for c in df.columns]
-
             is_inbound = (category == 'INBOUND') or any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량']) or ('입고요청서' in file_name)
 
             if is_inbound:
-                # --- 입고 파일 파싱 ---
                 col_map_inbound = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -277,7 +264,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 conn.executemany(insert_inbound_sql, df_in[target_in_cols].to_numpy().tolist())
 
             else:
-                # --- B2C 출고 파일 파싱 ---
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -320,7 +306,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 """
                 conn.executemany(insert_sql, df_b2c_f[target_cols].to_numpy().tolist())
 
-            # 처리 완료 폴더로 안전 이동
+            # 처리 완료 폴더로 이동
             try:
                 service.files().update(
                     fileId=file_id,
@@ -332,12 +318,10 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             except Exception as move_e:
                 print(f"Move error for {file_name}: {move_e}")
 
+            new_files_processed = True
         except Exception as file_e:
             print(f"Error processing file {file_name}: {file_e}")
             continue
-
-    if progress_callback and total_count > 0:
-        progress_callback(current=total_count, total=total_count, filename="구글 시트 연동 및 통합 DB 집계 중...", eta=0)
 
     # 1. B2C 요약 재집계
     conn.execute("DELETE FROM daily_summary;")
@@ -414,4 +398,5 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     conn.commit()
     conn.close()
 
-    upload_db_to_drive(service)
+    if new_files_processed:
+        upload_db_to_drive(service)
