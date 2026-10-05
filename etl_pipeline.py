@@ -36,16 +36,14 @@ def get_sheets_service(creds_dict):
     return build('sheets', '4', credentials=creds)
 
 def download_db_from_drive(service):
-    if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 1000:
-        return True
     try:
         query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
         results = service.files().list(
-            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
+            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True
         ).execute()
         files = results.get('files', [])
 
-        if files:
+        if files and not os.path.exists(DB_PATH):
             file_id = files[0]['id']
             request = service.files().get_media(fileId=file_id)
             with open(DB_PATH, 'wb') as f:
@@ -64,7 +62,7 @@ def upload_db_to_drive(service):
     try:
         query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
         results = service.files().list(
-            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
+            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True
         ).execute()
         files = results.get('files', [])
 
@@ -113,7 +111,7 @@ def list_files_in_folder(service, folder_id):
     try:
         query = f"'{folder_id}' in parents and trashed = false and name != '{DB_PATH}'"
         results = service.files().list(
-            q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
+            q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True
         ).execute()
         return results.get('files', [])
     except Exception as e:
