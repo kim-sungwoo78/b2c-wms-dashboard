@@ -1,5 +1,6 @@
 import os
 import io
+import time
 import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
@@ -61,7 +62,7 @@ def upload_db_to_drive(service):
             body=file_metadata, media_body=media, supportsAllDrives=True
         ).execute()
 
-def process_and_update(service):
+def process_and_update(service, progress_callback=None):
     download_db_from_drive(service)
 
     conn = sqlite3.connect(DB_PATH)
@@ -88,13 +89,28 @@ def process_and_update(service):
     ).execute()
     files = results.get('files', [])
 
-    new_files_processed = False
+    target_files = [f for f in files if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv')]
+    total_count = len(target_files)
 
-    for f in files:
+    new_files_processed = False
+    start_time = time.time()
+
+    for idx, f in enumerate(target_files, 1):
         file_id, file_name = f['id'], f['name']
         
-        if not (file_name.lower().endswith('.xlsx') or file_name.lower().endswith('.csv')):
-            continue
+        # 콜백 호출 (진행률 및 예상시간 업데이트)
+        if progress_callback:
+            elapsed = time.time() - start_time
+            avg_time = elapsed / (idx - 1) if idx > 1 else 3.0  # 파일당 기본 3초 추정
+            rem_files = total_count - (idx - 1)
+            eta_seconds = int(avg_time * rem_files)
+            
+            progress_callback(
+                current=idx - 1, 
+                total=total_count, 
+                filename=file_name, 
+                eta=eta_seconds
+            )
 
         request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
@@ -104,7 +120,6 @@ def process_and_update(service):
             _, done = downloader.next_chunk()
         fh.seek(0)
 
-        # CSV/Excel 분기 처리 (메모리 경량화)
         if file_name.lower().endswith('.csv'):
             df = pd.read_csv(fh)
         else:
@@ -140,13 +155,11 @@ def process_and_update(service):
             if tc not in df.columns:
                 df[tc] = None
 
-        # 10,000건씩 분할하여 DB 저장 (메모리 안정화)
         chunk_size = 10000
         for i in range(0, len(df), chunk_size):
             chunk = df[target_cols].iloc[i:i+chunk_size]
             chunk.to_sql('raw_shipments', conn, if_exists='append', index=False)
 
-        # 처리 완료 파일 이동
         service.files().update(
             fileId=file_id,
             addParents=PROCESSED_FOLDER_ID,
@@ -156,6 +169,10 @@ def process_and_update(service):
         ).execute()
 
         new_files_processed = True
+
+    # 마지막 100% 완료 상태 표기
+    if progress_callback and total_count > 0:
+        progress_callback(current=total_count, total=total_count, filename="최종 DB 집계 처리 중...", eta=0)
 
     if new_files_processed:
         conn.execute("""
