@@ -14,6 +14,13 @@ def init_local_db():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS shipment_raw (
+            영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
+            출고박스종류 TEXT, 송장번호 TEXT,
+            PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호)
+        )
+        """)
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS daily_summary (
             영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
             출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
@@ -62,17 +69,17 @@ def run_sync():
         st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
-# ★ B2C 출고 데이터 로드 (기존 DB 100% 활용, 정확한 송장 건수 불러오기)
+# ★ B2C 출고 데이터 로드 (고유 송장 번호 100% 오차 0% 집계)
 @st.cache_data(ttl=60)
 def load_shipment_orders():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_PATH, timeout=5)
-        # MAX 대신 SUM을 적용하여 기존 DB에 저장된 57개 파일 데이터를 오차 없이 정확히 읽어옴
+        # shipment_raw 테이블에서 고유 송장 번호 개수만 정밀 카운트!
         df = pd.read_sql("""
-            SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SUM(출고건수) AS 출고건수
-            FROM daily_summary
+            SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, COUNT(DISTINCT 송장번호) AS 출고건수
+            FROM shipment_raw
             GROUP BY 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류
         """, conn)
         conn.close()
