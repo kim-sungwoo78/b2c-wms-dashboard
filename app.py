@@ -83,8 +83,8 @@ def run_sync():
             service = etl_pipeline.get_drive_service(creds_dict)
             sheets_service = etl_pipeline.get_sheets_service(creds_dict)
             
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            progress_bar = st.sidebar.progress(0)
+            status_text = st.sidebar.empty()
 
             def update_progress(current, total, filename, eta):
                 if total > 0:
@@ -92,22 +92,22 @@ def run_sync():
                     progress_bar.progress(pct)
                     mins, secs = divmod(eta, 60)
                     eta_str = f"{mins}분 {secs}초" if mins > 0 else f"{secs}초"
-                    status_text.markdown(f"⏳ **동기화 및 구글 시트 매칭 중 ({pct}%)** - `{current}/{total}`개 완료\n\n📄 **처리 중**: `{filename}` | ⏱️ **남은 시간**: 약 **{eta_str}**")
+                    status_text.markdown(f"⏳ **동기화 중 ({pct}%)**\n\n📄 `{filename}`")
                 else:
-                    status_text.info("동기화 진행 중...")
+                    status_text.info("처리 중...")
 
             etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
             
             progress_bar.empty()
             status_text.empty()
             st.cache_data.clear()
-            st.success("✅ 동기화 및 데이터 업데이트가 완료되었습니다!")
+            st.sidebar.success("✅ 동기화 완료! 페이지를 새로고침(F5) 해주세요.")
             return True
         except Exception as e:
-            st.error(f"❌ 동기화 중 에러 발생: {e}")
+            st.sidebar.error(f"❌ 동기화 에러: {e}")
             return False
     else:
-        st.error("gcp_service_account 시크릿 설정이 없습니다.")
+        st.sidebar.error("시크릿 계정이 없습니다.")
     return False
 
 if "initial_synced" not in st.session_state:
@@ -147,7 +147,6 @@ st.title("🏢 센터 통합 물류 운영 대시보드")
 
 if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
     run_sync()
-    st.rerun()
 
 df_b2c = load_b2c_data()
 df_inbound = load_inbound_data()
