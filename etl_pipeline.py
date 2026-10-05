@@ -147,7 +147,16 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn = sqlite3.connect(DB_PATH, timeout=30)
     
-    # B2C 요약 테이블 (송장 기준 고유 출고건수 + 총출고수량)
+    # 1. 송장 단위 고유 출고 요약 테이블 (오차 제로)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS shipment_daily_summary (
+        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
+        출고박스종류 TEXT, 출고건수 INTEGER,
+        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류)
+    )
+    """)
+
+    # 2. SKU 단위 수량 요약 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -156,7 +165,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # 입고 요약 테이블
+    # 3. 입고 요약 테이블
     conn.execute("""
     CREATE TABLE IF NOT EXISTS inbound_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT,
@@ -326,8 +335,28 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 valid_mask = ~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)
                 df_b2c_valid = df_b2c_f[valid_mask]
 
-                # ★ 송장번호 고유 수 집계 및 저장
-                b2c_sum = df_b2c_valid.groupby(['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드']).agg(
+                # ★ 1. 송장 고유 출고건수 전용 저장 (shipment_daily_summary)
+                shipment_grp = df_b2c_valid.groupby(
+                    ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류']
+                ).agg(
+                    출고건수=('송장번호', 'nunique')
+                ).reset_index()
+
+                for _, row_s in shipment_grp.iterrows():
+                    conn.execute("""
+                    INSERT OR REPLACE INTO shipment_daily_summary
+                    (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 출고건수)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        row_s['영업마감일자'], row_s['센터'], row_s['고객사'],
+                        row_s['배송속성'], row_s['판매처'], row_s['출고박스종류'],
+                        int(row_s['출고건수'])
+                    ))
+
+                # ★ 2. SKU 수량 전용 저장 (daily_summary)
+                b2c_sum = df_b2c_valid.groupby(
+                    ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드']
+                ).agg(
                     출고건수=('송장번호', 'nunique'),
                     총출고수량=('총출고수량', 'sum')
                 ).reset_index()
