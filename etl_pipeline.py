@@ -18,7 +18,6 @@ def get_drive_service(creds_dict):
     )
     return build('drive', 'v3', credentials=creds)
 
-# --- 구글 드라이브에서 DB 파일 다운로드/업로드 관리 ---
 def download_db_from_drive(service):
     query = f"'{MAIN_UPLOAD_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
     results = service.files().list(
@@ -38,6 +37,8 @@ def download_db_from_drive(service):
     return False
 
 def upload_db_to_drive(service):
+    if not os.path.exists(DB_PATH):
+        return
     query = f"'{MAIN_UPLOAD_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
     results = service.files().list(
         q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True, corpora='allDrives'
@@ -60,9 +61,7 @@ def upload_db_to_drive(service):
             body=file_metadata, media_body=media, supportsAllDrives=True
         ).execute()
 
-# --- ETL 메인 파이프라인 ---
 def process_and_update(service):
-    # 동기화 시작 전 드라이브의 기존 DB 가져오기
     download_db_from_drive(service)
 
     conn = sqlite3.connect(DB_PATH)
@@ -105,7 +104,11 @@ def process_and_update(service):
             _, done = downloader.next_chunk()
         fh.seek(0)
 
-        df = pd.read_excel(fh) if file_name.lower().endswith('.xlsx') else pd.read_csv(fh)
+        # CSV/Excel 분기 처리 (메모리 경량화)
+        if file_name.lower().endswith('.csv'):
+            df = pd.read_csv(fh)
+        else:
+            df = pd.read_excel(fh, engine='openpyxl')
         
         df.columns = [str(c).replace(" ", "").strip() for c in df.columns]
 
@@ -137,8 +140,13 @@ def process_and_update(service):
             if tc not in df.columns:
                 df[tc] = None
 
-        df[target_cols].to_sql('raw_shipments', conn, if_exists='append', index=False)
+        # 10,000건씩 분할하여 DB 저장 (메모리 안정화)
+        chunk_size = 10000
+        for i in range(0, len(df), chunk_size):
+            chunk = df[target_cols].iloc[i:i+chunk_size]
+            chunk.to_sql('raw_shipments', conn, if_exists='append', index=False)
 
+        # 처리 완료 파일 이동
         service.files().update(
             fileId=file_id,
             addParents=PROCESSED_FOLDER_ID,
@@ -174,6 +182,5 @@ def process_and_update(service):
 
     conn.close()
 
-    # 업데이트된 DB를 구글 드라이브에 다시 업로드
     if new_files_processed or not os.path.exists(DB_PATH):
         upload_db_to_drive(service)
