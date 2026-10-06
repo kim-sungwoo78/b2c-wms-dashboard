@@ -765,10 +765,12 @@ elif main_mode == "🚚 B2C 출고 현황":
             min_date = df_b2c_sku['영업마감일자_dt'].min().date() if not df_b2c_sku['영업마감일자_dt'].isna().all() else datetime.now().date()
             max_date = df_b2c_sku['영업마감일자_dt'].max().date() if not df_b2c_sku['영업마감일자_dt'].isna().all() else datetime.now().date()
 
-            if 'sku_start_date' not in st.session_state:
-                st.session_state['sku_start_date'] = min_date
             if 'sku_end_date' not in st.session_state:
                 st.session_state['sku_end_date'] = max_date
+            if 'sku_start_date' not in st.session_state:
+                st.session_state['sku_start_date'] = min_date
+            if 'sku_picker_version' not in st.session_state:
+                st.session_state['sku_picker_version'] = 0
 
             raw_centers_tab4 = sorted(list(df_b2c_sku['센터'].dropna().unique()))
             center_options_tab4 = []
@@ -795,20 +797,42 @@ elif main_mode == "🚚 B2C 출고 현황":
             avail_months_tuples = sorted(list(set(df_b2c_sku['영업마감일자'].str.slice(0, 7).dropna().unique())), reverse=True)
             avail_months_labels = [f"{t[:4]}년 {int(t[5:7])}월" for t in avail_months_tuples]
 
+            # 현재 활성화된 빠른 버튼 감지 함수 (하이라이트 표시용)
+            curr_s = st.session_state['sku_start_date']
+            curr_e = st.session_state['sku_end_date']
+
+            def is_mode_active(btn_mode):
+                if btn_mode == "오늘":
+                    return curr_s == curr_e
+                elif btn_mode == "일주일":
+                    return curr_s == max(min_date, curr_e - timedelta(days=6))
+                elif btn_mode == "1개월":
+                    return curr_s == max(min_date, curr_e - timedelta(days=30))
+                elif btn_mode == "3개월":
+                    return curr_s == max(min_date, curr_e - timedelta(days=90))
+                elif btn_mode == "전체 기간":
+                    return curr_s == min_date and curr_e == max_date
+                return False
+
             p_col1, p_col2, p_col3, p_col4, p_col5, p_col6, p_col7, p_col8 = st.columns([1.8, 1.8, 2.5, 1.0, 1.0, 1.0, 1.0, 1.0])
 
-            curr_start = st.session_state['sku_start_date']
-            curr_end = st.session_state['sku_end_date']
+            # 동적 위젯 키 버전 생성
+            v_key = st.session_state['sku_picker_version']
 
             with p_col1:
-                start_date = st.date_input("시작일자:", value=curr_start, key="sku_start_picker_widget", label_visibility="collapsed")
+                input_start = st.date_input("시작일자:", value=curr_s, key=f"sku_start_{v_key}", label_visibility="collapsed")
             with p_col2:
-                end_date = st.date_input("종료일자:", value=curr_end, key="sku_end_picker_widget", label_visibility="collapsed")
+                input_end = st.date_input("종료일자:", value=curr_e, key=f"sku_end_{v_key}", label_visibility="collapsed")
 
-            need_rerun = False
+            if input_start != curr_s or input_end != curr_e:
+                st.session_state['sku_start_date'] = input_start
+                st.session_state['sku_end_date'] = input_end
+                st.rerun()
+
+            need_update = False
 
             with p_col3:
-                selected_m_labels = st.multiselect("월 선택 (1일~말일 지정)", avail_months_labels, key="sku_m_multiselect", label_visibility="collapsed", placeholder="월 선택 (다중가능)")
+                selected_m_labels = st.multiselect("월 선택 (1일~말일 지정)", avail_months_labels, key=f"sku_m_{v_key}", label_visibility="collapsed", placeholder="월 선택 (다중가능)")
                 if selected_m_labels:
                     selected_years_months = []
                     for lbl in selected_m_labels:
@@ -825,43 +849,46 @@ elif main_mode == "🚚 B2C 출고 현황":
                     if st.session_state['sku_start_date'] != m_start or st.session_state['sku_end_date'] != m_end:
                         st.session_state['sku_start_date'] = m_start
                         st.session_state['sku_end_date'] = m_end
-                        need_rerun = True
+                        need_update = True
 
             with p_col4:
-                if st.button("오늘", key="btn_today", use_container_width=True):
-                    st.session_state['sku_start_date'] = end_date
-                    st.session_state['sku_end_date'] = end_date
-                    need_rerun = True
+                btn_type_today = "primary" if is_mode_active("오늘") else "secondary"
+                if st.button("오늘", key="btn_today", type=btn_type_today, use_container_width=True):
+                    st.session_state['sku_start_date'] = curr_e
+                    st.session_state['sku_end_date'] = curr_e
+                    need_update = True
             with p_col5:
-                if st.button("일주일", key="btn_week", use_container_width=True):
-                    st.session_state['sku_start_date'] = max(min_date, end_date - timedelta(days=6))
-                    st.session_state['sku_end_date'] = end_date
-                    need_rerun = True
+                btn_type_week = "primary" if is_mode_active("일주일") else "secondary"
+                if st.button("일주일", key="btn_week", type=btn_type_week, use_container_width=True):
+                    st.session_state['sku_start_date'] = max(min_date, curr_e - timedelta(days=6))
+                    st.session_state['sku_end_date'] = curr_e
+                    need_update = True
             with p_col6:
-                if st.button("1개월", key="btn_1m", use_container_width=True):
-                    st.session_state['sku_start_date'] = max(min_date, end_date - timedelta(days=30))
-                    st.session_state['sku_end_date'] = end_date
-                    need_rerun = True
+                btn_type_1m = "primary" if is_mode_active("1개월") else "secondary"
+                if st.button("1개월", key="btn_1m", type=btn_type_1m, use_container_width=True):
+                    st.session_state['sku_start_date'] = max(min_date, curr_e - timedelta(days=30))
+                    st.session_state['sku_end_date'] = curr_e
+                    need_update = True
             with p_col7:
-                if st.button("3개월", key="btn_3m", use_container_width=True):
-                    st.session_state['sku_start_date'] = max(min_date, end_date - timedelta(days=90))
-                    st.session_state['sku_end_date'] = end_date
-                    need_rerun = True
+                btn_type_3m = "primary" if is_mode_active("3개월") else "secondary"
+                if st.button("3개월", key="btn_3m", type=btn_type_3m, use_container_width=True):
+                    st.session_state['sku_start_date'] = max(min_date, curr_e - timedelta(days=90))
+                    st.session_state['sku_end_date'] = curr_e
+                    need_update = True
             with p_col8:
-                if st.button("전체 기간", key="btn_all", use_container_width=True):
+                btn_type_all = "primary" if is_mode_active("전체 기간") else "secondary"
+                if st.button("전체 기간", key="btn_all", type=btn_type_all, use_container_width=True):
                     st.session_state['sku_start_date'] = min_date
                     st.session_state['sku_end_date'] = max_date
-                    need_rerun = True
+                    need_update = True
 
-            if need_rerun:
+            if need_update:
+                st.session_state['sku_picker_version'] += 1
                 st.rerun()
 
-            st.session_state['sku_start_date'] = start_date
-            st.session_state['sku_end_date'] = end_date
-                
             sku_df = df_b2c_sku.copy()
-            if start_date and end_date:
-                sku_df = sku_df[(sku_df['영업마감일자_dt'].dt.date >= start_date) & (sku_df['영업마감일자_dt'].dt.date <= end_date)]
+            if curr_s and curr_e:
+                sku_df = sku_df[(sku_df['영업마감일자_dt'].dt.date >= curr_s) & (sku_df['영업마감일자_dt'].dt.date <= curr_e)]
 
             if expanded_centers_tab4:
                 sku_df = sku_df[sku_df['센터'].isin(expanded_centers_tab4)]
@@ -906,7 +933,7 @@ elif main_mode == "📦 입고 현황":
             expanded_months_ib1 = render_month_button_bar(
                 df_inbound, 
                 session_key_selected="ib1_exp_months", 
-                title_label="🗓️️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", 
+                title_label="🗓️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", 
                 allow_nujak=False, 
                 multi_select=True
             )
@@ -940,7 +967,7 @@ elif main_mode == "📦 입고 현황":
             expanded_months_ib2 = render_month_button_bar(
                 df_inbound, 
                 session_key_selected="ib2_exp_months", 
-                title_label="🗓️️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", 
+                title_label="🗓️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", 
                 allow_nujak=False, 
                 multi_select=True
             )
