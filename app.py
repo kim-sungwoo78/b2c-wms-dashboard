@@ -3,7 +3,7 @@ import io
 import sqlite3
 import pandas as pd
 import streamlit as st
-import plotly.express as px
+import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
 # 페이지 기본 설정
@@ -335,7 +335,6 @@ def inject_monthly_sum_columns(pivot_df):
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
     
-    # ★ [핵심] 현재 날짜 -1일 적용 기준월 기본값 계산 ★
     adjusted_today = datetime.now() - timedelta(days=1)
     default_month_str = f"{adjusted_today.month}월"
     
@@ -438,7 +437,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     if summary_rows:
         df_summary = pd.DataFrame(summary_rows)
         
-        # B2C 출고현황 탭 서식과 완전 통일 (375 소계, XFC 소계 반영)
         sub_sections = []
         
         c_375 = df_summary[df_summary['센터'].str.contains('1층|375 1', na=False)]
@@ -481,7 +479,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         
         df_summary_final = pd.concat([total_row, body_summary]).reset_index(drop=True)
         
-        # 중앙 정렬 및 정렬(Sorting) 기능 비활성화
         st.markdown("""
         <style>
             [data-testid="stDataFrame"] th {
@@ -508,44 +505,46 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         st.subheader("🥧 센터별 실적 항목 비율 (원형 도넛 그래프)")
         
         chart_df = df_summary[~df_summary['센터'].str.contains('소계|합계', na=False)]
+        colors = ['#38bdf8', '#60a5fa', '#facc15', '#4ade80', '#f43f5e', '#a855f7']
         
+        def render_matplotlib_donut(df_sub, col_name, title_name):
+            valid_df = df_sub[df_sub[col_name] > 0]
+            if valid_df.empty:
+                st.info(f"{title_name} 데이터 없음")
+                return
+            
+            fig, ax = plt.subplots(figsize=(3.5, 3.5), subplot_kw=dict(aspect="equal"))
+            fig.patch.set_facecolor('#0e1117')
+            ax.set_facecolor('#0e1117')
+
+            wedges, texts, autotexts = ax.pie(
+                valid_df[col_name],
+                labels=valid_df['센터'],
+                autopct='%1.1f%%',
+                pctdistance=0.75,
+                colors=colors[:len(valid_df)],
+                textprops=dict(color="#e5e7eb", size=8, weight="bold"),
+                wedgeprops=dict(width=0.45, edgecolor='#0e1117', linewidth=1.5)
+            )
+            for t in texts:
+                t.set_color('#9ca3af')
+                t.set_fontsize(7.5)
+            ax.set_title(title_name, color="#f3f4f6", fontsize=10, fontweight="bold", pad=10)
+            st.pyplot(fig, use_container_width=True)
+
         ch_col1, ch_col2, ch_col3, ch_col4 = st.columns(4)
         
         with ch_col1:
-            if chart_df['B2C 출고건수'].sum() > 0:
-                fig1 = px.pie(chart_df, names='센터', values='B2C 출고건수', title='🚚 B2C 출고건수 비중', hole=0.45)
-                fig1.update_traces(textposition='inside', textinfo='percent+label')
-                fig1.update_layout(showlegend=False, margin=dict(t=40, b=10, l=10, r=10))
-                st.plotly_chart(fig1, use_container_width=True)
-            else:
-                st.info("B2C 출고 데이터 없음")
+            render_matplotlib_donut(chart_df, 'B2C 출고건수', '🚚 B2C 출고건수 비중')
 
         with ch_col2:
-            if chart_df['입고건수 (입고완료/승인대기)'].sum() > 0:
-                fig2 = px.pie(chart_df, names='센터', values='입고건수 (입고완료/승인대기)', title='📦 입고건수 비중', hole=0.45)
-                fig2.update_traces(textposition='inside', textinfo='percent+label')
-                fig2.update_layout(showlegend=False, margin=dict(t=40, b=10, l=10, r=10))
-                st.plotly_chart(fig2, use_container_width=True)
-            else:
-                st.info("입고 데이터 없음")
+            render_matplotlib_donut(chart_df, '입고건수 (입고완료/승인대기)', '📦 입고건수 비중')
 
         with ch_col3:
-            if chart_df['B2B 건수'].sum() > 0:
-                fig3 = px.pie(chart_df, names='센터', values='B2B 건수', title='🏭 B2B 건수 비중', hole=0.45)
-                fig3.update_traces(textposition='inside', textinfo='percent+label')
-                fig3.update_layout(showlegend=False, margin=dict(t=40, b=10, l=10, r=10))
-                st.plotly_chart(fig3, use_container_width=True)
-            else:
-                st.info("B2B 데이터 없음 (준비중)")
+            render_matplotlib_donut(chart_df, 'B2B 건수', '🏭 B2B 건수 비중')
 
         with ch_col4:
-            if chart_df['총 작업건수'].sum() > 0:
-                fig4 = px.pie(chart_df, names='센터', values='총 작업건수', title='📊 총 작업건수 비중', hole=0.45)
-                fig4.update_traces(textposition='inside', textinfo='percent+label')
-                fig4.update_layout(showlegend=False, margin=dict(t=40, b=10, l=10, r=10))
-                st.plotly_chart(fig4, use_container_width=True)
-            else:
-                st.info("총 작업 데이터 없음")
+            render_matplotlib_donut(chart_df, '총 작업건수', '📊 총 작업건수 비중')
 
     else:
         st.info("데이터가 준비되어 있지 않습니다. 좌측 상단 [🔄 드라이브 & 구글시트 동기화]를 눌러 동기화를 진행해주세요.")
