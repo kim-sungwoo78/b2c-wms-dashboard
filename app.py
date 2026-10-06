@@ -1,9 +1,9 @@
 import os
 import io
+import math
 import sqlite3
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
 # 페이지 기본 설정
@@ -331,6 +331,61 @@ def inject_monthly_sum_columns(pivot_df):
         
     return new_df
 
+# 자체 구현 순수 SVG 다크모드 원형(도넛) 차트 생성기
+def generate_pure_svg_donut(data_dict, title):
+    colors = ['#38bdf8', '#60a5fa', '#facc15', '#4ade80', '#f43f5e', '#a855f7']
+    total_val = sum(data_dict.values())
+    
+    if not data_dict or total_val == 0:
+        return f"""
+        <div style="background-color:#0e1117; border:1px solid #1f2937; border-radius:8px; padding:15px; text-align:center;">
+            <div style="font-size:12px; font-weight:bold; color:#f3f4f6; margin-bottom:10px;">{title}</div>
+            <div style="padding:30px; color:#9ca3af; font-size:12px;">데이터 없음</div>
+        </div>
+        """
+        
+    cx, cy, r = 90, 90, 60
+    stroke_width = 25
+    circumference = 2 * math.pi * r
+    
+    svg_parts = [
+        f'<svg width="180" height="180" viewBox="0 0 180 180" style="display:block; margin:auto;">',
+        f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#1f2937" stroke-width="{stroke_width}"/>'
+    ]
+    
+    cumulative_pct = 0
+    legend_parts = ['<div style="font-size:11px; margin-top:10px; text-align:left;">']
+    
+    for idx, (label, val) in enumerate(data_dict.items()):
+        if val <= 0:
+            continue
+        pct = val / total_val
+        color = colors[idx % len(colors)]
+        
+        dash_array = f"{pct * circumference:.2f} {circumference:.2f}"
+        dash_offset = f"{-cumulative_pct * circumference:.2f}"
+        
+        svg_parts.append(
+            f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{color}" '
+            f'stroke-width="{stroke_width}" stroke-dasharray="{dash_array}" '
+            f'stroke-dashoffset="{dash_offset}" transform="rotate(-90 {cx} {cy})"/>'
+        )
+        cumulative_pct += pct
+        
+        legend_parts.append(
+            f'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">'
+            f'<span style="color:#9ca3af;"><span style="display:inline-block; width:8px; height:8px; background-color:{color}; border-radius:50%; margin-right:5px;"></span>'
+            f'{label}</span><span style="font-weight:bold; color:#e5e7eb;">{pct*100:.1f}% ({val:,})</span></div>'
+        )
+        
+    legend_parts.append('</div>')
+    
+    svg_parts.append(f'<text x="{cx}" y="{cy-5}" text-anchor="middle" fill="#9ca3af" font-size="10" font-weight="bold">{title}</text>')
+    svg_parts.append(f'<text x="{cx}" y="{cy+12}" text-anchor="middle" fill="#facc15" font-size="12" font-weight="bold">{total_val:,}</text>')
+    svg_parts.append('</svg>')
+    
+    return f'<div style="background-color:#0e1117; border:1px solid #1f2937; border-radius:8px; padding:12px; text-align:center;">' + "".join(svg_parts) + "".join(legend_parts) + '</div>'
+
 # 메인 종합 현황 모드
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
@@ -505,46 +560,25 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         st.subheader("🥧 센터별 실적 항목 비율 (원형 도넛 그래프)")
         
         chart_df = df_summary[~df_summary['센터'].str.contains('소계|합계', na=False)]
-        colors = ['#38bdf8', '#60a5fa', '#facc15', '#4ade80', '#f43f5e', '#a855f7']
         
-        def render_matplotlib_donut(df_sub, col_name, title_name):
-            valid_df = df_sub[df_sub[col_name] > 0]
-            if valid_df.empty:
-                st.info(f"{title_name} 데이터 없음")
-                return
-            
-            fig, ax = plt.subplots(figsize=(3.5, 3.5), subplot_kw=dict(aspect="equal"))
-            fig.patch.set_facecolor('#0e1117')
-            ax.set_facecolor('#0e1117')
-
-            wedges, texts, autotexts = ax.pie(
-                valid_df[col_name],
-                labels=valid_df['센터'],
-                autopct='%1.1f%%',
-                pctdistance=0.75,
-                colors=colors[:len(valid_df)],
-                textprops=dict(color="#e5e7eb", size=8, weight="bold"),
-                wedgeprops=dict(width=0.45, edgecolor='#0e1117', linewidth=1.5)
-            )
-            for t in texts:
-                t.set_color('#9ca3af')
-                t.set_fontsize(7.5)
-            ax.set_title(title_name, color="#f3f4f6", fontsize=10, fontweight="bold", pad=10)
-            st.pyplot(fig, use_container_width=True)
+        b2c_dict = dict(zip(chart_df['센터'], chart_df['B2C 출고건수']))
+        in_dict = dict(zip(chart_df['센터'], chart_df['입고건수 (입고완료/승인대기)']))
+        b2b_dict = dict(zip(chart_df['센터'], chart_df['B2B 건수']))
+        total_dict = dict(zip(chart_df['센터'], chart_df['총 작업건수']))
 
         ch_col1, ch_col2, ch_col3, ch_col4 = st.columns(4)
         
         with ch_col1:
-            render_matplotlib_donut(chart_df, 'B2C 출고건수', '🚚 B2C 출고건수 비중')
+            st.markdown(generate_pure_svg_donut(b2c_dict, "🚚 B2C 출고건수"), unsafe_allow_html=True)
 
         with ch_col2:
-            render_matplotlib_donut(chart_df, '입고건수 (입고완료/승인대기)', '📦 입고건수 비중')
+            st.markdown(generate_pure_svg_donut(in_dict, "📦 입고건수"), unsafe_allow_html=True)
 
         with ch_col3:
-            render_matplotlib_donut(chart_df, 'B2B 건수', '🏭 B2B 건수 비중')
+            st.markdown(generate_pure_svg_donut(b2b_dict, "🏭 B2B 건수"), unsafe_allow_html=True)
 
         with ch_col4:
-            render_matplotlib_donut(chart_df, '총 작업건수', '📊 총 작업건수 비중')
+            st.markdown(generate_pure_svg_donut(total_dict, "📊 총 작업건수"), unsafe_allow_html=True)
 
     else:
         st.info("데이터가 준비되어 있지 않습니다. 좌측 상단 [🔄 드라이브 & 구글시트 동기화]를 눌러 동기화를 진행해주세요.")
