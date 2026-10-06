@@ -5,10 +5,12 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
 
+# 페이지 기본 설정
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
 
 DB_PATH = "wms_dashboard.db"
 
+# 데이터베이스 기본 테이블 안전 생성
 def init_local_db():
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -46,6 +48,7 @@ def init_local_db():
 
 init_local_db()
 
+# 동기화 실행 함수
 def run_sync():
     if "gcp_service_account" in st.secrets:
         try:
@@ -72,6 +75,7 @@ def run_sync():
         st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
+# B2C 출고 데이터 로드
 @st.cache_data(ttl=60)
 def load_shipment_orders():
     if not os.path.exists(DB_PATH):
@@ -110,7 +114,6 @@ def load_b2c_sku_data():
     except Exception:
         return pd.DataFrame()
 
-# ★ 입고 고유 입고번호 정밀 집계 (COUNT DISTINCT 적용) ★
 @st.cache_data(ttl=60)
 def load_inbound_data():
     if not os.path.exists(DB_PATH):
@@ -322,7 +325,7 @@ def inject_monthly_sum_columns(pivot_df):
         
     return new_df
 
-# 1. 메인 센터 종합 현황 모드
+# 메인 종합 현황 모드
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
     
@@ -558,28 +561,59 @@ elif main_mode == "🚚 B2C 출고 현황":
             final_df2 = pd.concat([total_df2, pivot_df2])
             render_sticky_pivot(final_df2, [target_col], key_suffix="tab2")
 
+    # ★ Tab 3: 출고박스별 현황 (센터 및 고객사 선택 필터 추가) ★
     with tab3:
         st.header("출고박스 규격별 사용 현황")
         if not df_b2c_orders.empty:
-            view_mode3 = st.radio("보기 형식 선택", ["일자별 (일별 상세)", "월별 (월 요약만)"], horizontal=True, key="tab3_view")
+            raw_centers_tab3 = sorted(list(df_b2c_orders['센터'].dropna().unique()))
+            center_options_tab3 = []
+            if any('1층' in str(c) or '375 1' in str(c) for c in raw_centers_tab3):
+                center_options_tab3.append("375 소계")
+            if any('XFC' in str(c).upper() for c in raw_centers_tab3):
+                center_options_tab3.append("XFC 소계")
+            center_options_tab3.extend(raw_centers_tab3)
+
+            box_col1, box_col2, box_col3 = st.columns([2, 3, 3])
+            with box_col1:
+                view_mode3 = st.radio("보기 형식 선택", ["일자별 (일별 상세)", "월별 (월 요약만)"], horizontal=True, key="tab3_view")
+            with box_col2:
+                selected_centers_input_tab3 = st.multiselect("센터 선택 (미선택 시 전체)", center_options_tab3, key="tab3_centers")
+                expanded_centers_tab3 = expand_selected_centers(selected_centers_input_tab3, raw_centers_tab3) if selected_centers_input_tab3 else []
+            
+            filtered_by_center_tab3 = df_b2c_orders[df_b2c_orders['센터'].isin(expanded_centers_tab3)] if expanded_centers_tab3 else df_b2c_orders
+            available_clients_tab3 = sorted(list(filtered_by_center_tab3['고객사'].dropna().unique()))
+            
+            with box_col3:
+                selected_clients_tab3 = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients_tab3, key="tab3_clients")
+
             df_tab3 = df_b2c_orders.copy()
+            if expanded_centers_tab3:
+                df_tab3 = df_tab3[df_tab3['센터'].isin(expanded_centers_tab3)]
+            if selected_clients_tab3:
+                df_tab3 = df_tab3[df_tab3['고객사'].isin(selected_clients_tab3)]
 
-            if "월별" in view_mode3:
-                df_tab3['연월'] = df_tab3['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
-                pivot_df3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='연월', values='출고건수', aggfunc='sum', fill_value=0)
-                pivot_df3['총 출고건수'] = pivot_df3.sum(axis=1)
-                cols_order3 = ['총 출고건수'] + [c for c in pivot_df3.columns if c != '총 출고건수']
-                pivot_df3 = pivot_df3[cols_order3]
+            # 'N' 또는 'Y' 등 잘못된 값 제외 필터링
+            df_tab3 = df_tab3[~df_tab3['출고박스종류'].astype(str).str.upper().isin(['N', 'Y', '미지정', 'NAN'])]
+
+            if not df_tab3.empty:
+                if "월별" in view_mode3:
+                    df_tab3['연월'] = df_tab3['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
+                    pivot_df3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='연월', values='출고건수', aggfunc='sum', fill_value=0)
+                    pivot_df3['총 출고건수'] = pivot_df3.sum(axis=1)
+                    cols_order3 = ['총 출고건수'] + [c for c in pivot_df3.columns if c != '총 출고건수']
+                    pivot_df3 = pivot_df3[cols_order3]
+                else:
+                    pivot_df3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
+                    pivot_df3['총 출고건수'] = pivot_df3.sum(axis=1)
+                    pivot_df3 = inject_monthly_sum_columns(pivot_df3)
+
+                total_series3 = pivot_df3.sum(axis=0)
+                total_label3 = "★ 전체 합계" if "월별" in view_mode3 else "★ 일별 합계"
+                total_df3 = pd.DataFrame([total_series3.values], columns=pivot_df3.columns, index=pd.Index([total_label3], name="출고박스 규격"))
+                final_df3 = pd.concat([total_df3, pivot_df3])
+                render_sticky_pivot(final_df3, ["출고박스 규격"], key_suffix="tab3")
             else:
-                pivot_df3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
-                pivot_df3['총 출고건수'] = pivot_df3.sum(axis=1)
-                pivot_df3 = inject_monthly_sum_columns(pivot_df3)
-
-            total_series3 = pivot_df3.sum(axis=0)
-            total_label3 = "★ 전체 합계" if "월별" in view_mode3 else "★ 일별 합계"
-            total_df3 = pd.DataFrame([total_series3.values], columns=pivot_df3.columns, index=pd.Index([total_label3], name="출고박스 규격"))
-            final_df3 = pd.concat([total_df3, pivot_df3])
-            render_sticky_pivot(final_df3, ["출고박스 규격"], key_suffix="tab3")
+                st.info("선택한 센터/고객사의 출고 박스 규격 데이터가 존재하지 않습니다.")
 
     with tab4:
         st.header("🔍 SKU별 출고량 (기간 선택 집계)")
