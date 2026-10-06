@@ -15,8 +15,13 @@ INBOUND_FOLDER_ID = '1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp'    # 입고 폴더
 B2B_FOLDER_ID = '1wpqrIBC8HnWTU20rShcg0Yvkcc1VIsml'        # B2B 폴더
 PROCESSED_FOLDER_ID = '1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ'  # 처리완료 폴더
 
-DB_PATH = 'wms_dashboard.db'
-IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
+# ★ [DB 전용 폴더 ID] 새로 만드신 '[DB전용] 절대 삭제 금지' 폴더 ID 완벽 반영 ★
+DB_FOLDER_ID = '1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9'
+
+# ★ 분리 관리되는 독립 DB 파일명 ★
+DB_B2C_PATH = 'wms_b2c.db'
+DB_INBOUND_PATH = 'wms_inbound.db'
+DB_B2B_PATH = 'wms_b2b.db'
 
 def get_drive_service(creds_dict):
     creds = Credentials.from_service_account_info(
@@ -35,9 +40,9 @@ def get_sheets_service(creds_dict):
     )
     return build('sheets', 'v4', credentials=creds)
 
-def download_db_from_drive(service):
+def download_db_from_drive(service, db_filename):
     try:
-        query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
+        query = f"'{DB_FOLDER_ID}' in parents and name = '{db_filename}' and trashed = false"
         results = service.files().list(
             q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True
         ).execute()
@@ -46,27 +51,27 @@ def download_db_from_drive(service):
         if files:
             file_id = files[0]['id']
             request = service.files().get_media(fileId=file_id)
-            with open(DB_PATH, 'wb') as f:
+            with open(db_filename, 'wb') as f:
                 downloader = MediaIoBaseDownload(f, request)
                 done = False
                 while not done:
                     _, done = downloader.next_chunk()
             return True
     except Exception as e:
-        print(f"DB Download Error: {e}")
+        print(f"DB Download Error ({db_filename}): {e}")
     return False
 
-def upload_db_to_drive(service):
-    if not os.path.exists(DB_PATH):
+def upload_db_to_drive(service, db_filename):
+    if not os.path.exists(db_filename):
         return
     try:
-        query = f"'{TOP_FOLDER_ID}' in parents and name = '{DB_PATH}' and trashed = false"
+        query = f"'{DB_FOLDER_ID}' in parents and name = '{db_filename}' and trashed = false"
         results = service.files().list(
             q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True
         ).execute()
         files = results.get('files', [])
 
-        media = MediaFileUpload(DB_PATH, mimetype='application/x-sqlite3', resumable=True)
+        media = MediaFileUpload(db_filename, mimetype='application/x-sqlite3', resumable=True)
 
         if files:
             file_id = files[0]['id']
@@ -75,18 +80,18 @@ def upload_db_to_drive(service):
             ).execute()
         else:
             file_metadata = {
-                'name': DB_PATH,
-                'parents': [TOP_FOLDER_ID]
+                'name': db_filename,
+                'parents': [DB_FOLDER_ID]
             }
             service.files().create(
                 body=file_metadata, media_body=media, supportsAllDrives=True
             ).execute()
     except Exception as e:
-        print(f"DB Upload Error: {e}")
+        print(f"DB Upload Error ({db_filename}): {e}")
 
 def list_files_in_folder(service, folder_id):
     try:
-        query = f"'{folder_id}' in parents and trashed = false and name != '{DB_PATH}'"
+        query = f"'{folder_id}' in parents and trashed = false and name not like '%.db'"
         results = service.files().list(
             q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True
         ).execute()
@@ -130,11 +135,13 @@ def read_excel_fast(fh):
         return pd.read_excel(fh, engine='openpyxl')
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    download_db_from_drive(service)
+    download_db_from_drive(service, DB_B2C_PATH)
+    download_db_from_drive(service, DB_INBOUND_PATH)
 
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=30)
+    conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=30)
     
-    conn.execute("""
+    conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS shipment_raw (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
         출고박스종류 TEXT, 송장번호 TEXT, 마감일시 TEXT, 마감자 TEXT, 주문일시 TEXT,
@@ -145,7 +152,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    conn.execute("""
+    conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
         출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
@@ -153,7 +160,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    conn.execute("""
+    conn_ib.execute("""
     CREATE TABLE IF NOT EXISTS inbound_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, 입고번호 TEXT,
         입고방법 TEXT, SKU명 TEXT, 바코드 TEXT, 소비기한 TEXT, 로트 TEXT,
@@ -180,10 +187,11 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 all_target_files.append(f)
 
     total_count = len(all_target_files)
-    new_files_processed = False
+    b2c_updated = False
+    inbound_updated = False
     error_logs = []
 
-    cleaned_center_dates = set()
+    cleaned_b2c_pairs = set()
 
     for idx, f in enumerate(all_target_files, 1):
         file_id, file_name = f['id'], f['name']
@@ -265,7 +273,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     df_in[num_c] = pd.to_numeric(df_in[num_c], errors='coerce').fillna(0)
 
                 for _, row_in in df_in.iterrows():
-                    conn.execute("""
+                    conn_ib.execute("""
                     INSERT OR REPLACE INTO inbound_summary
                     (영업마감일자, 센터, 고객사, 상태, 입고번호, 입고방법, SKU명, 바코드, 소비기한, 로트,
                      기본로케이션, 예정수량, 요청SKU수량, 총예정수량, 총검수완료수량, PLT수, BOX수, 파적BOX수, 등록일시, 변경자,
@@ -278,13 +286,15 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         int(row_in['예정수량']), int(row_in['요청SKU수량']), int(row_in['총예정수량']), int(row_in['총검수완료수량']),
                         str(row_in['등록일시']), str(row_in['변경자']), str(row_in['최종변경일시']), str(row_in['입고완료일시'])
                     ))
+                conn_ib.commit()
+                inbound_updated = True
 
             else:
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
                     if '상세' in clean_c or '이형' in clean_c: 
-                        continue  # B열 '송장 상세' 및 AN열 '이형 박스 사용 여부' 제외
+                        continue
                     if '센터' in clean_c: col_map_b2c[orig_c] = '센터'
                     elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
                     elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
@@ -348,10 +358,10 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     d_val = cd_row['영업마감일자']
                     c_val = cd_row['센터']
                     pair_key = (d_val, c_val)
-                    if pair_key not in cleaned_center_dates:
-                        conn.execute("DELETE FROM shipment_raw WHERE 영업마감일자 = ? AND 센터 = ?", (d_val, c_val))
-                        conn.execute("DELETE FROM daily_summary WHERE 영업마감일자 = ? AND 센터 = ?", (d_val, c_val))
-                        cleaned_center_dates.add(pair_key)
+                    if pair_key not in cleaned_b2c_pairs:
+                        conn_b2c.execute("DELETE FROM shipment_raw WHERE 영업마감일자 = ? AND 센터 = ?", (d_val, c_val))
+                        conn_b2c.execute("DELETE FROM daily_summary WHERE 영업마감일자 = ? AND 센터 = ?", (d_val, c_val))
+                        cleaned_b2c_pairs.add(pair_key)
 
                 shipment_distinct = df_b2c_valid[
                     ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호',
@@ -360,7 +370,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 ].drop_duplicates(subset=['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호'])
 
                 for _, row_s in shipment_distinct.iterrows():
-                    conn.execute("""
+                    conn_b2c.execute("""
                     INSERT OR REPLACE INTO shipment_raw
                     (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호,
                      마감일시, 마감자, 주문일시, 결제일시, 등록일시, 할당일시, 출력일시,
@@ -383,7 +393,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 ).reset_index()
 
                 for _, row_b2c in b2c_sum.iterrows():
-                    conn.execute("""
+                    conn_b2c.execute("""
                     INSERT OR REPLACE INTO daily_summary
                     (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드, 출고건수, 총출고수량)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -392,6 +402,8 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         row_b2c['출고박스종류'], row_b2c['SKU명'], row_b2c['바코드'],
                         int(row_b2c['출고건수']), int(row_b2c['총출고수량'])
                     ))
+                conn_b2c.commit()
+                b2c_updated = True
 
             try:
                 service.files().update(
@@ -404,16 +416,17 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             except Exception as move_e:
                 error_logs.append(f"이동 실패 ({file_name}): {move_e}")
 
-            conn.commit()
-            new_files_processed = True
         except Exception as file_e:
             error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
             continue
 
-    conn.close()
+    conn_b2c.close()
+    conn_ib.close()
 
-    if new_files_processed:
-        upload_db_to_drive(service)
+    if b2c_updated:
+        upload_db_to_drive(service, DB_B2C_PATH)
+    if inbound_updated:
+        upload_db_to_drive(service, DB_INBOUND_PATH)
 
     if error_logs:
         raise Exception(" | ".join(error_logs))
