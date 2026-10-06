@@ -96,12 +96,10 @@ def list_files_in_folder(service, folder_id):
         return []
 
 def read_excel_fast(fh):
-    """다중 시트 중 진짜 RAW 데이터 시트를 정밀 자동 검색하여 읽기"""
     try:
         wb = openpyxl.load_workbook(fh, read_only=True, data_only=True)
         target_sheet = wb.active
         
-        # 다중 시트가 존재하는 경우, RAW 키워드가 들어간 시트 탐색
         for sheet_name in wb.sheetnames:
             s = wb[sheet_name]
             for row in list(s.iter_rows(max_row=5, values_only=True)):
@@ -184,6 +182,9 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     total_count = len(all_target_files)
     new_files_processed = False
     error_logs = []
+
+    # ★ 10/4일 로우 재집계 시 기존 10/4 DB 찌꺼기 선별 삭제 플래그
+    cleaned_dates = set()
 
     for idx, f in enumerate(all_target_files, 1):
         file_id, file_name = f['id'], f['name']
@@ -342,6 +343,14 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
                 valid_mask = ~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)
                 df_b2c_valid = df_b2c_f[valid_mask]
+
+                # ★ [핵심] 처리할 파일의 영업마감일자에 대해 기존 DB 데이터를 선별 삭제(Clean Replace)
+                target_dates = df_b2c_valid['영업마감일자'].unique()
+                for d_val in target_dates:
+                    if d_val not in cleaned_dates:
+                        conn.execute("DELETE FROM shipment_raw WHERE 영업마감일자 = ?", (d_val,))
+                        conn.execute("DELETE FROM daily_summary WHERE 영업마감일자 = ?", (d_val,))
+                        cleaned_dates.add(d_val)
 
                 shipment_distinct = df_b2c_valid[
                     ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호',
