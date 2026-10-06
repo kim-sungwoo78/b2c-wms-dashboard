@@ -219,7 +219,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             is_inbound = (category == 'INBOUND') or any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량', '입고방법']) or ('입고요청서' in file_name)
 
             if is_inbound:
-                # 입고 신규 파일 처리 전 기존 테이블 전체 비우기 (중복 데이터 완전 차단)
                 if not cleaned_ib_files:
                     conn_ib.execute("DELETE FROM inbound_summary")
                     conn_ib.commit()
@@ -253,7 +252,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 if '상태' not in df_in.columns: 
                     df_in['상태'] = '입고 완료'
 
-                # 상태에 따른 날짜 파싱 (시간보정 -6시간 완전 제거)
                 def parse_inbound_date(row):
                     st_val = str(row.get('상태', '')).replace(" ", "").strip()
                     if '입고완료' in st_val:
