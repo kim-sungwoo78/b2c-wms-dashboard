@@ -69,6 +69,9 @@ def run_sync():
             def update_progress(current, total, filename, eta):
                 status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`")
 
+            # 강제 캐시 초기화
+            st.cache_data.clear()
+
             etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
             
             status_text.empty()
@@ -82,7 +85,7 @@ def run_sync():
         st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=5)
 def load_shipment_orders():
     if not os.path.exists(DB_B2C_PATH):
         return pd.DataFrame()
@@ -108,7 +111,7 @@ def load_shipment_orders():
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=5)
 def load_b2c_sku_data():
     if not os.path.exists(DB_B2C_PATH):
         return pd.DataFrame()
@@ -120,13 +123,13 @@ def load_b2c_sku_data():
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=5)
 def load_inbound_data():
     if not os.path.exists(DB_INBOUND_PATH):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
-        # 입고건수: 입고번호 고유 집계로 중복 차단
+        # 입고건수: 입고번호 고유 카운트로 중복 완벽 제거
         df = pd.read_sql("""
             SELECT 영업마감일자, 센터, 고객사, 상태,
                    COUNT(DISTINCT 입고번호) AS 입고건수,
@@ -137,6 +140,24 @@ def load_inbound_data():
                    SUM(파적BOX수) AS 파적BOX수
             FROM inbound_summary
             GROUP BY 영업마감일자, 센터, 고객사, 상태
+        """, conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=5)
+def load_inbound_distinct_counts():
+    if not os.path.exists(DB_INBOUND_PATH):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
+        df = pd.read_sql("""
+            SELECT 영업마감일자, 센터, 고객사,
+                   COUNT(DISTINCT 입고번호) AS 입고건수
+            FROM inbound_summary
+            WHERE 상태 LIKE '%입고완료%' OR 상태 LIKE '%입고 완료%' OR 상태 LIKE '%승인대기%' OR 상태 LIKE '%승인 대기%'
+            GROUP BY 영업마감일자, 센터, 고객사
         """, conn)
         conn.close()
         return df
@@ -205,6 +226,7 @@ if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
 df_b2c_orders = load_shipment_orders()
 df_b2c_sku = load_b2c_sku_data()
 df_inbound = load_inbound_data()
+df_inbound_distinct = load_inbound_distinct_counts()
 
 if 'main_mode_selection' not in st.session_state:
     st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
@@ -472,7 +494,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     )
     expanded_main_centers = expand_selected_centers(selected_centers_filter, sorted_centers) if selected_centers_filter else []
 
-    df_combined_target = pd.concat([df_b2c_orders, df_inbound]) if not df_b2c_orders.empty else df_inbound
+    df_combined_target = pd.concat([df_b2c_orders, df_inbound_distinct]) if not df_b2c_orders.empty else df_inbound_distinct
 
     selected_m = render_month_button_bar(
         df_combined_target, 
@@ -483,7 +505,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     )
 
     filtered_b2c = df_b2c_orders.copy() if not df_b2c_orders.empty else pd.DataFrame()
-    filtered_inbound = df_inbound.copy() if not df_inbound.empty else pd.DataFrame()
+    filtered_inbound = df_inbound_distinct.copy() if not df_inbound_distinct.empty else pd.DataFrame()
 
     if expanded_main_centers:
         if not filtered_b2c.empty and '센터' in filtered_b2c.columns:
@@ -498,21 +520,8 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         if not filtered_inbound.empty and '영업마감일자' in filtered_inbound.columns:
             filtered_inbound = filtered_inbound[filtered_inbound['영업마감일자'].str.slice(5, 7) == m_digit]
 
-    if not filtered_inbound.empty and '상태' in filtered_inbound.columns:
-        main_inbound_df = filtered_inbound[
-            filtered_inbound['상태'].astype(str).str.contains('입고완료|입고 완료|승인대기|승인 대기', na=False)
-        ]
-    else:
-        main_inbound_df = filtered_inbound
-
     total_b2c_cnt = filtered_b2c['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
-    
-    # 입고건수: 데이터베이스 고유 입고번호 합산 카운트
-    if not main_inbound_df.empty and '입고건수' in main_inbound_df.columns:
-        total_inbound_cnt = main_inbound_df.groupby('센터')['입고건수'].sum().sum()
-    else:
-        total_inbound_cnt = 0
-        
+    total_inbound_cnt = filtered_inbound['입고건수'].sum() if not filtered_inbound.empty and '입고건수' in filtered_inbound.columns else 0
     total_b2b_cnt = 0
 
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
@@ -529,7 +538,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         
     for center_name in centers_to_loop:
         b2c_c = filtered_b2c[filtered_b2c['센터'] == center_name]['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
-        in_c = main_inbound_df[main_inbound_df['센터'] == center_name]['입고건수'].sum() if not main_inbound_df.empty and '입고건수' in main_inbound_df.columns else 0
+        in_c = filtered_inbound[filtered_inbound['센터'] == center_name]['입고건수'].sum() if not filtered_inbound.empty and '입고건수' in filtered_inbound.columns else 0
         b2b_c = 0
         
         summary_rows.append({
@@ -785,6 +794,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 center_options_tab4.append("XFC 소계")
             center_options_tab4.extend(raw_centers_tab4)
 
+            # 상단 1행: 센터 및 고객사 선택
             col1, col2 = st.columns(2)
             with col1:
                 selected_centers_input_tab4 = st.multiselect("센터 선택 (다중 선택 가능)", center_options_tab4, key="tab4_centers")
