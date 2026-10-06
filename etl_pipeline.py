@@ -84,29 +84,6 @@ def upload_db_to_drive(service):
     except Exception as e:
         print(f"DB Upload Error: {e}")
 
-def fetch_google_sheets_ib(sheets_service):
-    try:
-        sheet = sheets_service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=IB_SHEET_ID, range='IB!A1:Z3000').execute()
-        values = result.get('values', [])
-        if not values:
-            return pd.DataFrame()
-        
-        headers = [str(h).replace(" ", "").strip() for h in values[0]]
-        data = values[1:]
-        
-        data_fixed = []
-        for row in data:
-            if len(row) < len(headers):
-                row = row + [''] * (len(headers) - len(row))
-            data_fixed.append(row[:len(headers)])
-            
-        df_sheet = pd.DataFrame(data_fixed, columns=headers)
-        return df_sheet
-    except Exception as e:
-        print(f"Sheets Read Error: {e}")
-        return pd.DataFrame()
-
 def list_files_in_folder(service, folder_id):
     try:
         query = f"'{folder_id}' in parents and trashed = false and name != '{DB_PATH}'"
@@ -119,10 +96,24 @@ def list_files_in_folder(service, folder_id):
         return []
 
 def read_excel_fast(fh):
+    """다중 시트 중 진짜 RAW 데이터 시트를 정밀 자동 검색하여 읽기"""
     try:
         wb = openpyxl.load_workbook(fh, read_only=True, data_only=True)
-        sheet = wb.active
-        rows = sheet.iter_rows(values_only=True)
+        target_sheet = wb.active
+        
+        # 다중 시트가 존재하는 경우, RAW 키워드가 들어간 시트 탐색
+        for sheet_name in wb.sheetnames:
+            s = wb[sheet_name]
+            for row in list(s.iter_rows(max_row=5, values_only=True)):
+                row_str = " ".join([str(v) for v in row if v is not None])
+                if any(k in row_str for k in ['송장 번호', '송장번호', '마감 일시', '마감일시', 'SKU명', '입고번호']):
+                    target_sheet = s
+                    break
+            else:
+                continue
+            break
+
+        rows = target_sheet.iter_rows(values_only=True)
         headers = list(next(rows))
         
         clean_headers = []
@@ -164,7 +155,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     )
     """)
 
-    # ★ 입고 고유 원본 데이터 테이블 (중복 없는 오차 0%) ★
     conn.execute("""
     CREATE TABLE IF NOT EXISTS inbound_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, 입고번호 TEXT,
