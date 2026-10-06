@@ -5,15 +5,16 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
 
-# 페이지 기본 설정
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
 
-DB_PATH = "wms_dashboard.db"
+# ★ 분리 DB 경로 설정 ★
+DB_B2C_PATH = "wms_b2c.db"
+DB_INBOUND_PATH = "wms_inbound.db"
+DB_B2B_PATH = "wms_b2b.db"
 
-# 데이터베이스 기본 테이블 안전 생성
 def init_local_db():
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn = sqlite3.connect(DB_B2C_PATH, timeout=10)
         conn.execute("""
         CREATE TABLE IF NOT EXISTS shipment_raw (
             영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -31,7 +32,11 @@ def init_local_db():
             PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드)
         )
         """)
-        conn.execute("""
+        conn.commit()
+        conn.close()
+
+        conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
+        conn_ib.execute("""
         CREATE TABLE IF NOT EXISTS inbound_summary (
             영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, 입고번호 TEXT,
             입고방법 TEXT, SKU명 TEXT, 바코드 TEXT, 소비기한 TEXT, 로트 TEXT,
@@ -41,14 +46,13 @@ def init_local_db():
             PRIMARY KEY (영업마감일자, 센터, 고객사, 상태, 입고번호, SKU명, 바코드)
         )
         """)
-        conn.commit()
-        conn.close()
+        conn_ib.commit()
+        conn_ib.close()
     except Exception as e:
         print(f"DB Init Warning: {e}")
 
 init_local_db()
 
-# 동기화 실행 함수
 def run_sync():
     if "gcp_service_account" in st.secrets:
         try:
@@ -75,13 +79,12 @@ def run_sync():
         st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
     return False
 
-# B2C 출고 데이터 로드
 @st.cache_data(ttl=60)
 def load_shipment_orders():
-    if not os.path.exists(DB_PATH):
+    if not os.path.exists(DB_B2C_PATH):
         return pd.DataFrame()
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn = sqlite3.connect(DB_B2C_PATH, timeout=10)
         df_raw = pd.read_sql("""
             SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, COUNT(DISTINCT 송장번호) AS 출고건수
             FROM shipment_raw
@@ -104,10 +107,10 @@ def load_shipment_orders():
 
 @st.cache_data(ttl=60)
 def load_b2c_sku_data():
-    if not os.path.exists(DB_PATH):
+    if not os.path.exists(DB_B2C_PATH):
         return pd.DataFrame()
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn = sqlite3.connect(DB_B2C_PATH, timeout=10)
         df = pd.read_sql("SELECT * FROM daily_summary", conn)
         conn.close()
         return df
@@ -116,10 +119,10 @@ def load_b2c_sku_data():
 
 @st.cache_data(ttl=60)
 def load_inbound_data():
-    if not os.path.exists(DB_PATH):
+    if not os.path.exists(DB_INBOUND_PATH):
         return pd.DataFrame()
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
         df = pd.read_sql("""
             SELECT 영업마감일자, 센터, 고객사, 상태,
                    COUNT(DISTINCT 입고번호) AS 입고건수,
@@ -325,7 +328,6 @@ def inject_monthly_sum_columns(pivot_df):
         
     return new_df
 
-# 메인 종합 현황 모드
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
     
@@ -440,7 +442,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     else:
         st.info("데이터가 준비되어 있지 않습니다. 좌측 상단 [🔄 드라이브 & 구글시트 동기화]를 눌러 동기화를 진행해주세요.")
 
-# B2C 출고 현황 모드
 elif main_mode == "🚚 B2C 출고 현황":
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 센터/고객사별 출고현황", 
@@ -561,7 +562,6 @@ elif main_mode == "🚚 B2C 출고 현황":
             final_df2 = pd.concat([total_df2, pivot_df2])
             render_sticky_pivot(final_df2, [target_col], key_suffix="tab2")
 
-    # ★ Tab 3: 출고박스별 현황 (센터 및 고객사 선택 필터 추가) ★
     with tab3:
         st.header("출고박스 규격별 사용 현황")
         if not df_b2c_orders.empty:
@@ -592,7 +592,6 @@ elif main_mode == "🚚 B2C 출고 현황":
             if selected_clients_tab3:
                 df_tab3 = df_tab3[df_tab3['고객사'].isin(selected_clients_tab3)]
 
-            # 'N' 또는 'Y' 등 잘못된 값 제외 필터링
             df_tab3 = df_tab3[~df_tab3['출고박스종류'].astype(str).str.upper().isin(['N', 'Y', '미지정', 'NAN'])]
 
             if not df_tab3.empty:
@@ -713,7 +712,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                     key="dl_table_tab4"
                 )
 
-# 입고 현황 모드
 elif main_mode == "📦 입고 현황":
     in_tab1, in_tab2 = st.tabs([
         "📊 센터/고객사별 입고 현황",
