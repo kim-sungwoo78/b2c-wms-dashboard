@@ -1,10 +1,11 @@
 import os
 import io
 import math
+import calendar
 import sqlite3
 import pandas as pd
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 # 페이지 기본 설정
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
@@ -789,43 +790,69 @@ elif main_mode == "🚚 B2C 출고 현황":
             with col2:
                 selected_clients = st.multiselect("고객사 선택 (선택한 센터의 고객사만 표시)", available_clients, key="tab4_clients")
 
-            # 하단 2행: 한 줄 컴팩트 빠른 기간 버튼 + 시작/종료일자 피커 (종료일자 기준 스마트 연동)
-            st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>📅 조회 기간 선택 및 빠른 지정:</p>", unsafe_allow_html=True)
-            p_col1, p_col2, p_col3, p_col4, p_col5, p_col6, p_col7 = st.columns([1.2, 1.2, 1.2, 1.2, 1.2, 2.2, 2.2])
+            # 하단 2행: [시작/종료일자] -> [월 선택 다중 드롭다운] -> [빠른 기간 버튼 5개] 완벽한 단일 행(1줄) 배치
+            st.markdown("<p style='font-size:14px; font-weight:bold; margin-top:10px; margin-bottom:5px;'>📅 조회 기간 지정 및 빠른 선택:</p>", unsafe_allow_html=True)
+            
+            # DB 내 존재하는 월 목록 추출 (예: '2026년 10월', '2026년 9월')
+            avail_months_tuples = sorted(list(set(df_b2c_sku['영업마감일자'].str.slice(0, 7).dropna().unique())), reverse=True)
+            avail_months_labels = [f"{t[:4]}년 {int(t[5:7])}월" for t in avail_months_tuples]
 
-            # 먼저 종료일자 피커 생성 (현재 지정된 종료일자 파악)
+            # 8개 서브 컬럼으로 1줄 일렬 배치
+            p_col1, p_col2, p_col3, p_col4, p_col5, p_col6, p_col7, p_col8 = st.columns([1.8, 1.8, 2.5, 1.0, 1.0, 1.0, 1.0, 1.0])
+
+            curr_start = st.session_state.get('sku_start_picker', st.session_state['sku_start_date'])
             curr_end = st.session_state.get('sku_end_picker', st.session_state['sku_end_date'])
 
             with p_col1:
-                if st.button("오늘", key="btn_today", use_container_width=True):
-                    st.session_state['sku_start_picker'] = curr_end
-                    st.session_state['sku_end_picker'] = curr_end
-                    st.rerun()
+                start_date = st.date_input("시작일자:", value=curr_start, key="sku_start_picker", label_visibility="collapsed")
             with p_col2:
-                if st.button("일주일", key="btn_week", use_container_width=True):
-                    st.session_state['sku_start_picker'] = max(min_date, curr_end - timedelta(days=6))
-                    st.session_state['sku_end_picker'] = curr_end
-                    st.rerun()
+                end_date = st.date_input("종료일자:", value=curr_end, key="sku_end_picker", label_visibility="collapsed")
+
             with p_col3:
-                if st.button("1개월", key="btn_1m", use_container_width=True):
-                    st.session_state['sku_start_picker'] = max(min_date, curr_end - timedelta(days=30))
-                    st.session_state['sku_end_picker'] = curr_end
-                    st.rerun()
+                selected_m_labels = st.multiselect("월 선택 (1일~말일 지정)", avail_months_labels, key="sku_m_multiselect", label_visibility="collapsed", placeholder="월 선택 (다중가능)")
+                if selected_m_labels:
+                    selected_years_months = []
+                    for lbl in selected_m_labels:
+                        parts = lbl.replace("년", "").replace("월", "").split()
+                        selected_years_months.append((int(parts[0]), int(parts[1])))
+                    
+                    min_m_tuple = min(selected_years_months)
+                    max_m_tuple = max(selected_years_months)
+                    
+                    m_start = date(min_m_tuple[0], min_m_tuple[1], 1)
+                    _, last_d = calendar.monthrange(max_m_tuple[0], max_m_tuple[1])
+                    m_end = date(max_m_tuple[0], max_m_tuple[1], last_d)
+                    
+                    if st.session_state.get('sku_start_picker') != m_start or st.session_state.get('sku_end_picker') != m_end:
+                        st.session_state['sku_start_picker'] = m_start
+                        st.session_state['sku_end_picker'] = m_end
+                        st.rerun()
+
             with p_col4:
-                if st.button("3개월", key="btn_3m", use_container_width=True):
-                    st.session_state['sku_start_picker'] = max(min_date, curr_end - timedelta(days=90))
-                    st.session_state['sku_end_picker'] = curr_end
+                if st.button("오늘", key="btn_today", use_container_width=True):
+                    st.session_state['sku_start_picker'] = end_date
+                    st.session_state['sku_end_picker'] = end_date
                     st.rerun()
             with p_col5:
+                if st.button("일주일", key="btn_week", use_container_width=True):
+                    st.session_state['sku_start_picker'] = max(min_date, end_date - timedelta(days=6))
+                    st.session_state['sku_end_picker'] = end_date
+                    st.rerun()
+            with p_col6:
+                if st.button("1개월", key="btn_1m", use_container_width=True):
+                    st.session_state['sku_start_picker'] = max(min_date, end_date - timedelta(days=30))
+                    st.session_state['sku_end_picker'] = end_date
+                    st.rerun()
+            with p_col7:
+                if st.button("3개월", key="btn_3m", use_container_width=True):
+                    st.session_state['sku_start_picker'] = max(min_date, end_date - timedelta(days=90))
+                    st.session_state['sku_end_picker'] = end_date
+                    st.rerun()
+            with p_col8:
                 if st.button("전체 기간", key="btn_all", use_container_width=True):
                     st.session_state['sku_start_picker'] = min_date
                     st.session_state['sku_end_picker'] = max_date
                     st.rerun()
-
-            with p_col6:
-                start_date = st.date_input("조회 시작일자:", value=st.session_state.get('sku_start_picker', st.session_state['sku_start_date']), key="sku_start_picker")
-            with p_col7:
-                end_date = st.date_input("조회 종료일자:", value=st.session_state.get('sku_end_picker', st.session_state['sku_end_date']), key="sku_end_picker")
 
             st.session_state['sku_start_date'] = start_date
             st.session_state['sku_end_date'] = end_date
