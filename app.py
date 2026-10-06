@@ -230,6 +230,7 @@ with btn_col3:
 main_mode = st.session_state['main_mode_selection']
 st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
 
+# 공통 렌더링 함수
 def render_sticky_pivot(df, index_names, key_suffix=""):
     html = ['<div class="sticky-table-container"><table class="sticky-table"><thead><tr>']
     num_indices = len(index_names)
@@ -309,26 +310,36 @@ def expand_selected_centers(selected_list, all_centers):
             expanded.add(item)
     return list(expanded)
 
-def inject_monthly_sum_columns(pivot_df):
-    date_cols = [c for c in pivot_df.columns if c != '총 출고건수']
-    date_cols_sorted = sorted(date_cols)
+# ★ [핵심 공통 함수] 스마트 월별 피벗 접기/펼치기 엔진 ★
+def smart_fold_pivot_columns(pivot_df, expanded_months):
+    all_cols = [c for c in pivot_df.columns if not ("총 " in str(c) and "월" not in str(c))]
+    date_cols_sorted = sorted([c for c in all_cols if len(str(c)) == 10 and str(c)[4] == '-' and str(c)[7] == '-'])
     
     month_groups = {}
     for d in date_cols_sorted:
-        m_key = str(d)[:7]
-        month_groups.setdefault(m_key, []).append(d)
+        m_key = str(d)[:7]  # 'YYYY-MM'
+        m_label = f"{int(m_key[5:7])}월"  # '10월'
+        month_groups.setdefault(m_key, {'label': m_label, 'dates': []})['dates'].append(d)
         
     new_df = pd.DataFrame(index=pivot_df.index)
     
-    if '총 출고건수' in pivot_df.columns:
-        new_df['총 출고건수'] = pivot_df['총 출고건수']
+    total_cols = [c for c in pivot_df.columns if "총 " in str(c) and "월" not in str(c)]
+    for tc in total_cols:
+        new_df[tc] = pivot_df[tc]
 
-    for m_key, m_dates in month_groups.items():
-        m_label = f"{m_key[5:7]}월 합계"
-        new_df[m_label] = pivot_df[m_dates].sum(axis=1)
-        for d in m_dates:
-            new_df[d] = pivot_df[d]
+    for m_key, info in sorted(month_groups.items()):
+        m_label = info['label']
+        m_sum_col_name = f"{m_key[5:7]}월 합계"
+        m_dates = info['dates']
         
+        # 월 합계 열 항상 생성
+        new_df[m_sum_col_name] = pivot_df[m_dates].sum(axis=1)
+        
+        # 선택된 월만 상세 일자(YYYY-MM-DD) 열들을 펼쳐서 추가
+        if m_label in expanded_months or f"{int(m_key[5:7]):02d}월" in expanded_months or m_key in expanded_months:
+            for d in m_dates:
+                new_df[d] = pivot_df[d]
+                
     return new_df
 
 def generate_pure_svg_donut(data_dict, title):
@@ -489,8 +500,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         
     if summary_rows:
         df_summary = pd.DataFrame(summary_rows)
-        
-        # B2C 출고현황 탭 서식을 그대로 적용한 고품질 스티키 테이블 생성
         pivot_main = df_summary.set_index('센터')
         
         subtotal_dfs = []
@@ -551,6 +560,9 @@ elif main_mode == "🚚 B2C 출고 현황":
         "🔍 SKU별 출고량"
     ])
 
+    adjusted_today = datetime.now() - timedelta(days=1)
+    default_expand_m = f"{adjusted_today.month}월"
+
     with tab1:
         st.header("센터 & 고객사별 출고현황 (06시 영업마감 기준)")
         if not df_b2c_orders.empty:
@@ -562,22 +574,25 @@ elif main_mode == "🚚 B2C 출고 현황":
                 center_options.append("XFC 소계")
             center_options.extend(raw_centers)
 
-            col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+            all_available_months = sorted(list(set(df_b2c_orders['영업마감일자'].str.slice(5, 7).apply(lambda x: f"{int(x)}월"))), reverse=True)
+            default_sel_months = [default_expand_m] if default_expand_m in all_available_months else (all_available_months[:1] if all_available_months else [])
+
+            col1, col2, col3, col4 = st.columns([3, 3, 2, 2])
             with col1:
-                view_mode = st.radio("1. 보기 형식 선택", ["일자별 (일별 상세)", "월별 (월 요약만)"], horizontal=True)
+                expanded_months_tab1 = st.multiselect("📅 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", all_available_months, default=default_sel_months, key="tab1_exp_months")
             with col2:
-                selected_center_input = st.multiselect("2. 센터 선택 (미선택 시 전체)", center_options, key="tab1_centers")
+                selected_center_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options, key="tab1_centers")
                 expanded_centers = expand_selected_centers(selected_center_input, raw_centers) if selected_center_input else []
             with col3:
-                show_client = st.radio("3. 고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"])
+                show_client = st.radio("고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"])
             with col4:
                 if "보이기" in show_client:
                     available_clients_df = df_b2c_orders[df_b2c_orders['센터'].isin(expanded_centers)] if expanded_centers else df_b2c_orders
                     available_clients = sorted(list(available_clients_df['고객사'].dropna().unique()))
-                    clients = st.multiselect("4. 고객사 선택 (미선택 시 전체)", available_clients, key="tab1_clients")
+                    clients = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients, key="tab1_clients")
                 else:
                     clients = []
-                    st.selectbox("4. 고객사 선택", ["고객사 숨김 상태"], disabled=True)
+                    st.selectbox("고객사 선택", ["고객사 숨김 상태"], disabled=True)
 
             filtered_df = df_b2c_orders.copy()
             if expanded_centers: 
@@ -590,16 +605,11 @@ elif main_mode == "🚚 B2C 출고 현황":
                 group_cols.append('고객사')
 
             if not filtered_df.empty:
-                if "월별" in view_mode:
-                    filtered_df['연월'] = filtered_df['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
-                    pivot_df = pd.pivot_table(filtered_df, index=group_cols, columns='연월', values='출고건수', aggfunc='sum', fill_value=0)
-                    pivot_df['총 출고건수'] = pivot_df.sum(axis=1)
-                    cols_order = ['총 출고건수'] + [c for c in pivot_df.columns if c != '총 출고건수']
-                    pivot_df = pivot_df[cols_order]
-                else:
-                    pivot_df = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
-                    pivot_df['총 출고건수'] = pivot_df.sum(axis=1)
-                    pivot_df = inject_monthly_sum_columns(pivot_df)
+                pivot_raw = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
+                pivot_raw['총 출고건수'] = pivot_raw.sum(axis=1)
+                
+                # ★ 스마트 월별 접기/펼치기 적용 ★
+                pivot_df = smart_fold_pivot_columns(pivot_raw, expanded_months_tab1)
 
                 subtotal_dfs = []
                 c_375 = [c for c in pivot_df.index.get_level_values('센터').unique() if '1층' in str(c) or '375 1' in str(c)]
@@ -625,7 +635,7 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                 body_df = pd.concat(subtotal_dfs) if subtotal_dfs else pivot_df
                 total_series = pivot_df.sum(axis=0)
-                total_label = "★ 전체 합계" if "월별" in view_mode else "★ 일별 합계"
+                total_label = "★ 전체 합계"
                 total_idx = pd.MultiIndex.from_tuples([(total_label, "전체")], names=group_cols) if "보이기" in show_client else pd.Index([total_label], name="센터")
                 total_df = pd.DataFrame([total_series.values], columns=pivot_df.columns, index=total_idx)
 
@@ -637,28 +647,26 @@ elif main_mode == "🚚 B2C 출고 현황":
     with tab2:
         st.header("배송 속성 및 판매처별 출고현황")
         if not df_b2c_orders.empty:
-            col_t1, col_t2 = st.columns([3, 3])
+            all_available_months2 = sorted(list(set(df_b2c_orders['영업마감일자'].str.slice(5, 7).apply(lambda x: f"{int(x)}월"))), reverse=True)
+            default_sel_months2 = [default_expand_m] if default_expand_m in all_available_months2 else (all_available_months2[:1] if all_available_months2 else [])
+
+            col_t1, col_t2 = st.columns([3, 5])
             with col_t1:
                 analysis_type = st.radio("분석 기준 선택", ["배송 속성별", "판매처별"], horizontal=True)
             with col_t2:
-                view_mode2 = st.radio("보기 형식 선택", ["일자별 (일별 상세)", "월별 (월 요약만)"], horizontal=True, key="tab2_view")
+                expanded_months_tab2 = st.multiselect("📅 상세 일자 펼침 월 선택:", all_available_months2, default=default_sel_months2, key="tab2_exp_months")
 
             target_col = '배송속성' if analysis_type == "배송 속성별" else '판매처'
             df_tab2 = df_b2c_orders.copy()
 
-            if "월별" in view_mode2:
-                df_tab2['연월'] = df_tab2['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
-                pivot_df2 = pd.pivot_table(df_tab2, index=[target_col], columns='연월', values='출고건수', aggfunc='sum', fill_value=0)
-                pivot_df2['총 출고건수'] = pivot_df2.sum(axis=1)
-                cols_order2 = ['총 출고건수'] + [c for c in pivot_df2.columns if c != '총 출고건수']
-                pivot_df2 = pivot_df2[cols_order2]
-            else:
-                pivot_df2 = pd.pivot_table(df_tab2, index=[target_col], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
-                pivot_df2['총 출고건수'] = pivot_df2.sum(axis=1)
-                pivot_df2 = inject_monthly_sum_columns(pivot_df2)
+            pivot_raw2 = pd.pivot_table(df_tab2, index=[target_col], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
+            pivot_raw2['총 출고건수'] = pivot_raw2.sum(axis=1)
+            
+            # ★ 스마트 월별 접기/펼치기 적용 ★
+            pivot_df2 = smart_fold_pivot_columns(pivot_raw2, expanded_months_tab2)
 
             total_series2 = pivot_df2.sum(axis=0)
-            total_label2 = "★ 전체 합계" if "월별" in view_mode2 else "★ 일별 합계"
+            total_label2 = "★ 전체 합계"
             total_df2 = pd.DataFrame([total_series2.values], columns=pivot_df2.columns, index=pd.Index([total_label2], name=target_col))
             final_df2 = pd.concat([total_df2, pivot_df2])
             render_sticky_pivot(final_df2, [target_col], key_suffix="tab2")
@@ -674,9 +682,12 @@ elif main_mode == "🚚 B2C 출고 현황":
                 center_options_tab3.append("XFC 소계")
             center_options_tab3.extend(raw_centers_tab3)
 
-            box_col1, box_col2, box_col3 = st.columns([2, 3, 3])
+            all_available_months3 = sorted(list(set(df_b2c_orders['영업마감일자'].str.slice(5, 7).apply(lambda x: f"{int(x)}월"))), reverse=True)
+            default_sel_months3 = [default_expand_m] if default_expand_m in all_available_months3 else (all_available_months3[:1] if all_available_months3 else [])
+
+            box_col1, box_col2, box_col3 = st.columns([3, 3, 3])
             with box_col1:
-                view_mode3 = st.radio("보기 형식 선택", ["일자별 (일별 상세)", "월별 (월 요약만)"], horizontal=True, key="tab3_view")
+                expanded_months_tab3 = st.multiselect("📅 상세 일자 펼침 월 선택:", all_available_months3, default=default_sel_months3, key="tab3_exp_months")
             with box_col2:
                 selected_centers_input_tab3 = st.multiselect("센터 선택 (미선택 시 전체)", center_options_tab3, key="tab3_centers")
                 expanded_centers_tab3 = expand_selected_centers(selected_centers_input_tab3, raw_centers_tab3) if selected_centers_input_tab3 else []
@@ -696,19 +707,14 @@ elif main_mode == "🚚 B2C 출고 현황":
             df_tab3 = df_tab3[~df_tab3['출고박스종류'].astype(str).str.upper().isin(['N', 'Y', '미지정', 'NAN'])]
 
             if not df_tab3.empty:
-                if "월별" in view_mode3:
-                    df_tab3['연월'] = df_tab3['영업마감일자'].str.slice(0, 7).apply(lambda x: f"{x[5:7]}월 합계")
-                    pivot_df3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='연월', values='출고건수', aggfunc='sum', fill_value=0)
-                    pivot_df3['총 출고건수'] = pivot_df3.sum(axis=1)
-                    cols_order3 = ['총 출고건수'] + [c for c in pivot_df3.columns if c != '총 출고건수']
-                    pivot_df3 = pivot_df3[cols_order3]
-                else:
-                    pivot_df3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
-                    pivot_df3['총 출고건수'] = pivot_df3.sum(axis=1)
-                    pivot_df3 = inject_monthly_sum_columns(pivot_df3)
+                pivot_raw3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
+                pivot_raw3['총 출고건수'] = pivot_raw3.sum(axis=1)
+                
+                # ★ 스마트 월별 접기/펼치기 적용 ★
+                pivot_df3 = smart_fold_pivot_columns(pivot_raw3, expanded_months_tab3)
 
                 total_series3 = pivot_df3.sum(axis=0)
-                total_label3 = "★ 전체 합계" if "월별" in view_mode3 else "★ 일별 합계"
+                total_label3 = "★ 전체 합계"
                 total_df3 = pd.DataFrame([total_series3.values], columns=pivot_df3.columns, index=pd.Index([total_label3], name="출고박스 규격"))
                 final_df3 = pd.concat([total_df3, pivot_df3])
                 render_sticky_pivot(final_df3, ["출고박스 규격"], key_suffix="tab3")
@@ -819,12 +825,20 @@ elif main_mode == "📦 입고 현황":
         "📋 상태별(입고완료/승인대기) 현황"
     ])
 
+    adjusted_today = datetime.now() - timedelta(days=1)
+    default_expand_m_ib = f"{adjusted_today.month}월"
+
     with in_tab1:
         st.header("📦 센터 & 고객사별 입고 현황 (구글 시트 PLT / BOX 매칭)")
         if not df_inbound.empty:
-            col_in1, col_in2 = st.columns(2)
+            all_available_months_ib = sorted(list(set(df_inbound['영업마감일자'].str.slice(5, 7).apply(lambda x: f"{int(x)}월"))), reverse=True)
+            default_sel_months_ib = [default_expand_m_ib] if default_expand_m_ib in all_available_months_ib else (all_available_months_ib[:1] if all_available_months_ib else [])
+
+            col_in1, col_in2 = st.columns([3, 5])
             with col_in1:
                 metric_val = st.radio("조회 항목 선택:", ["입고완료수량 (EA)", "PLT수 (PLT)", "BOX수 (BOX)", "입고건수 (건)"], horizontal=True)
+            with col_in2:
+                expanded_months_ib1 = st.multiselect("📅 상세 일자 펼침 월 선택:", all_available_months_ib, default=default_sel_months_ib, key="ib1_exp_months")
             
             col_map_dict = {
                 "입고완료수량 (EA)": "입고완료수량",
@@ -835,17 +849,17 @@ elif main_mode == "📦 입고 현황":
             target_val = col_map_dict[metric_val]
             
             if target_val in df_inbound.columns:
-                pivot_inbound = pd.pivot_table(df_inbound, index=['센터', '고객사'], columns='영업마감일자', values=target_val, aggfunc='sum', fill_value=0)
+                pivot_raw_ib1 = pd.pivot_table(df_inbound, index=['센터', '고객사'], columns='영업마감일자', values=target_val, aggfunc='sum', fill_value=0)
                 total_col_name = f"총 {target_val}"
-                pivot_inbound[total_col_name] = pivot_inbound.sum(axis=1)
+                pivot_raw_ib1[total_col_name] = pivot_raw_ib1.sum(axis=1)
                 
-                cols_in_order = [total_col_name] + [c for c in pivot_inbound.columns if c != total_col_name]
-                pivot_inbound = pivot_inbound[cols_in_order]
+                # ★ 스마트 월별 접기/펼치기 적용 ★
+                pivot_ib1 = smart_fold_pivot_columns(pivot_raw_ib1, expanded_months_ib1)
+
+                total_series_in = pivot_ib1.sum(axis=0)
+                total_df_in = pd.DataFrame([total_series_in.values], columns=pivot_ib1.columns, index=pd.MultiIndex.from_tuples([("★ 전체 합계", "전체")], names=['센터', '고객사']))
                 
-                total_series_in = pivot_inbound.sum(axis=0)
-                total_df_in = pd.DataFrame([total_series_in.values], columns=pivot_inbound.columns, index=pd.MultiIndex.from_tuples([("★ 전체 합계", "전체")], names=['센터', '고객사']))
-                
-                final_inbound = pd.concat([total_df_in, pivot_inbound])
+                final_inbound = pd.concat([total_df_in, pivot_ib1])
                 render_sticky_pivot(final_inbound, ['센터', '고객사'], key_suffix="inbound_tab1")
         else:
             st.info("입고 데이터가 존재하지 않습니다. 구글 드라이브에 입고요청서 엑셀 파일을 올린 후 [🔄 드라이브 & 구글시트 동기화]를 눌러주세요.")
@@ -853,9 +867,17 @@ elif main_mode == "📦 입고 현황":
     with in_tab2:
         st.header("📋 상태별(입고완료 / 승인대기) 현황")
         if not df_inbound.empty and '상태' in df_inbound.columns:
-            pivot_status = pd.pivot_table(df_inbound, index=['센터', '고객사', '상태'], columns='영업마감일자', values='입고완료수량', aggfunc='sum', fill_value=0)
-            pivot_status['총 입고완료수량'] = pivot_status.sum(axis=1)
-            cols_st_order = ['총 입고완료수량'] + [c for c in pivot_status.columns if c != '총 입고완료수량']
-            render_sticky_pivot(pivot_status[cols_st_order], ['센터', '고객사', '상태'], key_suffix="inbound_tab2")
+            all_available_months_ib2 = sorted(list(set(df_inbound['영업마감일자'].str.slice(5, 7).apply(lambda x: f"{int(x)}월"))), reverse=True)
+            default_sel_months_ib2 = [default_expand_m_ib] if default_expand_m_ib in all_available_months_ib2 else (all_available_months_ib2[:1] if all_available_months_ib2 else [])
+
+            expanded_months_ib2 = st.multiselect("📅 상세 일자 펼침 월 선택:", all_available_months_ib2, default=default_sel_months_ib2, key="ib2_exp_months")
+
+            pivot_raw_ib2 = pd.pivot_table(df_inbound, index=['센터', '고객사', '상태'], columns='영업마감일자', values='입고완료수량', aggfunc='sum', fill_value=0)
+            pivot_raw_ib2['총 입고완료수량'] = pivot_raw_ib2.sum(axis=1)
+            
+            # ★ 스마트 월별 접기/펼치기 적용 ★
+            pivot_ib2 = smart_fold_pivot_columns(pivot_raw_ib2, expanded_months_ib2)
+
+            render_sticky_pivot(pivot_ib2, ['센터', '고객사', '상태'], key_suffix="inbound_tab2")
         else:
             st.info("입고 상태 데이터가 없습니다.")
