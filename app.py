@@ -160,7 +160,7 @@ st.markdown("""
     }
     .sticky-table th, .sticky-table td {
         padding: 8px 12px;
-        text-align: center;
+        text-align: center !important;
         border-bottom: 1px solid #1f2937;
         border-right: 1px solid #1f2937;
         white-space: nowrap;
@@ -168,28 +168,28 @@ st.markdown("""
     }
     .sticky-table thead tr th {
         position: sticky; top: 0; z-index: 20;
-        background-color: #1f2937 !important; color: #9ca3af; font-weight: bold; text-align: center;
+        background-color: #1f2937 !important; color: #9ca3af; font-weight: bold; text-align: center !important;
     }
     .sticky-table tr.total-row td {
         position: sticky; top: 35px; z-index: 15;
         background-color: #1e293b !important; color: #facc15 !important;
-        font-weight: bold; border-bottom: 2px solid #eab308 !important; text-align: center;
+        font-weight: bold; border-bottom: 2px solid #eab308 !important; text-align: center !important;
     }
     .sticky-table th.freeze-col-1, .sticky-table td.freeze-col-1 {
         position: sticky; left: 0; z-index: 10;
-        background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: center;
+        background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: center !important;
     }
     .sticky-table th.freeze-col-2, .sticky-table td.freeze-col-2 {
         position: sticky; left: 140px; z-index: 10;
-        background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: center;
+        background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: center !important;
     }
     .sticky-table tr.subtotal-row td {
-        background-color: #0f172a !important; color: #38bdf8 !important; font-weight: bold; text-align: center;
+        background-color: #0f172a !important; color: #38bdf8 !important; font-weight: bold; text-align: center !important;
     }
     .sticky-table .month-sum-col {
         background-color: #172554 !important; color: #60a5fa !important;
         font-weight: bold !important; border-right: 2px solid #2563eb !important; border-left: 2px solid #2563eb !important;
-        text-align: center;
+        text-align: center !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -331,7 +331,6 @@ def inject_monthly_sum_columns(pivot_df):
         
     return new_df
 
-# 자체 구현 순수 SVG 다크모드 원형(도넛) 차트 생성기
 def generate_pure_svg_donut(data_dict, title):
     colors = ['#38bdf8', '#60a5fa', '#facc15', '#4ade80', '#f43f5e', '#a855f7']
     total_val = sum(data_dict.values())
@@ -485,76 +484,41 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
             '센터': center_name,
             'B2C 출고건수': b2c_c,
             '입고건수 (입고완료/승인대기)': in_c,
-            'B2B 건수': b2b_c,
-            '총 작업건수': b2c_c + in_c + b2b_c
+            'B2B 건수': b2b_c
         })
         
     if summary_rows:
         df_summary = pd.DataFrame(summary_rows)
         
-        sub_sections = []
+        # B2C 출고현황 탭 서식을 그대로 적용한 고품질 스티키 테이블 생성
+        pivot_main = df_summary.set_index('센터')
         
-        c_375 = df_summary[df_summary['센터'].str.contains('1층|375 1', na=False)]
-        if not c_375.empty:
-            sub_sections.append(c_375)
-            sum_375 = pd.DataFrame([{
-                '센터': '375 소계',
-                'B2C 출고건수': c_375['B2C 출고건수'].sum(),
-                '입고건수 (입고완료/승인대기)': c_375['입고건수 (입고완료/승인대기)'].sum(),
-                'B2B 건수': c_375['B2B 건수'].sum(),
-                '총 작업건수': c_375['총 작업건수'].sum()
-            }])
-            sub_sections.append(sum_375)
+        subtotal_dfs = []
+        c_375 = [c for c in pivot_main.index if '1층' in str(c) or '375 1' in str(c)]
+        if c_375:
+            df_375 = pivot_main.loc[pivot_main.index.isin(c_375)]
+            subtotal_dfs.append(df_375)
+            sum_375 = df_375.sum(axis=0)
+            subtotal_dfs.append(pd.DataFrame([sum_375.values], columns=pivot_main.columns, index=pd.Index(["375 소계"], name="센터")))
 
-        c_xfc = df_summary[df_summary['센터'].str.contains('XFC', case=False, na=False)]
-        if not c_xfc.empty:
-            sub_sections.append(c_xfc)
-            sum_xfc = pd.DataFrame([{
-                '센터': 'XFC 소계',
-                'B2C 출고건수': c_xfc['B2C 출고건수'].sum(),
-                '입고건수 (입고완료/승인대기)': c_xfc['입고건수 (입고완료/승인대기)'].sum(),
-                'B2B 건수': c_xfc['B2B 건수'].sum(),
-                '총 작업건수': c_xfc['총 작업건수'].sum()
-            }])
-            sub_sections.append(sum_xfc)
+        c_xfc = [c for c in pivot_main.index if 'XFC' in str(c).upper()]
+        if c_xfc:
+            df_xfc = pivot_main.loc[pivot_main.index.isin(c_xfc)]
+            subtotal_dfs.append(df_xfc)
+            sum_xfc = df_xfc.sum(axis=0)
+            subtotal_dfs.append(pd.DataFrame([sum_xfc.values], columns=pivot_main.columns, index=pd.Index(["XFC 소계"], name="센터")))
 
-        c_other = df_summary[~df_summary['센터'].str.contains('1층|375 1|XFC', case=False, na=False)]
-        if not c_other.empty:
-            sub_sections.append(c_other)
+        c_other = [c for c in pivot_main.index if c not in c_375 and c not in c_xfc]
+        if c_other:
+            df_other = pivot_main.loc[pivot_main.index.isin(c_other)]
+            subtotal_dfs.append(df_other)
 
-        body_summary = pd.concat(sub_sections) if sub_sections else df_summary
+        body_df = pd.concat(subtotal_dfs) if subtotal_dfs else pivot_main
+        total_series = pivot_main.sum(axis=0)
+        total_df = pd.DataFrame([total_series.values], columns=pivot_main.columns, index=pd.Index(["★ 전체 합계"], name="센터"))
 
-        total_row = pd.DataFrame([{
-            '센터': '★ 전체 합계',
-            'B2C 출고건수': df_summary['B2C 출고건수'].sum(),
-            '입고건수 (입고완료/승인대기)': df_summary['입고건수 (입고완료/승인대기)'].sum(),
-            'B2B 건수': df_summary['B2B 건수'].sum(),
-            '총 작업건수': df_summary['총 작업건수'].sum()
-        }])
-        
-        df_summary_final = pd.concat([total_row, body_summary]).reset_index(drop=True)
-        
-        st.markdown("""
-        <style>
-            [data-testid="stDataFrame"] th {
-                text-align: center !important;
-            }
-            [data-testid="stDataFrame"] td {
-                text-align: center !important;
-            }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        st.dataframe(
-            df_summary_final.style.format({
-                'B2C 출고건수': '{:,}',
-                '입고건수 (입고완료/승인대기)': '{:,}',
-                'B2B 건수': '{:,}',
-                '총 작업건수': '{:,}'
-            }),
-            use_container_width=True,
-            hide_index=True
-        )
+        final_main_df = pd.concat([total_df, body_df])
+        render_sticky_pivot(final_main_df, ["센터"], key_suffix="main_summary")
 
         st.markdown("---")
         st.subheader("🥧 센터별 실적 항목 비율 (원형 도넛 그래프)")
@@ -564,9 +528,8 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         b2c_dict = dict(zip(chart_df['센터'], chart_df['B2C 출고건수']))
         in_dict = dict(zip(chart_df['센터'], chart_df['입고건수 (입고완료/승인대기)']))
         b2b_dict = dict(zip(chart_df['센터'], chart_df['B2B 건수']))
-        total_dict = dict(zip(chart_df['센터'], chart_df['총 작업건수']))
 
-        ch_col1, ch_col2, ch_col3, ch_col4 = st.columns(4)
+        ch_col1, ch_col2, ch_col3 = st.columns(3)
         
         with ch_col1:
             st.markdown(generate_pure_svg_donut(b2c_dict, "🚚 B2C 출고건수"), unsafe_allow_html=True)
@@ -576,9 +539,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
 
         with ch_col3:
             st.markdown(generate_pure_svg_donut(b2b_dict, "🏭 B2B 건수"), unsafe_allow_html=True)
-
-        with ch_col4:
-            st.markdown(generate_pure_svg_donut(total_dict, "📊 총 작업건수"), unsafe_allow_html=True)
 
     else:
         st.info("데이터가 준비되어 있지 않습니다. 좌측 상단 [🔄 드라이브 & 구글시트 동기화]를 눌러 동기화를 진행해주세요.")
