@@ -15,10 +15,8 @@ INBOUND_FOLDER_ID = '1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp'    # 입고 폴더
 B2B_FOLDER_ID = '1wpqrIBC8HnWTU20rShcg0Yvkcc1VIsml'        # B2B 폴더
 PROCESSED_FOLDER_ID = '1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ'  # 처리완료 폴더
 
-# ★ [DB 전용 폴더 ID] ★
 DB_FOLDER_ID = '1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9'
 
-# ★ 분리 관리되는 독립 DB 파일명 ★
 DB_B2C_PATH = 'wms_b2c.db'
 DB_INBOUND_PATH = 'wms_inbound.db'
 DB_B2B_PATH = 'wms_b2b.db'
@@ -91,7 +89,6 @@ def upload_db_to_drive(service, db_filename):
 
 def list_files_in_folder(service, folder_id):
     try:
-        # 구글 드라이브 API 탐색 구문 안전 정제
         query = f"'{folder_id}' in parents and trashed = false"
         results = service.files().list(
             q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True
@@ -111,7 +108,7 @@ def read_excel_fast(fh):
             s = wb[sheet_name]
             for row in list(s.iter_rows(max_row=5, values_only=True)):
                 row_str = " ".join([str(v) for v in row if v is not None])
-                if any(k in row_str for k in ['송장 번호', '송장번호', '마감 일시', '마감일시', 'SKU명', '입고번호']):
+                if any(k in row_str for k in ['송장 번호', '송장번호', '마감 일시', '마감일시', 'SKU명', '입고번호', '입고 번호']):
                     target_sheet = s
                     break
             else:
@@ -227,7 +224,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     if '상태' == clean_c: col_map_inbound[orig_c] = '상태'
                     elif '센터' == clean_c: col_map_inbound[orig_c] = '센터'
                     elif '고객사' == clean_c: col_map_inbound[orig_c] = '고객사'
-                    elif '입고번호' == clean_c: col_map_inbound[orig_c] = '입고번호'
+                    elif '입고번호' in clean_c: col_map_inbound[orig_c] = '입고번호'
                     elif '입고방법' in clean_c: col_map_inbound[orig_c] = '입고방법'
                     elif 'SKU명' in clean_c or '상품명' in clean_c: col_map_inbound[orig_c] = 'SKU명'
                     elif '바코드' == clean_c: col_map_inbound[orig_c] = '바코드'
@@ -238,29 +235,34 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     elif '요청SKU' in clean_c or '요청sku' in clean_c: col_map_inbound[orig_c] = '요청SKU수량'
                     elif '총예정수량' in clean_c: col_map_inbound[orig_c] = '총예정수량'
                     elif '총검수완료수량' in clean_c or '검수완료' in clean_c: col_map_inbound[orig_c] = '총검수완료수량'
-                    elif '등록일시' == clean_c: col_map_inbound[orig_c] = '등록일시'
+                    elif '등록일시' in clean_c: col_map_inbound[orig_c] = '등록일시'
                     elif '변경자' in clean_c: col_map_inbound[orig_c] = '변경자'
-                    elif '최종변경일시' in clean_c: col_map_inbound[orig_c] = '최종변경일시'
-                    elif '입고완료일시' in clean_c: col_map_inbound[orig_c] = '입고완료일시'
+                    elif '최종변경일시' in clean_c or '최종변경' in clean_c: col_map_inbound[orig_c] = '최종변경일시'
+                    elif '입고완료일시' in clean_c or '입고완료' in clean_c: col_map_inbound[orig_c] = '입고완료일시'
 
                 df_in = df.rename(columns=col_map_inbound)
                 df_in = df_in.loc[:, ~df_in.columns.duplicated()]
 
-                if '상태' not in df_in.columns: df_in['상태'] = '입고 완료'
+                if '상태' not in df_in.columns: 
+                    df_in['상태'] = '입고 완료'
 
-                s_date = None
-                for candidate in ['입고완료일시', '최종변경일시', '등록일시']:
-                    if candidate in df_in.columns:
-                        s_date = df_in[candidate]
-                        break
+                # ★ [입고 핵심 로직] 상태에 따른 전용 날짜 컬럼 파싱 (시간보정 -6시간 완전 제거) ★
+                def parse_inbound_date(row):
+                    st_val = str(row.get('상태', '')).replace(" ", "").strip()
+                    if '입고완료' in st_val:
+                        raw_date = row.get('입고완료일시', None)
+                    else:  # 승인대기 등
+                        raw_date = row.get('최종변경일시', None)
+                    
+                    if pd.isna(raw_date) or str(raw_date).strip() == '' or str(raw_date) == 'nan':
+                        raw_date = row.get('등록일시', None)
 
-                if s_date is not None:
-                    df_in['dt_temp'] = pd.to_datetime(s_date, errors='coerce')
-                    df_in['영업마감일자'] = (df_in['dt_temp'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
-                else:
-                    df_in['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
+                    try:
+                        return pd.to_datetime(raw_date).strftime('%Y-%m-%d')
+                    except Exception:
+                        return datetime.now().strftime('%Y-%m-%d')
 
-                df_in['영업마감일자'] = df_in['영업마감일자'].fillna(datetime.now().strftime('%Y-%m-%d'))
+                df_in['영업마감일자'] = df_in.apply(parse_inbound_date, axis=1)
 
                 req_cols_ib = [
                     '영업마감일자', '센터', '고객사', '상태', '입고번호', '입고방법', 'SKU명', '바코드',
