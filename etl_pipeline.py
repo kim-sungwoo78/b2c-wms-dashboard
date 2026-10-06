@@ -183,8 +183,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     new_files_processed = False
     error_logs = []
 
-    # ★ 10/4일 로우 재집계 시 기존 10/4 DB 찌꺼기 선별 삭제 플래그
-    cleaned_dates = set()
+    cleaned_center_dates = set()
 
     for idx, f in enumerate(all_target_files, 1):
         file_id, file_name = f['id'], f['name']
@@ -344,13 +343,16 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 valid_mask = ~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)
                 df_b2c_valid = df_b2c_f[valid_mask]
 
-                # ★ [핵심] 처리할 파일의 영업마감일자에 대해 기존 DB 데이터를 선별 삭제(Clean Replace)
-                target_dates = df_b2c_valid['영업마감일자'].unique()
-                for d_val in target_dates:
-                    if d_val not in cleaned_dates:
-                        conn.execute("DELETE FROM shipment_raw WHERE 영업마감일자 = ?", (d_val,))
-                        conn.execute("DELETE FROM daily_summary WHERE 영업마감일자 = ?", (d_val,))
-                        cleaned_dates.add(d_val)
+                # ★ [핵심] 센터별 + 영업마감일자별 조합 단위 선별 삭제 (다른 센터 영향 최소화)
+                center_date_pairs = df_b2c_valid[['영업마감일자', '센터']].drop_duplicates()
+                for _, cd_row in center_date_pairs.iterrows():
+                    d_val = cd_row['영업마감일자']
+                    c_val = cd_row['센터']
+                    pair_key = (d_val, c_val)
+                    if pair_key not in cleaned_center_dates:
+                        conn.execute("DELETE FROM shipment_raw WHERE 영업마감일자 = ? AND 센터 = ?", (d_val, c_val))
+                        conn.execute("DELETE FROM daily_summary WHERE 영업마감일자 = ? AND 센터 = ?", (d_val, c_val))
+                        cleaned_center_dates.add(pair_key)
 
                 shipment_distinct = df_b2c_valid[
                     ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호',
