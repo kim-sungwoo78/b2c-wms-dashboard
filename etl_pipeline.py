@@ -289,7 +289,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
                     elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
                     elif '판매플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매처'
-                    elif '출고박스' in clean_c or clean_c == '박스': col_map_b2c[orig_c] = '출고박스종류'
+                    elif clean_c == '출고박스' or clean_c == '박스' or (('출고박스' in clean_c or '박스' in clean_c) and '바코드' not in clean_c and '사용' not in clean_c): col_map_b2c[orig_c] = '출고박스종류'
                     elif 'SKU' in clean_c or '상품명' in clean_c: col_map_b2c[orig_c] = 'SKU명'
                     elif '바코드' in clean_c: col_map_b2c[orig_c] = '바코드'
                     elif '송장번호' in clean_c or '운송장' in clean_c: col_map_b2c[orig_c] = '송장번호'
