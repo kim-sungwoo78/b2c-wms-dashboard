@@ -126,6 +126,7 @@ def load_inbound_data():
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
+        # 입고건수: 입고번호 고유 집계로 중복 차단
         df = pd.read_sql("""
             SELECT 영업마감일자, 센터, 고객사, 상태,
                    COUNT(DISTINCT 입고번호) AS 입고건수,
@@ -505,7 +506,13 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         main_inbound_df = filtered_inbound
 
     total_b2c_cnt = filtered_b2c['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
-    total_inbound_cnt = main_inbound_df['입고건수'].sum() if not main_inbound_df.empty and '입고건수' in main_inbound_df.columns else 0
+    
+    # 입고건수: 데이터베이스 고유 입고번호 합산 카운트
+    if not main_inbound_df.empty and '입고건수' in main_inbound_df.columns:
+        total_inbound_cnt = main_inbound_df.groupby('센터')['입고건수'].sum().sum()
+    else:
+        total_inbound_cnt = 0
+        
     total_b2b_cnt = 0
 
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
@@ -778,7 +785,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 center_options_tab4.append("XFC 소계")
             center_options_tab4.extend(raw_centers_tab4)
 
-            # 상단 1행: 센터 및 고객사 선택
             col1, col2 = st.columns(2)
             with col1:
                 selected_centers_input_tab4 = st.multiselect("센터 선택 (다중 선택 가능)", center_options_tab4, key="tab4_centers")
@@ -813,7 +819,6 @@ elif main_mode == "🚚 B2C 출고 현황":
 
             p_col1, p_col2, p_col3, p_col4, p_col5, p_col6, p_col7, p_col8 = st.columns([1.8, 1.8, 2.5, 1.0, 1.0, 1.0, 1.0, 1.0])
 
-            # ★ 세션 상태 동기화를 위해 value 매라미터를 session_state에 직접 연결 ★
             with p_col1:
                 input_start = st.date_input("시작일자:", value=curr_s, key="tab4_start_input_widget", label_visibility="collapsed")
             with p_col2:
@@ -962,7 +967,7 @@ elif main_mode == "📦 입고 현황":
             expanded_months_ib2 = render_month_button_bar(
                 df_inbound, 
                 session_key_selected="ib2_exp_months", 
-                title_label="🗓️️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", 
+                title_label="🗓️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", 
                 allow_nujak=False, 
                 multi_select=True
             )
