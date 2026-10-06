@@ -283,13 +283,13 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
-                    if '상세' in clean_c: 
-                        continue
+                    if '상세' in clean_c or '이형' in clean_c: 
+                        continue  # B열 '송장 상세' 및 AN열 '이형 박스 사용 여부' 제외
                     if '센터' in clean_c: col_map_b2c[orig_c] = '센터'
                     elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
                     elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
                     elif '판매플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매처'
-                    elif '출고박스' in clean_c or '박스' in clean_c: col_map_b2c[orig_c] = '출고박스종류'
+                    elif '출고박스' in clean_c or clean_c == '박스': col_map_b2c[orig_c] = '출고박스종류'
                     elif 'SKU' in clean_c or '상품명' in clean_c: col_map_b2c[orig_c] = 'SKU명'
                     elif '바코드' in clean_c: col_map_b2c[orig_c] = '바코드'
                     elif '송장번호' in clean_c or '운송장' in clean_c: col_map_b2c[orig_c] = '송장번호'
@@ -343,7 +343,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 valid_mask = ~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)
                 df_b2c_valid = df_b2c_f[valid_mask]
 
-                # ★ [핵심] 센터별 + 영업마감일자별 조합 단위 선별 삭제 (다른 센터 영향 최소화)
                 center_date_pairs = df_b2c_valid[['영업마감일자', '센터']].drop_duplicates()
                 for _, cd_row in center_date_pairs.iterrows():
                     d_val = cd_row['영업마감일자']
