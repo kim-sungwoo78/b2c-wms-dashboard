@@ -3,11 +3,13 @@ import io
 import sqlite3
 import pandas as pd
 import streamlit as st
+import plotly.express as px
 from datetime import datetime, timedelta
 
+# 페이지 기본 설정
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
 
-# ★ 분리 DB 경로 설정 ★
+# 분리 DB 경로 설정
 DB_B2C_PATH = "wms_b2c.db"
 DB_INBOUND_PATH = "wms_inbound.db"
 DB_B2B_PATH = "wms_b2b.db"
@@ -158,7 +160,7 @@ st.markdown("""
     }
     .sticky-table th, .sticky-table td {
         padding: 8px 12px;
-        text-align: right;
+        text-align: center;
         border-bottom: 1px solid #1f2937;
         border-right: 1px solid #1f2937;
         white-space: nowrap;
@@ -166,27 +168,28 @@ st.markdown("""
     }
     .sticky-table thead tr th {
         position: sticky; top: 0; z-index: 20;
-        background-color: #1f2937 !important; color: #9ca3af; font-weight: bold;
+        background-color: #1f2937 !important; color: #9ca3af; font-weight: bold; text-align: center;
     }
     .sticky-table tr.total-row td {
         position: sticky; top: 35px; z-index: 15;
         background-color: #1e293b !important; color: #facc15 !important;
-        font-weight: bold; border-bottom: 2px solid #eab308 !important;
+        font-weight: bold; border-bottom: 2px solid #eab308 !important; text-align: center;
     }
     .sticky-table th.freeze-col-1, .sticky-table td.freeze-col-1 {
         position: sticky; left: 0; z-index: 10;
-        background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: left;
+        background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: center;
     }
     .sticky-table th.freeze-col-2, .sticky-table td.freeze-col-2 {
         position: sticky; left: 140px; z-index: 10;
-        background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: left;
+        background-color: #111827 !important; border-right: 1px solid #374151 !important; text-align: center;
     }
     .sticky-table tr.subtotal-row td {
-        background-color: #0f172a !important; color: #38bdf8 !important; font-weight: bold;
+        background-color: #0f172a !important; color: #38bdf8 !important; font-weight: bold; text-align: center;
     }
     .sticky-table .month-sum-col {
         background-color: #172554 !important; color: #60a5fa !important;
         font-weight: bold !important; border-right: 2px solid #2563eb !important; border-left: 2px solid #2563eb !important;
+        text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -328,11 +331,16 @@ def inject_monthly_sum_columns(pivot_df):
         
     return new_df
 
+# 메인 종합 현황 모드
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
     
+    # ★ [핵심] 현재 날짜 -1일 적용 기준월 기본값 계산 ★
+    adjusted_today = datetime.now() - timedelta(days=1)
+    default_month_str = f"{adjusted_today.month}월"
+    
     if 'selected_month_num' not in st.session_state:
-        st.session_state['selected_month_num'] = "누적"
+        st.session_state['selected_month_num'] = default_month_str
         
     raw_centers = set()
     if not df_b2c_orders.empty and '센터' in df_b2c_orders.columns:
@@ -341,16 +349,24 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         raw_centers.update(df_inbound['센터'].dropna().unique())
         
     sorted_centers = sorted(list(raw_centers))
+    
+    center_options_main = []
+    if any('1층' in str(c) or '375 1' in str(c) for c in sorted_centers):
+        center_options_main.append("375 소계")
+    if any('XFC' in str(c).upper() for c in sorted_centers):
+        center_options_main.append("XFC 소계")
+    center_options_main.extend(sorted_centers)
 
     filter_row_col1, filter_row_col2 = st.columns([3, 7])
     
     with filter_row_col1:
         selected_centers_filter = st.multiselect(
             "🏢 센터 선택 (미선택 시 전체):", 
-            sorted_centers, 
+            center_options_main, 
             default=[],
             key="main_center_filter"
         )
+        expanded_main_centers = expand_selected_centers(selected_centers_filter, sorted_centers) if selected_centers_filter else []
 
     with filter_row_col2:
         st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>🗓 기준 월 선택</p>", unsafe_allow_html=True)
@@ -370,11 +386,11 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     filtered_b2c = df_b2c_orders.copy() if not df_b2c_orders.empty else pd.DataFrame()
     filtered_inbound = df_inbound.copy() if not df_inbound.empty else pd.DataFrame()
 
-    if selected_centers_filter:
+    if expanded_main_centers:
         if not filtered_b2c.empty and '센터' in filtered_b2c.columns:
-            filtered_b2c = filtered_b2c[filtered_b2c['센터'].isin(selected_centers_filter)]
+            filtered_b2c = filtered_b2c[filtered_b2c['센터'].isin(expanded_main_centers)]
         if not filtered_inbound.empty and '센터' in filtered_inbound.columns:
-            filtered_inbound = filtered_inbound[filtered_inbound['센터'].isin(selected_centers_filter)]
+            filtered_inbound = filtered_inbound[filtered_inbound['센터'].isin(expanded_main_centers)]
 
     if selected_m != "누적":
         m_digit = selected_m.replace("월", "").zfill(2)
@@ -404,7 +420,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     st.subheader("📋 센터별 운영 항목 종합 비교표")
     
     summary_rows = []
-    centers_to_loop = selected_centers_filter if selected_centers_filter else sorted_centers
+    centers_to_loop = expanded_main_centers if expanded_main_centers else sorted_centers
         
     for center_name in centers_to_loop:
         b2c_c = filtered_b2c[filtered_b2c['센터'] == center_name]['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
@@ -421,6 +437,40 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         
     if summary_rows:
         df_summary = pd.DataFrame(summary_rows)
+        
+        # B2C 출고현황 탭 서식과 완전 통일 (375 소계, XFC 소계 반영)
+        sub_sections = []
+        
+        c_375 = df_summary[df_summary['센터'].str.contains('1층|375 1', na=False)]
+        if not c_375.empty:
+            sub_sections.append(c_375)
+            sum_375 = pd.DataFrame([{
+                '센터': '375 소계',
+                'B2C 출고건수': c_375['B2C 출고건수'].sum(),
+                '입고건수 (입고완료/승인대기)': c_375['입고건수 (입고완료/승인대기)'].sum(),
+                'B2B 건수': c_375['B2B 건수'].sum(),
+                '총 작업건수': c_375['총 작업건수'].sum()
+            }])
+            sub_sections.append(sum_375)
+
+        c_xfc = df_summary[df_summary['센터'].str.contains('XFC', case=False, na=False)]
+        if not c_xfc.empty:
+            sub_sections.append(c_xfc)
+            sum_xfc = pd.DataFrame([{
+                '센터': 'XFC 소계',
+                'B2C 출고건수': c_xfc['B2C 출고건수'].sum(),
+                '입고건수 (입고완료/승인대기)': c_xfc['입고건수 (입고완료/승인대기)'].sum(),
+                'B2B 건수': c_xfc['B2B 건수'].sum(),
+                '총 작업건수': c_xfc['총 작업건수'].sum()
+            }])
+            sub_sections.append(sum_xfc)
+
+        c_other = df_summary[~df_summary['센터'].str.contains('1층|375 1|XFC', case=False, na=False)]
+        if not c_other.empty:
+            sub_sections.append(c_other)
+
+        body_summary = pd.concat(sub_sections) if sub_sections else df_summary
+
         total_row = pd.DataFrame([{
             '센터': '★ 전체 합계',
             'B2C 출고건수': df_summary['B2C 출고건수'].sum(),
@@ -428,7 +478,21 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
             'B2B 건수': df_summary['B2B 건수'].sum(),
             '총 작업건수': df_summary['총 작업건수'].sum()
         }])
-        df_summary_final = pd.concat([total_row, df_summary]).reset_index(drop=True)
+        
+        df_summary_final = pd.concat([total_row, body_summary]).reset_index(drop=True)
+        
+        # 중앙 정렬 및 정렬(Sorting) 기능 비활성화
+        st.markdown("""
+        <style>
+            [data-testid="stDataFrame"] th {
+                text-align: center !important;
+            }
+            [data-testid="stDataFrame"] td {
+                text-align: center !important;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+        
         st.dataframe(
             df_summary_final.style.format({
                 'B2C 출고건수': '{:,}',
@@ -439,6 +503,50 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
             use_container_width=True,
             hide_index=True
         )
+
+        st.markdown("---")
+        st.subheader("🥧 센터별 실적 항목 비율 (원형 도넛 그래프)")
+        
+        chart_df = df_summary[~df_summary['센터'].str.contains('소계|합계', na=False)]
+        
+        ch_col1, ch_col2, ch_col3, ch_col4 = st.columns(4)
+        
+        with ch_col1:
+            if chart_df['B2C 출고건수'].sum() > 0:
+                fig1 = px.pie(chart_df, names='센터', values='B2C 출고건수', title='🚚 B2C 출고건수 비중', hole=0.45)
+                fig1.update_traces(textposition='inside', textinfo='percent+label')
+                fig1.update_layout(showlegend=False, margin=dict(t=40, b=10, l=10, r=10))
+                st.plotly_chart(fig1, use_container_width=True)
+            else:
+                st.info("B2C 출고 데이터 없음")
+
+        with ch_col2:
+            if chart_df['입고건수 (입고완료/승인대기)'].sum() > 0:
+                fig2 = px.pie(chart_df, names='센터', values='입고건수 (입고완료/승인대기)', title='📦 입고건수 비중', hole=0.45)
+                fig2.update_traces(textposition='inside', textinfo='percent+label')
+                fig2.update_layout(showlegend=False, margin=dict(t=40, b=10, l=10, r=10))
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.info("입고 데이터 없음")
+
+        with ch_col3:
+            if chart_df['B2B 건수'].sum() > 0:
+                fig3 = px.pie(chart_df, names='센터', values='B2B 건수', title='🏭 B2B 건수 비중', hole=0.45)
+                fig3.update_traces(textposition='inside', textinfo='percent+label')
+                fig3.update_layout(showlegend=False, margin=dict(t=40, b=10, l=10, r=10))
+                st.plotly_chart(fig3, use_container_width=True)
+            else:
+                st.info("B2B 데이터 없음 (준비중)")
+
+        with ch_col4:
+            if chart_df['총 작업건수'].sum() > 0:
+                fig4 = px.pie(chart_df, names='센터', values='총 작업건수', title='📊 총 작업건수 비중', hole=0.45)
+                fig4.update_traces(textposition='inside', textinfo='percent+label')
+                fig4.update_layout(showlegend=False, margin=dict(t=40, b=10, l=10, r=10))
+                st.plotly_chart(fig4, use_container_width=True)
+            else:
+                st.info("총 작업 데이터 없음")
+
     else:
         st.info("데이터가 준비되어 있지 않습니다. 좌측 상단 [🔄 드라이브 & 구글시트 동기화]를 눌러 동기화를 진행해주세요.")
 
