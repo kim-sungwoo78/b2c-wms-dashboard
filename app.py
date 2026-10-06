@@ -604,7 +604,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 center_options.append("XFC 소계")
             center_options.extend(raw_centers)
 
-            # 상단 1행: 센터 및 고객사 조건 선택 필터
             col1, col2, col3 = st.columns([3, 2, 2])
             with col1:
                 selected_center_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options, key="tab1_centers")
@@ -620,7 +619,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                     clients = []
                     st.selectbox("고객사 선택", ["고객사 숨김 상태"], disabled=True)
 
-            # 하단 2행: 상세 일자 펼침 월 선택 버튼 바
             expanded_months_tab1 = render_month_button_bar(
                 df_b2c_orders, 
                 session_key_selected="tab1_exp_months", 
@@ -766,46 +764,10 @@ elif main_mode == "🚚 B2C 출고 현황":
             min_date = df_b2c_sku['영업마감일자_dt'].min().date() if not df_b2c_sku['영업마감일자_dt'].isna().all() else datetime.now().date()
             max_date = df_b2c_sku['영업마감일자_dt'].max().date() if not df_b2c_sku['영업마감일자_dt'].isna().all() else datetime.now().date()
 
-            if 'sku_start_date' not in st.session_state:
-                st.session_state['sku_start_date'] = min_date
             if 'sku_end_date' not in st.session_state:
                 st.session_state['sku_end_date'] = max_date
-
-            st.subheader("📅 빠른 기간 선택")
-            btn_col1, btn_col2, btn_col3, btn_col4, btn_col5 = st.columns(5)
-            with btn_col1:
-                if st.button("오늘", key="btn_today", use_container_width=True):
-                    st.session_state['sku_start_date'] = max_date
-                    st.session_state['sku_end_date'] = max_date
-                    st.rerun()
-            with btn_col2:
-                if st.button("일주일", key="btn_week", use_container_width=True):
-                    st.session_state['sku_start_date'] = max(min_date, max_date - timedelta(days=7))
-                    st.session_state['sku_end_date'] = max_date
-                    st.rerun()
-            with btn_col3:
-                if st.button("1개월", key="btn_1m", use_container_width=True):
-                    st.session_state['sku_start_date'] = max(min_date, max_date - timedelta(days=30))
-                    st.session_state['sku_end_date'] = max_date
-                    st.rerun()
-            with btn_col4:
-                if st.button("3개월", key="btn_3m", use_container_width=True):
-                    st.session_state['sku_start_date'] = max(min_date, max_date - timedelta(days=90))
-                    st.session_state['sku_end_date'] = max_date
-                    st.rerun()
-            with btn_col5:
-                if st.button("전체 기간", key="btn_all", use_container_width=True):
-                    st.session_state['sku_start_date'] = min_date
-                    st.session_state['sku_end_date'] = max_date
-                    st.rerun()
-
-            date_col1, date_col2 = st.columns(2)
-            with date_col1:
-                start_date = st.date_input("📅 조회 시작일자:", value=st.session_state['sku_start_date'], key="tab4_start_picker")
-                st.session_state['sku_start_date'] = start_date
-            with date_col2:
-                end_date = st.date_input("📅 조회 종료일자:", value=st.session_state['sku_end_date'], key="tab4_end_picker")
-                st.session_state['sku_end_date'] = end_date
+            if 'sku_start_date' not in st.session_state:
+                st.session_state['sku_start_date'] = min_date
 
             raw_centers_tab4 = sorted(list(df_b2c_sku['센터'].dropna().unique()))
             center_options_tab4 = []
@@ -815,6 +777,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 center_options_tab4.append("XFC 소계")
             center_options_tab4.extend(raw_centers_tab4)
 
+            # 상단 1행: 센터 및 고객사 선택
             col1, col2 = st.columns(2)
             with col1:
                 selected_centers_input_tab4 = st.multiselect("센터 선택 (다중 선택 가능)", center_options_tab4, key="tab4_centers")
@@ -825,6 +788,47 @@ elif main_mode == "🚚 B2C 출고 현황":
             
             with col2:
                 selected_clients = st.multiselect("고객사 선택 (선택한 센터의 고객사만 표시)", available_clients, key="tab4_clients")
+
+            # 하단 2행: 한 줄 컴팩트 빠른 기간 버튼 + 시작/종료일자 피커 (종료일자 기준 스마트 연동)
+            st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>📅 조회 기간 선택 및 빠른 지정:</p>", unsafe_allow_html=True)
+            p_col1, p_col2, p_col3, p_col4, p_col5, p_col6, p_col7 = st.columns([1.2, 1.2, 1.2, 1.2, 1.2, 2.2, 2.2])
+
+            # 먼저 종료일자 피커 생성 (현재 지정된 종료일자 파악)
+            curr_end = st.session_state.get('sku_end_picker', st.session_state['sku_end_date'])
+
+            with p_col1:
+                if st.button("오늘", key="btn_today", use_container_width=True):
+                    st.session_state['sku_start_picker'] = curr_end
+                    st.session_state['sku_end_picker'] = curr_end
+                    st.rerun()
+            with p_col2:
+                if st.button("일주일", key="btn_week", use_container_width=True):
+                    st.session_state['sku_start_picker'] = max(min_date, curr_end - timedelta(days=6))
+                    st.session_state['sku_end_picker'] = curr_end
+                    st.rerun()
+            with p_col3:
+                if st.button("1개월", key="btn_1m", use_container_width=True):
+                    st.session_state['sku_start_picker'] = max(min_date, curr_end - timedelta(days=30))
+                    st.session_state['sku_end_picker'] = curr_end
+                    st.rerun()
+            with p_col4:
+                if st.button("3개월", key="btn_3m", use_container_width=True):
+                    st.session_state['sku_start_picker'] = max(min_date, curr_end - timedelta(days=90))
+                    st.session_state['sku_end_picker'] = curr_end
+                    st.rerun()
+            with p_col5:
+                if st.button("전체 기간", key="btn_all", use_container_width=True):
+                    st.session_state['sku_start_picker'] = min_date
+                    st.session_state['sku_end_picker'] = max_date
+                    st.rerun()
+
+            with p_col6:
+                start_date = st.date_input("조회 시작일자:", value=st.session_state.get('sku_start_picker', st.session_state['sku_start_date']), key="sku_start_picker")
+            with p_col7:
+                end_date = st.date_input("조회 종료일자:", value=st.session_state.get('sku_end_picker', st.session_state['sku_end_date']), key="sku_end_picker")
+
+            st.session_state['sku_start_date'] = start_date
+            st.session_state['sku_end_date'] = end_date
                 
             sku_df = df_b2c_sku.copy()
             if start_date and end_date:
