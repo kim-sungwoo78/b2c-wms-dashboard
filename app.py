@@ -309,15 +309,14 @@ def expand_selected_centers(selected_list, all_centers):
             expanded.add(item)
     return list(expanded)
 
-# 스마트 월별 피벗 접기/펼치기 엔진
 def smart_fold_pivot_columns(pivot_df, expanded_months):
     all_cols = [c for c in pivot_df.columns if not ("총 " in str(c) and "월" not in str(c))]
     date_cols_sorted = sorted([c for c in all_cols if len(str(c)) == 10 and str(c)[4] == '-' and str(c)[7] == '-'])
     
     month_groups = {}
     for d in date_cols_sorted:
-        m_key = str(d)[:7]  # 'YYYY-MM'
-        m_label = f"{int(m_key[5:7])}월"  # '10월'
+        m_key = str(d)[:7]
+        m_label = f"{int(m_key[5:7])}월"
         month_groups.setdefault(m_key, {'label': m_label, 'dates': []})['dates'].append(d)
         
     new_df = pd.DataFrame(index=pivot_df.index)
@@ -339,7 +338,6 @@ def smart_fold_pivot_columns(pivot_df, expanded_months):
                 
     return new_df
 
-# ★ [통일된 월 선택 버튼 컴포넌트] (데이터 없는 월 비활성화) ★
 def render_month_button_bar(df_target, session_key_selected, title_label="🗓️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", allow_nujak=False, multi_select=True):
     st.markdown(f"<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>{title_label}</p>", unsafe_allow_html=True)
     
@@ -387,7 +385,6 @@ def render_month_button_bar(df_target, session_key_selected, title_label="🗓�
                         st.session_state[session_key_selected] = m_name
                     st.rerun()
             else:
-                # 데이터가 없는 월: 비활성화 (Disabled)
                 st.button(m_name, key=f"btn_disabled_{session_key_selected}_{m_name}", disabled=True, use_container_width=True)
 
     return st.session_state[session_key_selected]
@@ -465,27 +462,23 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         center_options_main.append("XFC 소계")
     center_options_main.extend(sorted_centers)
 
-    filter_row_col1, filter_row_col2 = st.columns([3, 7])
-    
-    with filter_row_col1:
-        selected_centers_filter = st.multiselect(
-            "🏢 센터 선택 (미선택 시 전체):", 
-            center_options_main, 
-            default=[],
-            key="main_center_filter"
-        )
-        expanded_main_centers = expand_selected_centers(selected_centers_filter, sorted_centers) if selected_centers_filter else []
+    selected_centers_filter = st.multiselect(
+        "🏢 센터 선택 (미선택 시 전체):", 
+        center_options_main, 
+        default=[],
+        key="main_center_filter"
+    )
+    expanded_main_centers = expand_selected_centers(selected_centers_filter, sorted_centers) if selected_centers_filter else []
 
     df_combined_target = pd.concat([df_b2c_orders, df_inbound]) if not df_b2c_orders.empty else df_inbound
 
-    with filter_row_col2:
-        selected_m = render_month_button_bar(
-            df_combined_target, 
-            session_key_selected="main_selected_month", 
-            title_label="🗓️ 기준 월 선택:", 
-            allow_nujak=True, 
-            multi_select=False
-        )
+    selected_m = render_month_button_bar(
+        df_combined_target, 
+        session_key_selected="main_selected_month", 
+        title_label="🗓️ 기준 월 선택:", 
+        allow_nujak=True, 
+        multi_select=False
+    )
 
     filtered_b2c = df_b2c_orders.copy() if not df_b2c_orders.empty else pd.DataFrame()
     filtered_inbound = df_inbound.copy() if not df_inbound.empty else pd.DataFrame()
@@ -611,14 +604,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 center_options.append("XFC 소계")
             center_options.extend(raw_centers)
 
-            expanded_months_tab1 = render_month_button_bar(
-                df_b2c_orders, 
-                session_key_selected="tab1_exp_months", 
-                title_label="🗓️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", 
-                allow_nujak=False, 
-                multi_select=True
-            )
-
+            # 상단 1행: 센터 및 고객사 조건 선택 필터
             col1, col2, col3 = st.columns([3, 2, 2])
             with col1:
                 selected_center_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options, key="tab1_centers")
@@ -633,6 +619,15 @@ elif main_mode == "🚚 B2C 출고 현황":
                 else:
                     clients = []
                     st.selectbox("고객사 선택", ["고객사 숨김 상태"], disabled=True)
+
+            # 하단 2행: 상세 일자 펼침 월 선택 버튼 바
+            expanded_months_tab1 = render_month_button_bar(
+                df_b2c_orders, 
+                session_key_selected="tab1_exp_months", 
+                title_label="🗓️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", 
+                allow_nujak=False, 
+                multi_select=True
+            )
 
             filtered_df = df_b2c_orders.copy()
             if expanded_centers: 
@@ -686,6 +681,10 @@ elif main_mode == "🚚 B2C 출고 현황":
     with tab2:
         st.header("배송 속성 및 판매처별 출고현황")
         if not df_b2c_orders.empty:
+            col_t1, _ = st.columns([3, 5])
+            with col_t1:
+                analysis_type = st.radio("분석 기준 선택", ["배송 속성별", "판매처별"], horizontal=True)
+
             expanded_months_tab2 = render_month_button_bar(
                 df_b2c_orders, 
                 session_key_selected="tab2_exp_months", 
@@ -693,10 +692,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 allow_nujak=False, 
                 multi_select=True
             )
-
-            col_t1, _ = st.columns([3, 5])
-            with col_t1:
-                analysis_type = st.radio("분석 기준 선택", ["배송 속성별", "판매처별"], horizontal=True)
 
             target_col = '배송속성' if analysis_type == "배송 속성별" else '판매처'
             df_tab2 = df_b2c_orders.copy()
@@ -723,14 +718,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 center_options_tab3.append("XFC 소계")
             center_options_tab3.extend(raw_centers_tab3)
 
-            expanded_months_tab3 = render_month_button_bar(
-                df_b2c_orders, 
-                session_key_selected="tab3_exp_months", 
-                title_label="🗓️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", 
-                allow_nujak=False, 
-                multi_select=True
-            )
-
             box_col1, box_col2 = st.columns([3, 3])
             with box_col1:
                 selected_centers_input_tab3 = st.multiselect("센터 선택 (미선택 시 전체)", center_options_tab3, key="tab3_centers")
@@ -741,6 +728,14 @@ elif main_mode == "🚚 B2C 출고 현황":
             
             with box_col2:
                 selected_clients_tab3 = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients_tab3, key="tab3_clients")
+
+            expanded_months_tab3 = render_month_button_bar(
+                df_b2c_orders, 
+                session_key_selected="tab3_exp_months", 
+                title_label="🗓️ 상세 일자 펼침 월 선택 (미선택 시 월합계만 접힘):", 
+                allow_nujak=False, 
+                multi_select=True
+            )
 
             df_tab3 = df_b2c_orders.copy()
             if expanded_centers_tab3:
@@ -871,6 +866,10 @@ elif main_mode == "📦 입고 현황":
     with in_tab1:
         st.header("📦 센터 & 고객사별 입고 현황 (구글 시트 PLT / BOX 매칭)")
         if not df_inbound.empty:
+            col_in1, _ = st.columns([3, 5])
+            with col_in1:
+                metric_val = st.radio("조회 항목 선택:", ["입고완료수량 (EA)", "PLT수 (PLT)", "BOX수 (BOX)", "입고건수 (건)"], horizontal=True)
+
             expanded_months_ib1 = render_month_button_bar(
                 df_inbound, 
                 session_key_selected="ib1_exp_months", 
@@ -878,10 +877,6 @@ elif main_mode == "📦 입고 현황":
                 allow_nujak=False, 
                 multi_select=True
             )
-
-            col_in1, _ = st.columns([3, 5])
-            with col_in1:
-                metric_val = st.radio("조회 항목 선택:", ["입고완료수량 (EA)", "PLT수 (PLT)", "BOX수 (BOX)", "입고건수 (건)"], horizontal=True)
             
             col_map_dict = {
                 "입고완료수량 (EA)": "입고완료수량",
