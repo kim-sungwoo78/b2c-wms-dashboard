@@ -15,7 +15,7 @@ INBOUND_FOLDER_ID = '1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp'    # 입고 폴더
 B2B_FOLDER_ID = '1wpqrIBC8HnWTU20rShcg0Yvkcc1VIsml'        # B2B 폴더
 PROCESSED_FOLDER_ID = '1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ'  # 처리완료 폴더
 
-# ★ [DB 전용 폴더 ID] 새로 만드신 '[DB전용] 절대 삭제 금지' 폴더 ID 완벽 반영 ★
+# ★ [DB 전용 폴더 ID] ★
 DB_FOLDER_ID = '1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9'
 
 # ★ 분리 관리되는 독립 DB 파일명 ★
@@ -91,11 +91,13 @@ def upload_db_to_drive(service, db_filename):
 
 def list_files_in_folder(service, folder_id):
     try:
-        query = f"'{folder_id}' in parents and trashed = false and name not like '%.db'"
+        # 구글 드라이브 API 탐색 구문 안전 정제
+        query = f"'{folder_id}' in parents and trashed = false"
         results = service.files().list(
             q=query, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True
         ).execute()
-        return results.get('files', [])
+        files = results.get('files', [])
+        return [f for f in files if not f['name'].lower().endswith('.db')]
     except Exception as e:
         print(f"Folder list error ({folder_id}): {e}")
         return []
