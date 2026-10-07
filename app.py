@@ -128,16 +128,36 @@ def load_inbound_data():
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
+        # 입고번호별 고유 검수수량(1회만 반영)과 고유 SKU수량 집계 SQL
         df = pd.read_sql("""
-            SELECT 영업마감일자, 센터, 고객사, 상태,
-                   COUNT(DISTINCT 입고번호) AS 입고건수,
-                   COUNT(DISTINCT 바코드) AS 바코드수,
-                   SUM(총검수완료수량) AS 입고완료수량,
-                   SUM(PLT수) AS PLT수,
-                   SUM(BOX수) AS BOX수,
-                   SUM(파적BOX수) AS 파적BOX수
-            FROM inbound_summary
-            GROUP BY 영업마감일자, 센터, 고객사, 상태
+            WITH order_qty AS (
+                SELECT 영업마감일자, 센터, 고객사, 상태, 입고번호,
+                       MAX(총검수완료수량) AS 고유검수완료수량,
+                       MAX(PLT수) AS 고유PLT,
+                       MAX(BOX수) AS 고유BOX
+                FROM inbound_summary
+                GROUP BY 영업마감일자, 센터, 고객사, 상태, 입고번호
+            ),
+            sku_cnt AS (
+                SELECT 영업마감일자, 센터, 고객사, 상태,
+                       COUNT(DISTINCT 입고번호) AS 입고건수,
+                       COUNT(DISTINCT 바코드) AS 바코드수,
+                       COUNT(DISTINCT SKU명) AS SKU개수
+                FROM inbound_summary
+                GROUP BY 영업마감일자, 센터, 고객사, 상태
+            )
+            SELECT s.영업마감일자, s.센터, s.고객사, s.상태,
+                   s.입고건수, s.바코드수, s.SKU개수,
+                   SUM(q.고유검수완료수량) AS 입고완료수량,
+                   SUM(q.고유PLT) AS PLT수,
+                   SUM(q.고유BOX) AS BOX수
+            FROM sku_cnt s
+            LEFT JOIN order_qty q 
+                   ON s.영업마감일자 = q.영업마감일자 
+                  AND s.센터 = q.센터 
+                  AND s.고객사 = q.고객사 
+                  AND s.상태 = q.상태
+            GROUP BY s.영업마감일자, s.센터, s.고객사, s.상태
         """, conn)
         conn.close()
         return df
@@ -967,11 +987,11 @@ elif main_mode == "📦 입고 현황":
                 multi_select=True
             )
 
-            # 3행: 조회 항목 선택 (입고건수를 맨 앞으로 배치 및 기본값 지정)
+            # 3행: 조회 항목 선택 ('SKU개수 (종)' 추가)
             st.markdown("<p style='font-size:14px; font-weight:bold; margin-top:10px; margin-bottom:5px;'>조회 항목 선택:</p>", unsafe_allow_html=True)
             metric_val = st.radio(
                 "조회 항목 선택:", 
-                ["입고건수 (건)", "입고완료수량 (EA)", "PLT수 (PLT)", "BOX수 (BOX)"], 
+                ["입고건수 (건)", "SKU개수 (종)", "입고완료수량 (EA)", "PLT수 (PLT)", "BOX수 (BOX)"], 
                 horizontal=True,
                 index=0,
                 key="inbound_metric_radio",
@@ -980,6 +1000,7 @@ elif main_mode == "📦 입고 현황":
 
             col_map_dict = {
                 "입고건수 (건)": "입고건수",
+                "SKU개수 (종)": "SKU개수",
                 "입고완료수량 (EA)": "입고완료수량",
                 "PLT수 (PLT)": "PLT수",
                 "BOX수 (BOX)": "BOX수"
