@@ -141,10 +141,10 @@ def extract_sheet_id(url_or_id):
         return parts.split("/")[0]
     return url_or_id.strip()
 
-# ★ [구글 시트 IB 탭 전체 행 범위 PLT/BOX 수치 매칭 함수] ★
+# ★ [구글 시트 IB 탭 정밀 PLT/BOX 수치 매칭 함수 - 명확한 에러 핸들링 추가] ★
 def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=""):
     if not service or not sheets_service:
-        return
+        return False
 
     target_sheet_ids = []
     
@@ -163,6 +163,11 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
     except Exception:
         pass
 
+    if not target_sheet_ids:
+        return False
+
+    updated_any = False
+
     for sheet_id in target_sheet_ids:
         try:
             sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=sheet_id).execute()
@@ -178,7 +183,6 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
             if not ib_sheet_title:
                 continue
 
-            # 전체 행 탐색 범위 확장 (행 제한 완전 제거)
             range_name = f"'{ib_sheet_title}'!A:Z"
             result = sheets_service.spreadsheets().values().get(spreadsheetId=sheet_id, range=range_name).execute()
             values = result.get('values', [])
@@ -240,9 +244,12 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
                 WHERE 입고번호 = ?
                 """, update_tuples)
                 conn_ib.commit()
+                updated_any = True
                 break
-        except Exception:
-            continue
+        except Exception as e_sheet:
+            print(f"IB 구글 시트 접근 오류 ({sheet_id}): {e_sheet}")
+
+    return updated_any
 
 def process_and_update(service, sheets_service=None, progress_callback=None, ib_sheet_url=""):
     download_db_from_drive(service, DB_B2C_PATH)
@@ -540,12 +547,15 @@ def process_and_update(service, sheets_service=None, progress_callback=None, ib_
             error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
             continue
 
-    # IB 전체 행 매칭 실행
+    # ★ IB 구글 시트 매칭 실행 및 보장 ★
+    ib_matched = False
     try:
-        update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=ib_sheet_url)
-        inbound_updated = True
+        ib_matched = update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=ib_sheet_url)
     except Exception as sheet_e:
-        print(f"IB 시트 매칭 예외 발생: {sheet_e}")
+        error_logs.append(f"IB 구글 시트 접근 불가: {sheet_e}")
+
+    if ib_matched:
+        inbound_updated = True
 
     conn_b2c.close()
     conn_ib.close()
