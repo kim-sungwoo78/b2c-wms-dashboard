@@ -69,7 +69,6 @@ def run_sync():
             def update_progress(current, total, filename, eta):
                 status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`")
 
-            # 강제 캐시 초기화
             st.cache_data.clear()
 
             etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
@@ -129,7 +128,6 @@ def load_inbound_data():
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
-        # 입고건수: 입고번호 고유 카운트로 중복 완벽 제거
         df = pd.read_sql("""
             SELECT 영업마감일자, 센터, 고객사, 상태,
                    COUNT(DISTINCT 입고번호) AS 입고건수,
@@ -936,10 +934,31 @@ elif main_mode == "📦 입고 현황":
     with in_tab1:
         st.header("📦 센터 & 고객사별 입고 현황 (구글 시트 PLT / BOX 매칭)")
         if not df_inbound.empty:
-            col_in1, _ = st.columns([3, 5])
-            with col_in1:
-                metric_val = st.radio("조회 항목 선택:", ["입고완료수량 (EA)", "PLT수 (PLT)", "BOX수 (BOX)", "입고건수 (건)"], horizontal=True)
+            raw_centers_inbound = sorted(list(df_inbound['센터'].dropna().unique()))
+            center_options_inbound = []
+            if any('1층' in str(c) or '375 1' in str(c) for c in raw_centers_inbound):
+                center_options_inbound.append("375 소계")
+            if any('XFC' in str(c).upper() for c in raw_centers_inbound):
+                center_options_inbound.append("XFC 소계")
+            center_options_inbound.extend(raw_centers_inbound)
 
+            # 1행: 센터/고객사 조건 선택 컨트롤러
+            col_ib1, col_ib2, col_ib3 = st.columns([3, 2, 2])
+            with col_ib1:
+                selected_center_input_ib = st.multiselect("센터 선택 (미선택 시 전체)", center_options_inbound, key="inbound_tab1_centers")
+                expanded_centers_ib = expand_selected_centers(selected_center_input_ib, raw_centers_inbound) if selected_center_input_ib else []
+            with col_ib2:
+                show_client_ib = st.radio("고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"], key="inbound_show_client")
+            with col_ib3:
+                if "보이기" in show_client_ib:
+                    available_clients_df_ib = df_inbound[df_inbound['센터'].isin(expanded_centers_ib)] if expanded_centers_ib else df_inbound
+                    available_clients_ib = sorted(list(available_clients_df_ib['고객사'].dropna().unique()))
+                    clients_ib = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients_ib, key="inbound_tab1_clients")
+                else:
+                    clients_ib = []
+                    st.selectbox("고객사 선택", ["고객사 숨김 상태"], disabled=True, key="inbound_client_disabled")
+
+            # 2행: 월 선택 가로 버튼 바
             expanded_months_ib1 = render_month_button_bar(
                 df_inbound, 
                 session_key_selected="ib1_exp_months", 
@@ -947,27 +966,73 @@ elif main_mode == "📦 입고 현황":
                 allow_nujak=False, 
                 multi_select=True
             )
-            
+
+            # 3행: 조회 항목 선택 (입고건수를 맨 앞으로 배치 및 기본값 지정)
+            st.markdown("<p style='font-size:14px; font-weight:bold; margin-top:10px; margin-bottom:5px;'>조회 항목 선택:</p>", unsafe_allow_html=True)
+            metric_val = st.radio(
+                "조회 항목 선택:", 
+                ["입고건수 (건)", "입고완료수량 (EA)", "PLT수 (PLT)", "BOX수 (BOX)"], 
+                horizontal=True,
+                index=0,
+                key="inbound_metric_radio",
+                label_visibility="collapsed"
+            )
+
             col_map_dict = {
+                "입고건수 (건)": "입고건수",
                 "입고완료수량 (EA)": "입고완료수량",
                 "PLT수 (PLT)": "PLT수",
-                "BOX수 (BOX)": "BOX수",
-                "입고건수 (건)": "입고건수"
+                "BOX수 (BOX)": "BOX수"
             }
             target_val = col_map_dict[metric_val]
-            
-            if target_val in df_inbound.columns:
-                pivot_raw_ib1 = pd.pivot_table(df_inbound, index=['센터', '고객사'], columns='영업마감일자', values=target_val, aggfunc='sum', fill_value=0)
+
+            filtered_df_ib = df_inbound.copy()
+            if expanded_centers_ib:
+                filtered_df_ib = filtered_df_ib[filtered_df_ib['센터'].isin(expanded_centers_ib)]
+            if "보이기" in show_client_ib and clients_ib:
+                filtered_df_ib = filtered_df_ib[filtered_df_ib['고객사'].isin(clients_ib)]
+
+            group_cols_ib = ['센터']
+            if "보이기" in show_client_ib:
+                group_cols_ib.append('고객사')
+
+            if not filtered_df_ib.empty and target_val in filtered_df_ib.columns:
+                pivot_raw_ib1 = pd.pivot_table(filtered_df_ib, index=group_cols_ib, columns='영업마감일자', values=target_val, aggfunc='sum', fill_value=0)
                 total_col_name = f"총 {target_val}"
                 pivot_raw_ib1[total_col_name] = pivot_raw_ib1.sum(axis=1)
                 
                 pivot_ib1 = smart_fold_pivot_columns(pivot_raw_ib1, expanded_months_ib1)
 
-                total_series_in = pivot_ib1.sum(axis=0)
-                total_df_in = pd.DataFrame([total_series_in.values], columns=pivot_ib1.columns, index=pd.MultiIndex.from_tuples([("★ 전체 합계", "전체")], names=['센터', '고객사']))
-                
-                final_inbound = pd.concat([total_df_in, pivot_ib1])
-                render_sticky_pivot(final_inbound, ['센터', '고객사'], key_suffix="inbound_tab1")
+                subtotal_dfs_ib = []
+                c_375_ib = [c for c in pivot_ib1.index.get_level_values('센터').unique() if '1층' in str(c) or '375 1' in str(c)]
+                if c_375_ib:
+                    df_375_ib = pivot_ib1.loc[pivot_ib1.index.get_level_values('센터').isin(c_375_ib)]
+                    subtotal_dfs_ib.append(df_375_ib)
+                    sum_375_ib = df_375_ib.sum(axis=0)
+                    sub_idx_375_ib = ("375 소계", "소계") if "보이기" in show_client_ib else "375 소계"
+                    subtotal_dfs_ib.append(pd.DataFrame([sum_375_ib.values], columns=pivot_ib1.columns, index=pd.MultiIndex.from_tuples([sub_idx_375_ib], names=group_cols_ib) if "보이기" in show_client_ib else pd.Index([sub_idx_375_ib], name="센터")))
+
+                c_xfc_ib = [c for c in pivot_ib1.index.get_level_values('센터').unique() if 'XFC' in str(c).upper()]
+                if c_xfc_ib:
+                    df_xfc_ib = pivot_ib1.loc[pivot_ib1.index.get_level_values('센터').isin(c_xfc_ib)]
+                    subtotal_dfs_ib.append(df_xfc_ib)
+                    sum_xfc_ib = df_xfc_ib.sum(axis=0)
+                    sub_idx_xfc_ib = ("XFC 소계", "소계") if "보이기" in show_client_ib else "XFC 소계"
+                    subtotal_dfs_ib.append(pd.DataFrame([sum_xfc_ib.values], columns=pivot_ib1.columns, index=pd.MultiIndex.from_tuples([sub_idx_xfc_ib], names=group_cols_ib) if "보이기" in show_client_ib else pd.Index([sub_idx_xfc_ib], name="센터")))
+
+                c_other_ib = [c for c in pivot_ib1.index.get_level_values('센터').unique() if c not in c_375_ib and c not in c_xfc_ib]
+                if c_other_ib:
+                    df_other_ib = pivot_ib1.loc[pivot_ib1.index.get_level_values('센터').isin(c_other_ib)]
+                    subtotal_dfs_ib.append(df_other_ib)
+
+                body_df_ib = pd.concat(subtotal_dfs_ib) if subtotal_dfs_ib else pivot_ib1
+                total_series_ib = pivot_ib1.sum(axis=0)
+                total_label_ib = "★ 전체 합계"
+                total_idx_ib = pd.MultiIndex.from_tuples([(total_label_ib, "전체")], names=group_cols_ib) if "보이기" in show_client_ib else pd.Index([total_label_ib], name="센터")
+                total_df_ib = pd.DataFrame([total_series_ib.values], columns=pivot_ib1.columns, index=total_idx_ib)
+
+                final_inbound = pd.concat([total_df_ib, body_df_ib])
+                render_sticky_pivot(final_inbound, group_cols_ib, key_suffix="inbound_tab1")
         else:
             st.info("입고 데이터가 존재하지 않습니다. 구글 드라이브에 입고요청서 엑셀 파일을 올린 후 [🔄 드라이브 & 구글시트 동기화]를 눌러주세요.")
 
