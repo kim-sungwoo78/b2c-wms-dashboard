@@ -56,7 +56,7 @@ def init_local_db():
 
 init_local_db()
 
-def run_sync():
+def run_sync(ib_sheet_url=""):
     if "gcp_service_account" in st.secrets:
         try:
             import etl_pipeline
@@ -71,7 +71,7 @@ def run_sync():
 
             st.cache_data.clear()
 
-            etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
+            etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress, ib_sheet_url=ib_sheet_url)
             
             status_text.empty()
             st.cache_data.clear()
@@ -128,7 +128,6 @@ def load_inbound_data():
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
-        # 입고번호별 고유 검수수량(1회만 반영)과 고유 SKU수량 집계 SQL
         df = pd.read_sql("""
             WITH order_qty AS (
                 SELECT 영업마감일자, 센터, 고객사, 상태, 입고번호,
@@ -237,8 +236,12 @@ st.markdown("""
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
+# 사이드바 설정
+st.sidebar.header("⚙️ 동기화 및 매칭 설정")
+ib_sheet_url_input = st.sidebar.text_input("📊 IB 구글 시트 URL (PLT/BOX 매칭용):", placeholder="https://docs.google.com/spreadsheets/d/...")
+
 if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
-    if run_sync():
+    if run_sync(ib_sheet_url=ib_sheet_url_input):
         st.rerun()
 
 df_b2c_orders = load_shipment_orders()
@@ -987,7 +990,7 @@ elif main_mode == "📦 입고 현황":
                 multi_select=True
             )
 
-            # 3행: 조회 항목 선택 ('SKU개수 (종)' 추가)
+            # 3행: 조회 항목 선택
             st.markdown("<p style='font-size:14px; font-weight:bold; margin-top:10px; margin-bottom:5px;'>조회 항목 선택:</p>", unsafe_allow_html=True)
             metric_val = st.radio(
                 "조회 항목 선택:", 
