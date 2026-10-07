@@ -133,101 +133,119 @@ def read_excel_fast(fh):
         fh.seek(0)
         return pd.read_excel(fh, engine='openpyxl')
 
-# ★ [구글 시트 IB 탭 자동 탐색 및 PLT/BOX 매칭 함수] ★
-def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
+def extract_sheet_id(url_or_id):
+    if not url_or_id:
+        return ""
+    if "/d/" in url_or_id:
+        parts = url_or_id.split("/d/")[1]
+        return parts.split("/")[0]
+    return url_or_id.strip()
+
+# ★ [구글 시트 IB 탭 정밀 PLT/BOX 수치 매칭 함수] ★
+def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=""):
     if not service or not sheets_service:
         return
+
+    target_sheet_ids = []
+    
+    # 1. 입력된 시트 URL이 있으면 최우선 적용
+    input_id = extract_sheet_id(ib_sheet_url)
+    if input_id:
+        target_sheet_ids.append(input_id)
+
+    # 2. 드라이브 내 구글 시트 탐색
     try:
-        # 구글 드라이브 상의 구글 시트 파일 검색 (mimeType = 'application/vnd.google-apps.spreadsheet')
         query = "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false"
         results = service.files().list(
             q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True
         ).execute()
-        sheets_files = results.get('files', [])
+        for s_file in results.get('files', []):
+            if s_file['id'] not in target_sheet_ids:
+                target_sheet_ids.append(s_file['id'])
+    except Exception:
+        pass
 
-        for s_file in sheets_files:
-            sheet_id = s_file['id']
-            try:
-                sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=sheet_id).execute()
-                sheets = sheet_metadata.get('sheets', [])
-                
-                ib_sheet_title = None
-                for s in sheets:
-                    title = s.get('properties', {}).get('title', '')
-                    if title.strip().upper() == 'IB' or '입고' in title:
-                        ib_sheet_title = title
-                        break
+    for sheet_id in target_sheet_ids:
+        try:
+            sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+            sheets = sheet_metadata.get('sheets', [])
+            
+            ib_sheet_title = None
+            for s in sheets:
+                title = s.get('properties', {}).get('title', '')
+                if title.strip().upper() == 'IB' or '입고' in title:
+                    ib_sheet_title = title
+                    break
 
-                if not ib_sheet_title:
-                    continue
+            if not ib_sheet_title:
+                continue
 
-                range_name = f"'{ib_sheet_title}'!A1:Z5000"
-                result = sheets_service.spreadsheets().values().get(spreadsheetId=sheet_id, range=range_name).execute()
-                values = result.get('values', [])
+            range_name = f"'{ib_sheet_title}'!A1:Z5000"
+            result = sheets_service.spreadsheets().values().get(spreadsheetId=sheet_id, range=range_name).execute()
+            values = result.get('values', [])
 
-                if not values or len(values) < 2:
-                    continue
+            if not values or len(values) < 2:
+                continue
 
-                header_row_idx = 0
-                for r_i, r_data in enumerate(values[:5]):
-                    r_str = " ".join([str(v) for v in r_data])
-                    if '작업번호' in r_str or '입고번호' in r_str or 'PLT' in r_str:
-                        header_row_idx = r_i
-                        break
+            header_row_idx = 0
+            for r_i, r_data in enumerate(values[:5]):
+                r_str = " ".join([str(v) for v in r_data])
+                if '작업번호' in r_str or '입고번호' in r_str or 'PLT' in r_str:
+                    header_row_idx = r_i
+                    break
 
-                headers = [str(h).strip() for h in values[header_row_idx]]
+            headers = [str(h).strip() for h in values[header_row_idx]]
 
-                job_no_idx = -1
-                plt_idx = -1
-                box_idx = -1
-                pajok_idx = -1
+            job_no_idx = -1
+            plt_idx = -1
+            box_idx = -1
+            pajok_idx = -1
 
-                for idx, h in enumerate(headers):
-                    h_clean = h.replace(" ", "").upper()
-                    if '작업번호' in h_clean or '입고번호' in h_clean: job_no_idx = idx
-                    elif h_clean == 'PLT': plt_idx = idx
-                    elif h_clean == 'BOX': box_idx = idx
-                    elif '파적' in h_clean and 'BOX' in h_clean: pajok_idx = idx
+            for idx, h in enumerate(headers):
+                h_clean = h.replace(" ", "").upper()
+                if '작업번호' in h_clean or '입고번호' in h_clean: job_no_idx = idx
+                elif h_clean == 'PLT': plt_idx = idx
+                elif h_clean == 'BOX': box_idx = idx
+                elif '파적' in h_clean and 'BOX' in h_clean: pajok_idx = idx
 
-                if job_no_idx == -1:
-                    continue
+            if job_no_idx == -1:
+                continue
 
-                update_tuples = []
-                for row in values[header_row_idx + 1:]:
-                    if len(row) > job_no_idx:
-                        job_no = str(row[job_no_idx]).strip()
-                        if not job_no or job_no.lower() == 'none':
-                            continue
+            update_tuples = []
+            for row in values[header_row_idx + 1:]:
+                if len(row) > job_no_idx:
+                    job_no = str(row[job_no_idx]).strip()
+                    if not job_no or job_no.lower() == 'none':
+                        continue
 
-                        def parse_val(row_data, idx_pos):
-                            if idx_pos != -1 and len(row_data) > idx_pos:
-                                v_str = str(row_data[idx_pos]).replace(',', '').strip()
-                                try:
-                                    return float(v_str)
-                                except Exception:
-                                    return 0.0
-                            return 0.0
+                    def parse_val(row_data, idx_pos):
+                        if idx_pos != -1 and len(row_data) > idx_pos:
+                            v_str = str(row_data[idx_pos]).replace(',', '').strip()
+                            try:
+                                return float(v_str)
+                            except Exception:
+                                return 0.0
+                        return 0.0
 
-                        plt_val = parse_val(row, plt_idx)
-                        box_val = parse_val(row, box_idx)
-                        pajok_val = parse_val(row, pajok_idx)
+                    plt_val = parse_val(row, plt_idx)
+                    box_val = parse_val(row, box_idx)
+                    pajok_val = parse_val(row, pajok_idx)
 
-                        if plt_val > 0 or box_val > 0 or pajok_val > 0:
-                            update_tuples.append((plt_val, box_val, pajok_val, job_no))
+                    if plt_val > 0 or box_val > 0 or pajok_val > 0:
+                        update_tuples.append((plt_val, box_val, pajok_val, job_no))
 
-                if update_tuples:
-                    conn_ib.executemany("""
-                    UPDATE inbound_summary
-                    SET PLT수 = ?, BOX수 = ?, 파적BOX수 = ?
-                    WHERE 입고번호 = ?
-                    """, update_tuples)
-                    conn_ib.commit()
-            except Exception as e_s:
-                print(f"시트 매칭 예외 ({s_file.get('name')}): {e_s}")
-    except Exception as e:
-        print(f"Google Sheets IB 전체 매칭 실패: {e}")
+            if update_tuples:
+                conn_ib.executemany("""
+                UPDATE inbound_summary
+                SET PLT수 = ?, BOX수 = ?, 파적BOX수 = ?
+                WHERE 입고번호 = ?
+                """, update_tuples)
+                conn_ib.commit()
+                break  # 매칭 성공 시 종료
+        except Exception:
+            continue
 
-def process_and_update(service, sheets_service=None, progress_callback=None):
+def process_and_update(service, sheets_service=None, progress_callback=None, ib_sheet_url=""):
     download_db_from_drive(service, DB_B2C_PATH)
     download_db_from_drive(service, DB_INBOUND_PATH)
 
@@ -523,9 +541,9 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
             continue
 
-    # ★ 입고 데이터 구글 시트 IB 탭 자동 탐색 및 PLT / BOX 수치 매칭 업데이트 ★
+    # ★ IB 시트 매칭 실행 ★
     try:
-        update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib)
+        update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=ib_sheet_url)
         inbound_updated = True
     except Exception as sheet_e:
         print(f"IB 시트 매칭 예외 발생: {sheet_e}")
