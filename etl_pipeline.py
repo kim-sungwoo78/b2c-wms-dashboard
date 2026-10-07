@@ -141,19 +141,17 @@ def extract_sheet_id(url_or_id):
         return parts.split("/")[0]
     return url_or_id.strip()
 
-# ★ [구글 시트 IB 탭 정밀 PLT/BOX 수치 매칭 함수] ★
+# ★ [구글 시트 IB 탭 전체 행 범위 PLT/BOX 수치 매칭 함수] ★
 def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=""):
     if not service or not sheets_service:
         return
 
     target_sheet_ids = []
     
-    # 1. 입력된 시트 URL이 있으면 최우선 적용
     input_id = extract_sheet_id(ib_sheet_url)
     if input_id:
         target_sheet_ids.append(input_id)
 
-    # 2. 드라이브 내 구글 시트 탐색
     try:
         query = "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false"
         results = service.files().list(
@@ -180,7 +178,8 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
             if not ib_sheet_title:
                 continue
 
-            range_name = f"'{ib_sheet_title}'!A1:Z5000"
+            # 전체 행 탐색 범위 확장 (행 제한 완전 제거)
+            range_name = f"'{ib_sheet_title}'!A:Z"
             result = sheets_service.spreadsheets().values().get(spreadsheetId=sheet_id, range=range_name).execute()
             values = result.get('values', [])
 
@@ -241,7 +240,7 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
                 WHERE 입고번호 = ?
                 """, update_tuples)
                 conn_ib.commit()
-                break  # 매칭 성공 시 종료
+                break
         except Exception:
             continue
 
@@ -541,7 +540,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None, ib_
             error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
             continue
 
-    # ★ IB 시트 매칭 실행 ★
+    # IB 전체 행 매칭 실행
     try:
         update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=ib_sheet_url)
         inbound_updated = True
