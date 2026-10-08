@@ -71,11 +71,18 @@ def run_sync(ib_sheet_url=""):
 
             st.cache_data.clear()
 
-            etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress, ib_sheet_url=ib_sheet_url)
+            matched_cnt, err_msg = etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress, ib_sheet_url=ib_sheet_url)
             
             status_text.empty()
             st.cache_data.clear()
-            st.sidebar.success("✅ 동기화 완료!")
+
+            if matched_cnt > 0:
+                st.sidebar.success(f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)")
+            else:
+                if err_msg:
+                    st.sidebar.warning(f"⚠️ 동기화 완료 (시트 상태 안내: {err_msg})")
+                else:
+                    st.sidebar.success("✅ 동기화 완료!")
             return True
         except Exception as e:
             st.sidebar.error(f"❌ 동기화 에러: {e}")
