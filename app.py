@@ -514,7 +514,7 @@ def generate_pure_svg_donut(data_dict, title):
     
     return f'<div style="background-color:#0e1117; border:1px solid #1f2937; border-radius:8px; padding:12px; text-align:center;">' + "".join(svg_parts) + "".join(legend_parts) + '</div>'
 
-# ★ [Plotly.js 기반 깔끔 정렬 범례 토글 차트] ★
+# ★ [Plotly.js 기반 범례 온/오프 인터랙티브 콤보 차트 렌더링 함수] ★
 def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=None, chart_end_date=None):
     if df_ib_filtered.empty or '영업마감일자' not in df_ib_filtered.columns:
         return
@@ -906,13 +906,19 @@ elif main_mode == "🚚 B2C 출고 현황":
         st.header("🔍 SKU별 출고량 (기간 선택 집계)")
         if not df_b2c_sku.empty:
             df_b2c_sku['영업마감일자_dt'] = pd.to_datetime(df_b2c_sku['영업마감일자'], errors='coerce')
-            min_date = df_b2c_sku['영업마감일자_dt'].min().date() if not df_b2c_sku['영업마감일자_dt'].isna().all() else datetime.now().date()
-            max_date = df_b2c_sku['영업마감일자_dt'].max().date() if not df_b2c_sku['영업마감일자_dt'].isna().all() else datetime.now().date()
+            
+            # ★ 디폴트 조회 기간: 당월 1일 ~ 어제까지 ★
+            today_dt = date.today()
+            yesterday_dt = today_dt - timedelta(days=1)
+            default_start_dt = date(today_dt.year, today_dt.month, 1)
 
-            if 'sku_end_date' not in st.session_state:
-                st.session_state['sku_end_date'] = max_date
-            if 'sku_start_date' not in st.session_state:
-                st.session_state['sku_start_date'] = min_date
+            min_db_dt = df_b2c_sku['영업마감일자_dt'].min().date() if not df_b2c_sku['영업마감일자_dt'].isna().all() else default_start_dt
+            max_db_dt = df_b2c_sku['영업마감일자_dt'].max().date() if not df_b2c_sku['영업마감일자_dt'].isna().all() else yesterday_dt
+
+            if 'sku_date_mode' not in st.session_state:
+                st.session_state['sku_date_mode'] = "당월"
+                st.session_state['sku_start_date'] = default_start_dt
+                st.session_state['sku_end_date'] = yesterday_dt
 
             raw_centers_tab4 = sorted(list(df_b2c_sku['센터'].dropna().unique()))
             center_options_tab4 = []
@@ -934,41 +940,33 @@ elif main_mode == "🚚 B2C 출고 현황":
             with col2:
                 selected_clients = st.multiselect("고객사 선택 (선택한 센터의 고객사만 표시)", available_clients, key="tab4_clients")
 
-            st.markdown("<p style='font-size:14px; font-weight:bold; margin-top:10px; margin-bottom:5px;'>📅 조회 기간 지정 및 빠른 선택:</p>", unsafe_allow_html=True)
+            st.markdown("<p style='font-size:14px; font-weight:bold; margin-top:10px; margin-bottom:5px;'>📅 조회 기간 지정 및 빠른 선택 (단일 선택):</p>", unsafe_allow_html=True)
             
             avail_months_tuples = sorted(list(set(df_b2c_sku['영업마감일자'].str.slice(0, 7).dropna().unique())), reverse=True)
             avail_months_labels = [f"{t[:4]}년 {int(t[5:7])}월" for t in avail_months_tuples]
 
-            curr_s = st.session_state['sku_start_date']
-            curr_e = st.session_state['sku_end_date']
-
-            def is_mode_active(btn_mode):
-                if btn_mode == "오늘":
-                    return curr_s == curr_e
-                elif btn_mode == "일주일":
-                    return curr_s == max(min_date, curr_e - timedelta(days=6))
-                elif btn_mode == "1개월":
-                    return curr_s == max(min_date, curr_e - timedelta(days=30))
-                elif btn_mode == "3개월":
-                    return curr_s == max(min_date, curr_e - timedelta(days=90))
-                elif btn_mode == "전체 기간":
-                    return curr_s == min_date and curr_e == max_date
-                return False
+            curr_sku_s = st.session_state['sku_start_date']
+            curr_sku_e = st.session_state['sku_end_date']
+            active_sku_mode = st.session_state['sku_date_mode']
 
             p_col1, p_col2, p_col3, p_col4, p_col5, p_col6, p_col7, p_col8 = st.columns([1.8, 1.8, 2.5, 1.0, 1.0, 1.0, 1.0, 1.0])
 
             with p_col1:
-                input_start = st.date_input("시작일자:", value=curr_s, key="tab4_start_input_widget", label_visibility="collapsed")
+                input_start = st.date_input("시작일자:", value=curr_sku_s, key="tab4_start_input_widget", label_visibility="collapsed")
             with p_col2:
-                input_end = st.date_input("종료일자:", value=curr_e, key="tab4_end_input_widget", label_visibility="collapsed")
+                input_end = st.date_input("종료일자:", value=curr_sku_e, key="tab4_end_input_widget", label_visibility="collapsed")
 
-            if input_start != curr_s or input_end != curr_e:
+            if input_start != curr_sku_s or input_end != curr_sku_e:
+                st.session_state['sku_date_mode'] = "직접지정"
                 st.session_state['sku_start_date'] = input_start
                 st.session_state['sku_end_date'] = input_end
                 st.rerun()
 
-            need_update = False
-            new_s, new_e = curr_s, curr_e
+            need_update_sku = False
+            new_sku_s, new_sku_e, new_sku_mode = curr_sku_s, curr_sku_e, active_sku_mode
+
+            def get_sku_btn_type(b_mode):
+                return "primary" if active_sku_mode == b_mode else "secondary"
 
             with p_col3:
                 selected_m_labels = st.multiselect("월 선택 (1일~말일 지정)", avail_months_labels, key="sku_m_select_widget", label_visibility="collapsed", placeholder="월 선택 (다중가능)")
@@ -985,48 +983,45 @@ elif main_mode == "🚚 B2C 출고 현황":
                     _, last_d = calendar.monthrange(max_m_tuple[0], max_m_tuple[1])
                     m_end = date(max_m_tuple[0], max_m_tuple[1], last_d)
                     
-                    if curr_s != m_start or curr_e != m_end:
-                        new_s, new_e = m_start, m_end
-                        need_update = True
+                    if curr_sku_s != m_start or curr_sku_e != m_end:
+                        new_sku_s, new_sku_e, new_sku_mode = m_start, m_end, "월선택"
+                        need_update_sku = True
 
             with p_col4:
-                btn_type_today = "primary" if is_mode_active("오늘") else "secondary"
-                if st.button("오늘", key="btn_today", type=btn_type_today, use_container_width=True):
-                    new_s, new_e = curr_e, curr_e
-                    need_update = True
+                if st.button("오늘", key="btn_sku_today", type=get_sku_btn_type("오늘"), use_container_width=True):
+                    new_sku_s, new_sku_e, new_sku_mode = yesterday_dt, yesterday_dt, "오늘"
+                    need_update_sku = True
             with p_col5:
-                btn_type_week = "primary" if is_mode_active("일주일") else "secondary"
-                if st.button("일주일", key="btn_week", type=btn_type_week, use_container_width=True):
-                    new_s = max(min_date, curr_e - timedelta(days=6))
-                    new_e = curr_e
-                    need_update = True
+                if st.button("일주일", key="btn_sku_week", type=get_sku_btn_type("일주일"), use_container_width=True):
+                    new_sku_s = max(min_db_dt, yesterday_dt - timedelta(days=6))
+                    new_sku_e, new_sku_mode = yesterday_dt, "일주일"
+                    need_update_sku = True
             with p_col6:
-                btn_type_1m = "primary" if is_mode_active("1개월") else "secondary"
-                if st.button("1개월", key="btn_1m", type=btn_type_1m, use_container_width=True):
-                    new_s = max(min_date, curr_e - timedelta(days=30))
-                    new_e = curr_e
-                    need_update = True
+                if st.button("1개월", key="btn_sku_1m", type=get_sku_btn_type("1개월"), use_container_width=True):
+                    new_sku_s = max(min_db_dt, yesterday_dt - timedelta(days=30))
+                    new_sku_e, new_sku_mode = yesterday_dt, "1개월"
+                    need_update_sku = True
             with p_col7:
-                btn_type_3m = "primary" if is_mode_active("3개월") else "secondary"
-                if st.button("3개월", key="btn_3m", type=btn_type_3m, use_container_width=True):
-                    new_s = max(min_date, curr_e - timedelta(days=90))
-                    new_e = curr_e
-                    need_update = True
+                if st.button("3개월", key="btn_sku_3m", type=get_sku_btn_type("3개월"), use_container_width=True):
+                    new_sku_s = max(min_db_dt, yesterday_dt - timedelta(days=90))
+                    new_sku_e, new_sku_mode = yesterday_dt, "3개월"
+                    need_update_sku = True
             with p_col8:
-                btn_type_all = "primary" if is_mode_active("전체 기간") else "secondary"
-                if st.button("전체 기간", key="btn_all", type=btn_type_all, use_container_width=True):
-                    new_s = min_date
-                    new_e = max_date
-                    need_update = True
+                if st.button("전체 기간", key="btn_sku_all", type=get_sku_btn_type("전체 기간"), use_container_width=True):
+                    new_sku_s, new_sku_e, new_sku_mode = min_db_dt, max_db_dt, "전체 기간"
+                    need_update_sku = True
 
-            if need_update:
-                st.session_state['sku_start_date'] = new_s
-                st.session_state['sku_end_date'] = new_e
+            if need_update_sku:
+                st.session_state['sku_date_mode'] = new_sku_mode
+                st.session_state['sku_start_date'] = new_sku_s
+                st.session_state['sku_end_date'] = new_sku_e
+                st.session_state['tab4_start_input_widget'] = new_sku_s
+                st.session_state['tab4_end_input_widget'] = new_sku_e
                 st.rerun()
 
             sku_df = df_b2c_sku.copy()
-            if curr_s and curr_e:
-                sku_df = sku_df[(sku_df['영업마감일자_dt'].dt.date >= curr_s) & (sku_df['영업마감일자_dt'].dt.date <= curr_e)]
+            if curr_sku_s and curr_sku_e:
+                sku_df = sku_df[(sku_df['영업마감일자_dt'].dt.date >= curr_sku_s) & (sku_df['영업마감일자_dt'].dt.date <= curr_sku_e)]
 
             if expanded_centers_tab4:
                 sku_df = sku_df[sku_df['센터'].isin(expanded_centers_tab4)]
@@ -1088,7 +1083,7 @@ elif main_mode == "📦 입고 현황":
                     clients_ib = []
                     st.selectbox("고객사 선택", ["고객사 숨김 상태"], disabled=True, key="inbound_client_disabled")
 
-            # 2행: 월 선택 가로 버튼 바
+            # 2행: 월 선택 가로 버튼 바 (표 전용 펼침 제어)
             expanded_months_ib1 = render_month_button_bar(
                 df_inbound, 
                 session_key_selected="ib1_exp_months", 
@@ -1127,7 +1122,7 @@ elif main_mode == "📦 입고 현황":
             if "보이기" in show_client_ib:
                 group_cols_ib.append('고객사')
 
-            # ★ [표 전체 팝업 모달 버튼을 표 바로 위에 명확하게 단독 배치] ★
+            # ★ [표 전체 팝업 모달 버튼을 표 바로 위에 단독 배치] ★
             st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
             pop_col1, pop_col2 = st.columns([7, 3])
             with pop_col2:
@@ -1135,16 +1130,20 @@ elif main_mode == "📦 입고 현황":
                     show_popup_table_modal(df_inbound, group_cols_ib)
 
             if not filtered_df_ib.empty and target_val in filtered_df_ib.columns:
-                # 빠른 기간 단일 선택 상태 초기화
+                # ★ 기본 디폴트 조회 기간 설정: 당월 1일 ~ 어제까지 ★
+                today_dt = date.today()
+                yesterday_dt = today_dt - timedelta(days=1)
+                default_start_dt = date(today_dt.year, today_dt.month, 1)
+
                 df_ib_dt = filtered_df_ib.copy()
                 df_ib_dt['dt'] = pd.to_datetime(df_ib_dt['영업마감일자'], errors='coerce')
-                ib_min_date = df_ib_dt['dt'].min().date() if not df_ib_dt['dt'].isna().all() else date.today()
-                ib_max_date = df_ib_dt['dt'].max().date() if not df_ib_dt['dt'].isna().all() else date.today()
+                ib_min_date = df_ib_dt['dt'].min().date() if not df_ib_dt['dt'].isna().all() else default_start_dt
+                ib_max_date = df_ib_dt['dt'].max().date() if not df_ib_dt['dt'].isna().all() else yesterday_dt
 
                 if 'chart_date_mode' not in st.session_state:
-                    st.session_state['chart_date_mode'] = "전체 기간"
-                    st.session_state['chart_start_date'] = ib_min_date
-                    st.session_state['chart_end_date'] = ib_max_date
+                    st.session_state['chart_date_mode'] = "당월"
+                    st.session_state['chart_start_date'] = default_start_dt
+                    st.session_state['chart_end_date'] = yesterday_dt
 
                 # 단일 기간 필터링 적용 (표와 차트에 동시 반영)
                 curr_s = st.session_state['chart_start_date']
@@ -1193,7 +1192,7 @@ elif main_mode == "📦 입고 현황":
                 final_inbound = pd.concat([total_df_ib, body_df_ib])
                 render_sticky_pivot(final_inbound, group_cols_ib, key_suffix="inbound_tab1", allow_modal_btn=False)
 
-                # ★ [표와 차트 사이: 빠른 기간 지정 및 단일 선택 전용 컨트롤러 (절대 겹침 없음)] ★
+                # ★ [표와 차트 사이: 빠른 기간 지정 및 단일 선택 컨트롤러 (실시간 바인딩 보장)] ★
                 st.markdown("<div style='margin-top: 30px; margin-bottom: 10px;'></div>", unsafe_allow_html=True)
                 st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>📅 조회 기간 지정 및 빠른 선택 (단일 선택):</p>", unsafe_allow_html=True)
 
@@ -1220,22 +1219,22 @@ elif main_mode == "📦 입고 현황":
 
                 with cp3:
                     if st.button("오늘", key="btn_chart_today", type=get_mode_btn_type("오늘"), use_container_width=True):
-                        c_new_s, c_new_e, c_new_mode = ib_max_date, ib_max_date, "오늘"
+                        c_new_s, c_new_e, c_new_mode = yesterday_dt, yesterday_dt, "오늘"
                         c_need_update = True
                 with cp4:
                     if st.button("일주일", key="btn_chart_week", type=get_mode_btn_type("일주일"), use_container_width=True):
-                        c_new_s = max(ib_min_date, ib_max_date - timedelta(days=6))
-                        c_new_e, c_new_mode = ib_max_date, "일주일"
+                        c_new_s = max(ib_min_date, yesterday_dt - timedelta(days=6))
+                        c_new_e, c_new_mode = yesterday_dt, "일주일"
                         c_need_update = True
                 with cp5:
                     if st.button("1개월", key="btn_chart_1m", type=get_mode_btn_type("1개월"), use_container_width=True):
-                        c_new_s = max(ib_min_date, ib_max_date - timedelta(days=30))
-                        c_new_e, c_new_mode = ib_max_date, "1개월"
+                        c_new_s = max(ib_min_date, yesterday_dt - timedelta(days=30))
+                        c_new_e, c_new_mode = yesterday_dt, "1개월"
                         c_need_update = True
                 with cp6:
                     if st.button("3개월", key="btn_chart_3m", type=get_mode_btn_type("3개월"), use_container_width=True):
-                        c_new_s = max(ib_min_date, ib_max_date - timedelta(days=90))
-                        c_new_e, c_new_mode = ib_max_date, "3개월"
+                        c_new_s = max(ib_min_date, yesterday_dt - timedelta(days=90))
+                        c_new_e, c_new_mode = yesterday_dt, "3개월"
                         c_need_update = True
                 with cp7:
                     if st.button("전체 기간", key="btn_chart_all", type=get_mode_btn_type("전체 기간"), use_container_width=True):
@@ -1246,6 +1245,8 @@ elif main_mode == "📦 입고 현황":
                     st.session_state['chart_date_mode'] = c_new_mode
                     st.session_state['chart_start_date'] = c_new_s
                     st.session_state['chart_end_date'] = c_new_e
+                    st.session_state['chart_s_input'] = c_new_s
+                    st.session_state['chart_e_input'] = c_new_e
                     st.rerun()
 
                 # ★ [Plotly.js 기반 범례 온/오프 인터랙티브 콤보 차트 표출] ★
