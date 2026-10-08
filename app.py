@@ -952,9 +952,9 @@ elif main_mode == "🚚 B2C 출고 현황":
             p_col1, p_col2, p_col3, p_col4, p_col5, p_col6, p_col7, p_col8 = st.columns([1.8, 1.8, 2.5, 1.0, 1.0, 1.0, 1.0, 1.0])
 
             with p_col1:
-                input_start = st.date_input("시작일자:", value=curr_sku_s, key="tab4_start_input_widget", label_visibility="collapsed")
+                input_start = st.date_input("시작일자:", value=curr_sku_s, key=f"sku_s_{curr_sku_s}_{curr_sku_e}", label_visibility="collapsed")
             with p_col2:
-                input_end = st.date_input("종료일자:", value=curr_sku_e, key="tab4_end_input_widget", label_visibility="collapsed")
+                input_end = st.date_input("종료일자:", value=curr_sku_e, key=f"sku_e_{curr_sku_s}_{curr_sku_e}", label_visibility="collapsed")
 
             if input_start != curr_sku_s or input_end != curr_sku_e:
                 st.session_state['sku_date_mode'] = "직접지정"
@@ -1015,8 +1015,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 st.session_state['sku_date_mode'] = new_sku_mode
                 st.session_state['sku_start_date'] = new_sku_s
                 st.session_state['sku_end_date'] = new_sku_e
-                st.session_state['tab4_start_input_widget'] = new_sku_s
-                st.session_state['tab4_end_input_widget'] = new_sku_e
                 st.rerun()
 
             sku_df = df_b2c_sku.copy()
@@ -1192,16 +1190,16 @@ elif main_mode == "📦 입고 현황":
                 final_inbound = pd.concat([total_df_ib, body_df_ib])
                 render_sticky_pivot(final_inbound, group_cols_ib, key_suffix="inbound_tab1", allow_modal_btn=False)
 
-                # ★ [표와 차트 사이: 빠른 기간 지정 및 단일 선택 컨트롤러 (실시간 바인딩 보장)] ★
+                # ★ [표와 차트 사이: 빠른 기간 지정 및 단일 선택 컨트롤러 (동적 위젯 바인딩 고유키 적용)] ★
                 st.markdown("<div style='margin-top: 30px; margin-bottom: 10px;'></div>", unsafe_allow_html=True)
                 st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>📅 조회 기간 지정 및 빠른 선택 (단일 선택):</p>", unsafe_allow_html=True)
 
                 cp1, cp2, cp3, cp4, cp5, cp6, cp7 = st.columns([1.8, 1.8, 1.0, 1.0, 1.0, 1.0, 1.0])
 
                 with cp1:
-                    ch_input_s = st.date_input("시작일자:", value=curr_s, key="chart_s_input", label_visibility="collapsed")
+                    ch_input_s = st.date_input("시작일자:", value=curr_s, key=f"chart_s_{curr_s}_{curr_e}", label_visibility="collapsed")
                 with cp2:
-                    ch_input_e = st.date_input("종료일자:", value=curr_e, key="chart_e_input", label_visibility="collapsed")
+                    ch_input_e = st.date_input("종료일자:", value=curr_e, key=f"chart_e_{curr_s}_{curr_e}", label_visibility="collapsed")
 
                 if ch_input_s != curr_s or ch_input_e != curr_e:
                     st.session_state['chart_date_mode'] = "직접지정"
@@ -1245,8 +1243,6 @@ elif main_mode == "📦 입고 현황":
                     st.session_state['chart_date_mode'] = c_new_mode
                     st.session_state['chart_start_date'] = c_new_s
                     st.session_state['chart_end_date'] = c_new_e
-                    st.session_state['chart_s_input'] = c_new_s
-                    st.session_state['chart_e_input'] = c_new_e
                     st.rerun()
 
                 # ★ [Plotly.js 기반 범례 온/오프 인터랙티브 콤보 차트 표출] ★
