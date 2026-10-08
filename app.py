@@ -302,12 +302,6 @@ def show_popup_table_modal(df_data, index_names):
     render_sticky_pivot(df_data, index_names, key_suffix="modal_popup", allow_modal_btn=False)
 
 def render_sticky_pivot(df, index_names, key_suffix="", allow_modal_btn=True):
-    if allow_modal_btn:
-        m_btn_col1, m_btn_col2 = st.columns([8, 2])
-        with m_btn_col2:
-            if st.button("🔍 표 팝업 크게 보기 (화면 전체)", key=f"btn_modal_{key_suffix}", use_container_width=True):
-                show_popup_table_modal(df, index_names)
-
     html = ['<div class="sticky-table-container"><table class="sticky-table"><thead><tr>']
     num_indices = len(index_names)
     
@@ -520,7 +514,7 @@ def generate_pure_svg_donut(data_dict, title):
     
     return f'<div style="background-color:#0e1117; border:1px solid #1f2937; border-radius:8px; padding:12px; text-align:center;">' + "".join(svg_parts) + "".join(legend_parts) + '</div>'
 
-# ★ [Plotly.js 기반 깔끔 정렬 범례 토글 차트 - 상단 타이틀 삭제 및 깔끔 범례 레이아웃] ★
+# ★ [Plotly.js 기반 깔끔 정렬 범례 토글 차트] ★
 def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=None, chart_end_date=None):
     if df_ib_filtered.empty or '영업마감일자' not in df_ib_filtered.columns:
         return
@@ -1094,7 +1088,7 @@ elif main_mode == "📦 입고 현황":
                     clients_ib = []
                     st.selectbox("고객사 선택", ["고객사 숨김 상태"], disabled=True, key="inbound_client_disabled")
 
-            # 2행: 월 선택 가로 버튼 바 (표 전용 펼침 제어)
+            # 2행: 월 선택 가로 버튼 바
             expanded_months_ib1 = render_month_button_bar(
                 df_inbound, 
                 session_key_selected="ib1_exp_months", 
@@ -1133,8 +1127,36 @@ elif main_mode == "📦 입고 현황":
             if "보이기" in show_client_ib:
                 group_cols_ib.append('고객사')
 
+            # ★ [표 전체 팝업 모달 버튼을 표 바로 위에 명확하게 단독 배치] ★
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            pop_col1, pop_col2 = st.columns([7, 3])
+            with pop_col2:
+                if st.button("🔍 표 전체화면 크게 보기 (팝업 모달)", key="btn_main_table_popup", type="primary", use_container_width=True):
+                    show_popup_table_modal(df_inbound, group_cols_ib)
+
             if not filtered_df_ib.empty and target_val in filtered_df_ib.columns:
-                pivot_raw_ib1 = pd.pivot_table(filtered_df_ib, index=group_cols_ib, columns='영업마감일자', values=target_val, aggfunc='sum', fill_value=0)
+                # 빠른 기간 단일 선택 상태 초기화
+                df_ib_dt = filtered_df_ib.copy()
+                df_ib_dt['dt'] = pd.to_datetime(df_ib_dt['영업마감일자'], errors='coerce')
+                ib_min_date = df_ib_dt['dt'].min().date() if not df_ib_dt['dt'].isna().all() else date.today()
+                ib_max_date = df_ib_dt['dt'].max().date() if not df_ib_dt['dt'].isna().all() else date.today()
+
+                if 'chart_date_mode' not in st.session_state:
+                    st.session_state['chart_date_mode'] = "전체 기간"
+                    st.session_state['chart_start_date'] = ib_min_date
+                    st.session_state['chart_end_date'] = ib_max_date
+
+                # 단일 기간 필터링 적용 (표와 차트에 동시 반영)
+                curr_s = st.session_state['chart_start_date']
+                curr_e = st.session_state['chart_end_date']
+
+                filtered_df_ib_period = filtered_df_ib.copy()
+                filtered_df_ib_period['dt_temp'] = pd.to_datetime(filtered_df_ib_period['영업마감일자'], errors='coerce').dt.date
+                filtered_df_ib_period = filtered_df_ib_period[
+                    (filtered_df_ib_period['dt_temp'] >= curr_s) & (filtered_df_ib_period['dt_temp'] <= curr_e)
+                ]
+
+                pivot_raw_ib1 = pd.pivot_table(filtered_df_ib_period, index=group_cols_ib, columns='영업마감일자', values=target_val, aggfunc='sum', fill_value=0)
                 total_col_name = f"총 {target_val}"
                 pivot_raw_ib1[total_col_name] = pivot_raw_ib1.sum(axis=1)
                 
@@ -1169,89 +1191,64 @@ elif main_mode == "📦 입고 현황":
                 total_df_ib = pd.DataFrame([total_series_ib.values], columns=pivot_ib1.columns, index=total_idx_ib)
 
                 final_inbound = pd.concat([total_df_ib, body_df_ib])
-                render_sticky_pivot(final_inbound, group_cols_ib, key_suffix="inbound_tab1")
+                render_sticky_pivot(final_inbound, group_cols_ib, key_suffix="inbound_tab1", allow_modal_btn=False)
 
-                # ★ [표와 차트 사이: 빠른 기간 지정 및 단일 선택 컨트롤러 추가] ★
+                # ★ [표와 차트 사이: 빠른 기간 지정 및 단일 선택 전용 컨트롤러 (절대 겹침 없음)] ★
                 st.markdown("<div style='margin-top: 30px; margin-bottom: 10px;'></div>", unsafe_allow_html=True)
-                st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>📅 차트 전용 기간 지정 및 빠른 선택 (단일 선택):</p>", unsafe_allow_html=True)
-
-                df_ib_dt = filtered_df_ib.copy()
-                df_ib_dt['dt'] = pd.to_datetime(df_ib_dt['영업마감일자'], errors='coerce')
-                ib_min_date = df_ib_dt['dt'].min().date() if not df_ib_dt['dt'].isna().all() else date.today()
-                ib_max_date = df_ib_dt['dt'].max().date() if not df_ib_dt['dt'].isna().all() else date.today()
-
-                if 'chart_end_date' not in st.session_state:
-                    st.session_state['chart_end_date'] = ib_max_date
-                if 'chart_start_date' not in st.session_state:
-                    st.session_state['chart_start_date'] = ib_min_date
-
-                c_curr_s = st.session_state['chart_start_date']
-                c_curr_e = st.session_state['chart_end_date']
-
-                def is_chart_mode_active(btn_mode):
-                    if btn_mode == "오늘":
-                        return c_curr_s == c_curr_e
-                    elif btn_mode == "일주일":
-                        return c_curr_s == max(ib_min_date, c_curr_e - timedelta(days=6))
-                    elif btn_mode == "1개월":
-                        return c_curr_s == max(ib_min_date, c_curr_e - timedelta(days=30))
-                    elif btn_mode == "3개월":
-                        return c_curr_s == max(ib_min_date, c_curr_e - timedelta(days=90))
-                    elif btn_mode == "전체 기간":
-                        return c_curr_s == ib_min_date and c_curr_e == ib_max_date
-                    return False
+                st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>📅 조회 기간 지정 및 빠른 선택 (단일 선택):</p>", unsafe_allow_html=True)
 
                 cp1, cp2, cp3, cp4, cp5, cp6, cp7 = st.columns([1.8, 1.8, 1.0, 1.0, 1.0, 1.0, 1.0])
 
                 with cp1:
-                    ch_input_s = st.date_input("시작일자:", value=c_curr_s, key="chart_s_input", label_visibility="collapsed")
+                    ch_input_s = st.date_input("시작일자:", value=curr_s, key="chart_s_input", label_visibility="collapsed")
                 with cp2:
-                    ch_input_e = st.date_input("종료일자:", value=c_curr_e, key="chart_e_input", label_visibility="collapsed")
+                    ch_input_e = st.date_input("종료일자:", value=curr_e, key="chart_e_input", label_visibility="collapsed")
 
-                if ch_input_s != c_curr_s or ch_input_e != c_curr_e:
+                if ch_input_s != curr_s or ch_input_e != curr_e:
+                    st.session_state['chart_date_mode'] = "직접지정"
                     st.session_state['chart_start_date'] = ch_input_s
                     st.session_state['chart_end_date'] = ch_input_e
                     st.rerun()
 
+                active_mode = st.session_state['chart_date_mode']
+
+                def get_mode_btn_type(btn_mode):
+                    return "primary" if active_mode == btn_mode else "secondary"
+
                 c_need_update = False
-                c_new_s, c_new_e = c_curr_s, c_curr_e
+                c_new_s, c_new_e, c_new_mode = curr_s, curr_e, active_mode
 
                 with cp3:
-                    btn_c_today = "primary" if is_chart_mode_active("오늘") else "secondary"
-                    if st.button("오늘", key="btn_chart_today", type=btn_c_today, use_container_width=True):
-                        c_new_s, c_new_e = ib_max_date, ib_max_date
+                    if st.button("오늘", key="btn_chart_today", type=get_mode_btn_type("오늘"), use_container_width=True):
+                        c_new_s, c_new_e, c_new_mode = ib_max_date, ib_max_date, "오늘"
                         c_need_update = True
                 with cp4:
-                    btn_c_week = "primary" if is_chart_mode_active("일주일") else "secondary"
-                    if st.button("일주일", key="btn_chart_week", type=btn_c_week, use_container_width=True):
+                    if st.button("일주일", key="btn_chart_week", type=get_mode_btn_type("일주일"), use_container_width=True):
                         c_new_s = max(ib_min_date, ib_max_date - timedelta(days=6))
-                        c_new_e = ib_max_date
+                        c_new_e, c_new_mode = ib_max_date, "일주일"
                         c_need_update = True
                 with cp5:
-                    btn_c_1m = "primary" if is_chart_mode_active("1개월") else "secondary"
-                    if st.button("1개월", key="btn_chart_1m", type=btn_c_1m, use_container_width=True):
+                    if st.button("1개월", key="btn_chart_1m", type=get_mode_btn_type("1개월"), use_container_width=True):
                         c_new_s = max(ib_min_date, ib_max_date - timedelta(days=30))
-                        c_new_e = ib_max_date
+                        c_new_e, c_new_mode = ib_max_date, "1개월"
                         c_need_update = True
                 with cp6:
-                    btn_c_3m = "primary" if is_chart_mode_active("3개월") else "secondary"
-                    if st.button("3개월", key="btn_chart_3m", type=btn_c_3m, use_container_width=True):
+                    if st.button("3개월", key="btn_chart_3m", type=get_mode_btn_type("3개월"), use_container_width=True):
                         c_new_s = max(ib_min_date, ib_max_date - timedelta(days=90))
-                        c_new_e = ib_max_date
+                        c_new_e, c_new_mode = ib_max_date, "3개월"
                         c_need_update = True
                 with cp7:
-                    btn_c_all = "primary" if is_chart_mode_active("전체 기간") else "secondary"
-                    if st.button("전체 기간", key="btn_chart_all", type=btn_c_all, use_container_width=True):
-                        c_new_s = ib_min_date
-                        c_new_e = ib_max_date
+                    if st.button("전체 기간", key="btn_chart_all", type=get_mode_btn_type("전체 기간"), use_container_width=True):
+                        c_new_s, c_new_e, c_new_mode = ib_min_date, ib_max_date, "전체 기간"
                         c_need_update = True
 
                 if c_need_update:
+                    st.session_state['chart_date_mode'] = c_new_mode
                     st.session_state['chart_start_date'] = c_new_s
                     st.session_state['chart_end_date'] = c_new_e
                     st.rerun()
 
-                # ★ [Plotly.js 기반 깔끔한 정렬 범례 토글 인터랙티브 차트 표출] ★
+                # ★ [Plotly.js 기반 범례 온/오프 인터랙티브 콤보 차트 표출] ★
                 render_inbound_interactive_plotly_chart(filtered_df_ib, chart_start_date=st.session_state['chart_start_date'], chart_end_date=st.session_state['chart_end_date'])
 
         else:
