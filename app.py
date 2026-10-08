@@ -522,7 +522,7 @@ def generate_pure_svg_donut(data_dict, title):
 
 # ★ [Plotly.js 기반 범례 클릭 인터랙티브 콤보 차트 렌더링 함수 - 토글 기능 지원] ★
 def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=None, chart_end_date=None):
-    if df_ib_filtered.empty or '영업마감일자' in not df_ib_filtered.columns:
+    if df_ib_filtered.empty or '영업마감일자' not in df_ib_filtered.columns:
         return
 
     daily_chart_df = df_ib_filtered.groupby('영업마감일자')[
@@ -1166,7 +1166,7 @@ elif main_mode == "📦 입고 현황":
                 final_inbound = pd.concat([total_df_ib, body_df_ib])
                 render_sticky_pivot(final_inbound, group_cols_ib, key_suffix="inbound_tab1")
 
-                # ★ [표와 차트 사이: 빠른 기간 지정 및 단일 선택 컨트롤러 컨트롤러 추가] ★
+                # ★ [표와 차트 사이: 빠른 기간 지정 및 단일 선택 컨트롤러 추가] ★
                 st.markdown("<div style='margin-top: 30px; margin-bottom: 10px;'></div>", unsafe_allow_html=True)
                 st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>📅 차트 전용 기간 지정 및 빠른 선택 (단일 선택):</p>", unsafe_allow_html=True)
 
