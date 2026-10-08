@@ -520,7 +520,7 @@ def generate_pure_svg_donut(data_dict, title):
     
     return f'<div style="background-color:#0e1117; border:1px solid #1f2937; border-radius:8px; padding:12px; text-align:center;">' + "".join(svg_parts) + "".join(legend_parts) + '</div>'
 
-# ★ [Plotly.js 기반 범례 클릭 인터랙티브 콤보 차트 렌더링 함수 - 토글 기능 지원] ★
+# ★ [Plotly.js 기반 깔끔 정렬 범례 토글 차트 - 상단 타이틀 삭제 및 깔끔 범례 레이아웃] ★
 def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=None, chart_end_date=None):
     if df_ib_filtered.empty or '영업마감일자' not in df_ib_filtered.columns:
         return
@@ -552,7 +552,7 @@ def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=Non
         <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
         <style>
             body {{ margin: 0; padding: 0; background-color: #0e1117; font-family: sans-serif; }}
-            #plotly_div {{ width: 100%; height: 480px; }}
+            #plotly_div {{ width: 100%; height: 460px; }}
         </style>
     </head>
     <body>
@@ -578,14 +578,19 @@ def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=Non
             var data = [trace_bar, trace_sku, trace_plt, trace_box, trace_ea];
 
             var layout = {{
-                title: {{text: '📈 센터 및 고객사 입고 통합 종합 추세 분석 (범례 클릭 시 추세선 온/오프)', font: {{color: '#e5e7eb', size: 14}}}},
                 paper_bgcolor: '#0e1117',
                 plot_bgcolor: '#0e1117',
-                margin: {{l: 50, r: 70, t: 50, b: 50}},
-                xaxis: {{type: 'category', tickfont: {{color: '#9ca3af', size: 10}}, gridcolor: '#1f2937'}},
-                yaxis: {{title: '건수 / 종수 / PLT / BOX', titlefont: {{color: '#9ca3af'}}, tickfont: {{color: '#9ca3af'}}, gridcolor: '#1f2937'}},
-                yaxis2: {{title: '입고완료수량 (EA)', titlefont: {{color: '#f43f5e'}}, tickfont: {{color: '#f43f5e'}}, overlaying: 'y', side: 'right', showgrid: false}},
-                legend: {{orientation: 'h', x: 0, y: 1.15, font: {{color: '#e5e7eb', size: 11}}}},
+                margin: {{l: 50, r: 70, t: 40, b: 50}},
+                xaxis: {{type: 'category', tickfont: {{color: '#9ca3af', size: 11}}, gridcolor: '#1f2937'}},
+                yaxis: {{title: '건수 / 종수 / PLT / BOX', titlefont: {{color: '#9ca3af', size: 12}}, tickfont: {{color: '#9ca3af', size: 11}}, gridcolor: '#1f2937'}},
+                yaxis2: {{title: '입고완료수량 (EA)', titlefont: {{color: '#f43f5e', size: 12}}, tickfont: {{color: '#f43f5e', size: 11}}, overlaying: 'y', side: 'right', showgrid: false}},
+                legend: {{
+                    orientation: 'h',
+                    xanchor: 'center',
+                    x: 0.5,
+                    y: 1.12,
+                    font: {{color: '#e5e7eb', size: 12}}
+                }},
                 hovermode: 'x unified'
             }};
 
@@ -594,7 +599,7 @@ def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=Non
     </body>
     </html>
     """
-    components.html(html_code, height=500)
+    components.html(html_code, height=480)
 
 # 메인 종합 현황 모드
 if main_mode == "🏢 메인 : 센터 종합 현황":
@@ -1246,7 +1251,7 @@ elif main_mode == "📦 입고 현황":
                     st.session_state['chart_end_date'] = c_new_e
                     st.rerun()
 
-                # ★ [Plotly.js 기반 범례 온/오프 인터랙티브 콤보 차트 표출] ★
+                # ★ [Plotly.js 기반 깔끔한 정렬 범례 토글 인터랙티브 차트 표출] ★
                 render_inbound_interactive_plotly_chart(filtered_df_ib, chart_start_date=st.session_state['chart_start_date'], chart_end_date=st.session_state['chart_end_date'])
 
         else:
