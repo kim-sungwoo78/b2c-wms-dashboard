@@ -56,7 +56,7 @@ def init_local_db():
 
 init_local_db()
 
-def run_sync(ib_sheet_url=""):
+def run_sync():
     if "gcp_service_account" in st.secrets:
         try:
             import etl_pipeline
@@ -71,7 +71,7 @@ def run_sync(ib_sheet_url=""):
 
             st.cache_data.clear()
 
-            matched_cnt, err_msg = etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress, ib_sheet_url=ib_sheet_url)
+            matched_cnt, err_msg = etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
             
             status_text.empty()
             st.cache_data.clear()
@@ -80,7 +80,7 @@ def run_sync(ib_sheet_url=""):
                 st.sidebar.success(f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)")
             else:
                 if err_msg:
-                    st.sidebar.warning(f"⚠️ 동기화 완료 (시트 상태 안내: {err_msg})")
+                    st.sidebar.warning(f"⚠️ 동기화 완료 (시트 상태: {err_msg})")
                 else:
                     st.sidebar.success("✅ 동기화 완료!")
             return True
@@ -243,12 +243,8 @@ st.markdown("""
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
-# 사이드바 설정
-st.sidebar.header("⚙️ 동기화 및 매칭 설정")
-ib_sheet_url_input = st.sidebar.text_input("📊 IB 구글 시트 URL (PLT/BOX 매칭용):", placeholder="https://docs.google.com/spreadsheets/d/...")
-
 if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
-    if run_sync(ib_sheet_url=ib_sheet_url_input):
+    if run_sync():
         st.rerun()
 
 df_b2c_orders = load_shipment_orders()
