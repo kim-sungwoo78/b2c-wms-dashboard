@@ -17,6 +17,9 @@ PROCESSED_FOLDER_ID = '1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ'  # 처리완료 폴더
 
 DB_FOLDER_ID = '1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9'
 
+# ★ IB 구글 시트 ID 고정 지정 ★
+DEFAULT_IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
+
 DB_B2C_PATH = 'wms_b2c.db'
 DB_INBOUND_PATH = 'wms_inbound.db'
 DB_B2B_PATH = 'wms_b2b.db'
@@ -141,29 +144,18 @@ def extract_sheet_id(url_or_id):
         return parts.split("/")[0]
     return url_or_id.strip()
 
-# ★ [구글 시트 "입고" 탭 정밀 타겟 매칭 함수] ★
+# ★ [구글 시트 "입고" 탭 자동 연동 및 PLT/BOX 수치 매칭 함수] ★
 def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=""):
     if not service or not sheets_service:
         return 0, "서비스 계정 권한 없음"
 
     target_sheet_ids = []
+    
     input_id = extract_sheet_id(ib_sheet_url)
     if input_id:
         target_sheet_ids.append(input_id)
-
-    try:
-        query = "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false"
-        results = service.files().list(
-            q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True
-        ).execute()
-        for s_file in results.get('files', []):
-            if s_file['id'] not in target_sheet_ids:
-                target_sheet_ids.append(s_file['id'])
-    except Exception:
-        pass
-
-    if not target_sheet_ids:
-        return 0, "대상 구글 시트를 찾을 수 없습니다."
+    else:
+        target_sheet_ids.append(DEFAULT_IB_SHEET_ID)
 
     matched_count = 0
     err_msg = ""
@@ -177,7 +169,6 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
                 continue
 
             ib_sheet_title = None
-            # "입고" 탭 이름 정밀 타겟팅
             for s in sheets:
                 title = s.get('properties', {}).get('title', '').strip()
                 if title == '입고' or '입고' in title or title.upper() == 'IB':
@@ -552,7 +543,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None, ib_
             error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
             continue
 
-    # IB 구글 시트 매칭 실행
+    # IB 내장 구글 시트 매칭 실행
     matched_count, err_msg = 0, ""
     try:
         matched_count, err_msg = update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=ib_sheet_url)
