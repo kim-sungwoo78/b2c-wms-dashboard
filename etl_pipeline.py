@@ -144,7 +144,7 @@ def extract_sheet_id(url_or_id):
         return parts.split("/")[0]
     return url_or_id.strip()
 
-# ★ [구글 시트 "입고" 탭 자동 연동 및 PLT/BOX 수치 매칭 함수] ★
+# ★ [구글 시트 "입고" 탭 자동 연동 및 PLT/BOX 수치 정밀 매칭 함수] ★
 def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=""):
     if not service or not sheets_service:
         return 0, "서비스 계정 권한 없음"
@@ -169,9 +169,11 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
                 continue
 
             ib_sheet_title = None
+            # 탭 이름에서 공백 제거 후 '입고' 탭 정밀 스캔
             for s in sheets:
                 title = s.get('properties', {}).get('title', '').strip()
-                if title == '입고' or '입고' in title or title.upper() == 'IB':
+                title_clean = title.replace(" ", "")
+                if title_clean == '입고' or '입고' in title_clean or title_clean.upper() == 'IB':
                     ib_sheet_title = title
                     break
 
@@ -183,6 +185,7 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
             values = result.get('values', [])
 
             if not values or len(values) < 2:
+                err_msg = "구글 시트에 데이터 행이 없음"
                 continue
 
             header_row_idx = 0
@@ -543,7 +546,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None, ib_
             error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
             continue
 
-    # ★ IB 내장 구글 시트 매칭 실행 및 강제 저장 보장 ★
+    # IB 내장 구글 시트 매칭 실행 및 강제 저장 보장
     matched_count, err_msg = 0, ""
     try:
         matched_count, err_msg = update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=ib_sheet_url)
@@ -556,7 +559,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None, ib_
     if b2c_updated:
         upload_db_to_drive(service, DB_B2C_PATH)
 
-    # 매칭된 수치가 있거나 엑셀이 업로드된 경우 드라이브 DB 강제 업로드
     if matched_count > 0 or inbound_updated:
         upload_db_to_drive(service, DB_INBOUND_PATH)
 
