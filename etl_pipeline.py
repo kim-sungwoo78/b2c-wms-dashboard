@@ -543,22 +543,21 @@ def process_and_update(service, sheets_service=None, progress_callback=None, ib_
             error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
             continue
 
-    # IB 내장 구글 시트 매칭 실행
+    # ★ IB 내장 구글 시트 매칭 실행 및 강제 저장 보장 ★
     matched_count, err_msg = 0, ""
     try:
         matched_count, err_msg = update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=ib_sheet_url)
     except Exception as sheet_e:
         err_msg = str(sheet_e)
 
-    if matched_count > 0:
-        inbound_updated = True
-
     conn_b2c.close()
     conn_ib.close()
 
     if b2c_updated:
         upload_db_to_drive(service, DB_B2C_PATH)
-    if inbound_updated:
+
+    # 매칭된 수치가 있거나 엑셀이 업로드된 경우 드라이브 DB 강제 업로드
+    if matched_count > 0 or inbound_updated:
         upload_db_to_drive(service, DB_INBOUND_PATH)
 
     return matched_count, err_msg
