@@ -514,7 +514,7 @@ def generate_pure_svg_donut(data_dict, title):
     
     return f'<div style="background-color:#0e1117; border:1px solid #1f2937; border-radius:8px; padding:12px; text-align:center;">' + "".join(svg_parts) + "".join(legend_parts) + '</div>'
 
-# ★ [Plotly.js 기반 깔끔 정렬 범례 토글 차트 - 자동 리사이즈 및 가로 수평 범례 배치] ★
+# ★ [Plotly.js 기반 깔끔 정렬 범례 토글 차트] ★
 def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=None, chart_end_date=None, height=480):
     if df_ib_filtered.empty or '영업마감일자' not in df_ib_filtered.columns:
         return
@@ -591,7 +591,6 @@ def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=Non
 
             Plotly.newPlot('plotly_div', data, layout, {{responsive: true, displayModeBar: false}});
 
-            // 탭 전환 시 너비 재계산 수평 정렬 보장
             window.addEventListener('resize', function() {{ Plotly.Plots.resize('plotly_div'); }});
             setTimeout(function() {{ Plotly.Plots.resize('plotly_div'); }}, 150);
             setTimeout(function() {{ Plotly.Plots.resize('plotly_div'); }}, 400);
@@ -760,7 +759,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 selected_center_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options, key="tab1_centers")
                 expanded_centers = expand_selected_centers(selected_center_input, raw_centers) if selected_center_input else []
             with col2:
-                show_client = st.radio("고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"])
+                show_client = st.radio("고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"], key="tab1_show_client")
             with col3:
                 if "보이기" in show_client:
                     available_clients_df = df_b2c_orders[df_b2c_orders['센터'].isin(expanded_centers)] if expanded_centers else df_b2c_orders
@@ -768,7 +767,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     clients = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients, key="tab1_clients")
                 else:
                     clients = []
-                    st.selectbox("고객사 선택", ["고객사 숨김 상태"], disabled=True)
+                    st.selectbox("고객사 선택", ["고객사 숨김 상태"], disabled=True, key="tab1_client_disabled")
 
             expanded_months_tab1 = render_month_button_bar(
                 df_b2c_orders, 
@@ -830,9 +829,33 @@ elif main_mode == "🚚 B2C 출고 현황":
     with tab2:
         st.header("배송 속성 및 판매처별 출고현황")
         if not df_b2c_orders.empty:
+            raw_centers_tab2 = sorted(list(df_b2c_orders['센터'].dropna().unique()))
+            center_options_tab2 = []
+            if any('1층' in str(c) or '375 1' in str(c) for c in raw_centers_tab2):
+                center_options_tab2.append("375 소계")
+            if any('XFC' in str(c).upper() for c in raw_centers_tab2):
+                center_options_tab2.append("XFC 소계")
+            center_options_tab2.extend(raw_centers_tab2)
+
+            # ★ [탭1과 100% 동일한 센터/고객사 선택 컨트롤러 추가] ★
+            col_t2_1, col_t2_2, col_t2_3 = st.columns([3, 2, 2])
+            with col_t2_1:
+                selected_center_tab2_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options_tab2, key="tab2_centers")
+                expanded_centers_tab2 = expand_selected_centers(selected_center_tab2_input, raw_centers_tab2) if selected_center_tab2_input else []
+            with col_t2_2:
+                show_client_tab2 = st.radio("고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"], key="tab2_show_client")
+            with col_t2_3:
+                if "보이기" in show_client_tab2:
+                    available_clients_tab2_df = df_b2c_orders[df_b2c_orders['센터'].isin(expanded_centers_tab2)] if expanded_centers_tab2 else df_b2c_orders
+                    available_clients_tab2 = sorted(list(available_clients_tab2_df['고객사'].dropna().unique()))
+                    clients_tab2 = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients_tab2, key="tab2_clients")
+                else:
+                    clients_tab2 = []
+                    st.selectbox("고객사 선택", ["고객사 숨김 상태"], disabled=True, key="tab2_client_disabled")
+
             col_t1, _ = st.columns([3, 5])
             with col_t1:
-                analysis_type = st.radio("분석 기준 선택", ["배송 속성별", "판매처별"], horizontal=True)
+                analysis_type = st.radio("분석 기준 선택", ["배송 속성별", "판매처별"], horizontal=True, key="tab2_analysis_radio")
 
             expanded_months_tab2 = render_month_button_bar(
                 df_b2c_orders, 
@@ -845,16 +868,54 @@ elif main_mode == "🚚 B2C 출고 현황":
             target_col = '배송속성' if analysis_type == "배송 속성별" else '판매처'
             df_tab2 = df_b2c_orders.copy()
 
-            pivot_raw2 = pd.pivot_table(df_tab2, index=[target_col], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
-            pivot_raw2['총 출고건수'] = pivot_raw2.sum(axis=1)
-            
-            pivot_df2 = smart_fold_pivot_columns(pivot_raw2, expanded_months_tab2)
+            if expanded_centers_tab2:
+                df_tab2 = df_tab2[df_tab2['센터'].isin(expanded_centers_tab2)]
+            if "보이기" in show_client_tab2 and clients_tab2:
+                df_tab2 = df_tab2[df_tab2['고객사'].isin(clients_tab2)]
 
-            total_series2 = pivot_df2.sum(axis=0)
-            total_label2 = "★ 전체 합계"
-            total_df2 = pd.DataFrame([total_series2.values], columns=pivot_df2.columns, index=pd.Index([total_label2], name=target_col))
-            final_df2 = pd.concat([total_df2, pivot_df2])
-            render_sticky_pivot(final_df2, [target_col], key_suffix="tab2")
+            group_cols_tab2 = ['센터']
+            if "보이기" in show_client_tab2:
+                group_cols_tab2.append('고객사')
+            group_cols_tab2.append(target_col)
+
+            if not df_tab2.empty:
+                pivot_raw2 = pd.pivot_table(df_tab2, index=group_cols_tab2, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
+                pivot_raw2['총 출고건수'] = pivot_raw2.sum(axis=1)
+                
+                pivot_df2 = smart_fold_pivot_columns(pivot_raw2, expanded_months_tab2)
+
+                subtotal_dfs2 = []
+                c_375_2 = [c for c in pivot_df2.index.get_level_values('센터').unique() if '1층' in str(c) or '375 1' in str(c)]
+                if c_375_2:
+                    df_375_2 = pivot_df2.loc[pivot_df2.index.get_level_values('센터').isin(c_375_2)]
+                    subtotal_dfs2.append(df_375_2)
+                    sum_375_2 = df_375_2.sum(axis=0)
+                    sub_idx_375_2 = ("375 소계", "소계", "소계") if "보이기" in show_client_tab2 else ("375 소계", "소계")
+                    subtotal_dfs2.append(pd.DataFrame([sum_375_2.values], columns=pivot_df2.columns, index=pd.MultiIndex.from_tuples([sub_idx_375_2], names=group_cols_tab2)))
+
+                c_xfc_2 = [c for c in pivot_df2.index.get_level_values('센터').unique() if 'XFC' in str(c).upper()]
+                if c_xfc_2:
+                    df_xfc_2 = pivot_df2.loc[pivot_df2.index.get_level_values('센터').isin(c_xfc_2)]
+                    subtotal_dfs2.append(df_xfc_2)
+                    sum_xfc_2 = df_xfc_2.sum(axis=0)
+                    sub_idx_xfc_2 = ("XFC 소계", "소계", "소계") if "보이기" in show_client_tab2 else ("XFC 소계", "소계")
+                    subtotal_dfs2.append(pd.DataFrame([sum_xfc_2.values], columns=pivot_df2.columns, index=pd.MultiIndex.from_tuples([sub_idx_xfc_2], names=group_cols_tab2)))
+
+                c_other_2 = [c for c in pivot_df2.index.get_level_values('센터').unique() if c not in c_375_2 and c not in c_xfc_2]
+                if c_other_2:
+                    df_other_2 = pivot_df2.loc[pivot_df2.index.get_level_values('센터').isin(c_other_2)]
+                    subtotal_dfs2.append(df_other_2)
+
+                body_df2 = pd.concat(subtotal_dfs2) if subtotal_dfs2 else pivot_df2
+                total_series2 = pivot_df2.sum(axis=0)
+                total_label2 = "★ 전체 합계"
+                total_idx2 = pd.MultiIndex.from_tuples([("★ 전체 합계", "전체", "전체") if "보이기" in show_client_tab2 else ("★ 전체 합계", "전체")], names=group_cols_tab2)
+                total_df2 = pd.DataFrame([total_series2.values], columns=pivot_df2.columns, index=total_idx2)
+
+                final_df2 = pd.concat([total_df2, body_df2])
+                render_sticky_pivot(final_df2, group_cols_tab2, key_suffix="tab2")
+            else:
+                st.info("선택한 센터/고객사의 배송 속성 데이터가 존재하지 않습니다.")
 
     with tab3:
         st.header("출고박스 규격별 사용 현황")
@@ -1196,7 +1257,6 @@ elif main_mode == "📦 입고 현황":
                 with ch_hdr_col1:
                     st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>📅 조회 기간 지정 및 빠른 선택 (단일 선택):</p>", unsafe_allow_html=True)
                 with ch_hdr_col2:
-                    # ★ [그래프 확대 팝업 모달 버튼을 그래프 구역 상단 오른쪽에 단독 배치] ★
                     if st.button("🔍 그래프 전체화면 크게 보기 (팝업 모달)", key="btn_chart_modal_popup", type="primary", use_container_width=True):
                         show_popup_chart_modal(filtered_df_ib, curr_s, curr_e)
 
@@ -1251,7 +1311,7 @@ elif main_mode == "📦 입고 현황":
                     st.session_state['chart_end_date'] = c_new_e
                     st.rerun()
 
-                # ★ [Plotly.js 기반 범례 온/오프 인터랙티브 콤보 차트 표출 - 자동 리사이즈 적용] ★
+                # ★ [Plotly.js 기반 범례 온/오프 인터랙티브 콤보 차트 표출] ★
                 render_inbound_interactive_plotly_chart(filtered_df_ib, chart_start_date=st.session_state['chart_start_date'], chart_end_date=st.session_state['chart_end_date'])
 
         else:
