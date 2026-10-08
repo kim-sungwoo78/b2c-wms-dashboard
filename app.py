@@ -296,12 +296,12 @@ with btn_col3:
 main_mode = st.session_state['main_mode_selection']
 st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
 
-# 팝업 대형 모달 렌더링용 다이얼로그
-@st.dialog("📋 표 현황 데이터 전체 확대 보기", width="large")
-def show_popup_table_modal(df_data, index_names):
-    render_sticky_pivot(df_data, index_names, key_suffix="modal_popup", allow_modal_btn=False)
+# 팝업 대형 모달 다이얼로그 (그래프 전용)
+@st.dialog("📈 입고 종합 추세 그래프 전체 확대 보기", width="large")
+def show_popup_chart_modal(df_ib_filtered, chart_start_date, chart_end_date):
+    render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=chart_start_date, chart_end_date=chart_end_date, height=650)
 
-def render_sticky_pivot(df, index_names, key_suffix="", allow_modal_btn=True):
+def render_sticky_pivot(df, index_names, key_suffix=""):
     html = ['<div class="sticky-table-container"><table class="sticky-table"><thead><tr>']
     num_indices = len(index_names)
     
@@ -514,8 +514,8 @@ def generate_pure_svg_donut(data_dict, title):
     
     return f'<div style="background-color:#0e1117; border:1px solid #1f2937; border-radius:8px; padding:12px; text-align:center;">' + "".join(svg_parts) + "".join(legend_parts) + '</div>'
 
-# ★ [Plotly.js 기반 범례 온/오프 인터랙티브 콤보 차트 렌더링 함수] ★
-def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=None, chart_end_date=None):
+# ★ [Plotly.js 기반 깔끔 정렬 범례 토글 차트 - 자동 리사이즈 및 가로 수평 범례 배치] ★
+def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=None, chart_end_date=None, height=480):
     if df_ib_filtered.empty or '영업마감일자' not in df_ib_filtered.columns:
         return
 
@@ -545,8 +545,8 @@ def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=Non
     <head>
         <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
         <style>
-            body {{ margin: 0; padding: 0; background-color: #0e1117; font-family: sans-serif; }}
-            #plotly_div {{ width: 100%; height: 460px; }}
+            body {{ margin: 0; padding: 0; background-color: #0e1117; font-family: sans-serif; overflow: hidden; }}
+            #plotly_div {{ width: 100%; height: {height}px; }}
         </style>
     </head>
     <body>
@@ -574,26 +574,32 @@ def render_inbound_interactive_plotly_chart(df_ib_filtered, chart_start_date=Non
             var layout = {{
                 paper_bgcolor: '#0e1117',
                 plot_bgcolor: '#0e1117',
-                margin: {{l: 50, r: 70, t: 40, b: 50}},
+                margin: {{l: 50, r: 70, t: 30, b: 50}},
                 xaxis: {{type: 'category', tickfont: {{color: '#9ca3af', size: 11}}, gridcolor: '#1f2937'}},
                 yaxis: {{title: '건수 / 종수 / PLT / BOX', titlefont: {{color: '#9ca3af', size: 12}}, tickfont: {{color: '#9ca3af', size: 11}}, gridcolor: '#1f2937'}},
                 yaxis2: {{title: '입고완료수량 (EA)', titlefont: {{color: '#f43f5e', size: 12}}, tickfont: {{color: '#f43f5e', size: 11}}, overlaying: 'y', side: 'right', showgrid: false}},
                 legend: {{
                     orientation: 'h',
-                    xanchor: 'center',
-                    x: 0.5,
+                    xanchor: 'left',
+                    x: 0,
                     y: 1.12,
-                    font: {{color: '#e5e7eb', size: 12}}
+                    font: {{color: '#e5e7eb', size: 11}},
+                    itemwidth: 30
                 }},
                 hovermode: 'x unified'
             }};
 
             Plotly.newPlot('plotly_div', data, layout, {{responsive: true, displayModeBar: false}});
+
+            // 탭 전환 시 너비 재계산 수평 정렬 보장
+            window.addEventListener('resize', function() {{ Plotly.Plots.resize('plotly_div'); }});
+            setTimeout(function() {{ Plotly.Plots.resize('plotly_div'); }}, 150);
+            setTimeout(function() {{ Plotly.Plots.resize('plotly_div'); }}, 400);
         </script>
     </body>
     </html>
     """
-    components.html(html_code, height=480)
+    components.html(html_code, height=height + 20)
 
 # 메인 종합 현황 모드
 if main_mode == "🏢 메인 : 센터 종합 현황":
@@ -1120,13 +1126,6 @@ elif main_mode == "📦 입고 현황":
             if "보이기" in show_client_ib:
                 group_cols_ib.append('고객사')
 
-            # ★ [표 전체 팝업 모달 버튼을 표 바로 위에 단독 배치] ★
-            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-            pop_col1, pop_col2 = st.columns([7, 3])
-            with pop_col2:
-                if st.button("🔍 표 전체화면 크게 보기 (팝업 모달)", key="btn_main_table_popup", type="primary", use_container_width=True):
-                    show_popup_table_modal(df_inbound, group_cols_ib)
-
             if not filtered_df_ib.empty and target_val in filtered_df_ib.columns:
                 # ★ 기본 디폴트 조회 기간 설정: 당월 1일 ~ 어제까지 ★
                 today_dt = date.today()
@@ -1188,11 +1187,18 @@ elif main_mode == "📦 입고 현황":
                 total_df_ib = pd.DataFrame([total_series_ib.values], columns=pivot_ib1.columns, index=total_idx_ib)
 
                 final_inbound = pd.concat([total_df_ib, body_df_ib])
-                render_sticky_pivot(final_inbound, group_cols_ib, key_suffix="inbound_tab1", allow_modal_btn=False)
+                render_sticky_pivot(final_inbound, group_cols_ib, key_suffix="inbound_tab1")
 
                 # ★ [표와 차트 사이: 빠른 기간 지정 및 단일 선택 컨트롤러 (동적 위젯 바인딩 고유키 적용)] ★
                 st.markdown("<div style='margin-top: 30px; margin-bottom: 10px;'></div>", unsafe_allow_html=True)
-                st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>📅 조회 기간 지정 및 빠른 선택 (단일 선택):</p>", unsafe_allow_html=True)
+                
+                ch_hdr_col1, ch_hdr_col2 = st.columns([7, 3])
+                with ch_hdr_col1:
+                    st.markdown("<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>📅 조회 기간 지정 및 빠른 선택 (단일 선택):</p>", unsafe_allow_html=True)
+                with ch_hdr_col2:
+                    # ★ [그래프 확대 팝업 모달 버튼을 그래프 구역 상단 오른쪽에 단독 배치] ★
+                    if st.button("🔍 그래프 전체화면 크게 보기 (팝업 모달)", key="btn_chart_modal_popup", type="primary", use_container_width=True):
+                        show_popup_chart_modal(filtered_df_ib, curr_s, curr_e)
 
                 cp1, cp2, cp3, cp4, cp5, cp6, cp7 = st.columns([1.8, 1.8, 1.0, 1.0, 1.0, 1.0, 1.0])
 
@@ -1245,7 +1251,7 @@ elif main_mode == "📦 입고 현황":
                     st.session_state['chart_end_date'] = c_new_e
                     st.rerun()
 
-                # ★ [Plotly.js 기반 범례 온/오프 인터랙티브 콤보 차트 표출] ★
+                # ★ [Plotly.js 기반 범례 온/오프 인터랙티브 콤보 차트 표출 - 자동 리사이즈 적용] ★
                 render_inbound_interactive_plotly_chart(filtered_df_ib, chart_start_date=st.session_state['chart_start_date'], chart_end_date=st.session_state['chart_end_date'])
 
         else:
