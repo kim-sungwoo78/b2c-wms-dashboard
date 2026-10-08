@@ -77,18 +77,23 @@ def run_sync():
             st.cache_data.clear()
 
             if matched_cnt > 0:
-                st.sidebar.success(f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)")
+                st.session_state['sync_msg'] = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)"
+                st.session_state['sync_msg_type'] = "success"
             else:
                 if err_msg:
-                    st.sidebar.warning(f"⚠️ 동기화 완료 (시트 상태: {err_msg})")
+                    st.session_state['sync_msg'] = f"⚠️ 동기화 완료 (시트 상태: {err_msg})"
+                    st.session_state['sync_msg_type'] = "warning"
                 else:
-                    st.sidebar.success("✅ 동기화 완료!")
+                    st.session_state['sync_msg'] = "✅ 동기화 완료! (매칭할 신규 시트 수치 없음)"
+                    st.session_state['sync_msg_type'] = "info"
             return True
         except Exception as e:
-            st.sidebar.error(f"❌ 동기화 에러: {e}")
+            st.session_state['sync_msg'] = f"❌ 동기화 에러: {e}"
+            st.session_state['sync_msg_type'] = "error"
             return False
     else:
-        st.sidebar.error("gcp_service_account 시크릿 설정이 없습니다.")
+        st.session_state['sync_msg'] = "❌ gcp_service_account 시크릿 설정이 없습니다."
+        st.session_state['sync_msg_type'] = "error"
     return False
 
 @st.cache_data(ttl=5)
@@ -246,6 +251,18 @@ st.title("🏢 센터 통합 물류 운영 대시보드")
 if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
     if run_sync():
         st.rerun()
+
+# 세션 상태에 저장된 결과 메시지 사이드바 유지 표출
+if 'sync_msg' in st.session_state and st.session_state['sync_msg']:
+    m_type = st.session_state.get('sync_msg_type', 'info')
+    if m_type == "success":
+        st.sidebar.success(st.session_state['sync_msg'])
+    elif m_type == "warning":
+        st.sidebar.warning(st.session_state['sync_msg'])
+    elif m_type == "error":
+        st.sidebar.error(st.session_state['sync_msg'])
+    else:
+        st.sidebar.info(st.session_state['sync_msg'])
 
 df_b2c_orders = load_shipment_orders()
 df_b2c_sku = load_b2c_sku_data()
