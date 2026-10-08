@@ -6,6 +6,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta, date
+import plotly.graph_objects as go
 
 # 페이지 기본 설정
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
@@ -252,7 +253,6 @@ if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
     if run_sync():
         st.rerun()
 
-# 세션 상태에 저장된 결과 메시지 사이드바 유지 표출
 if 'sync_msg' in st.session_state and st.session_state['sync_msg']:
     m_type = st.session_state.get('sync_msg_type', 'info')
     if m_type == "success":
@@ -507,6 +507,97 @@ def generate_pure_svg_donut(data_dict, title):
     svg_parts.append('</svg>')
     
     return f'<div style="background-color:#0e1117; border:1px solid #1f2937; border-radius:8px; padding:12px; text-align:center;">' + "".join(svg_parts) + "".join(legend_parts) + '</div>'
+
+# ★ [입고 현황 종합 추세 시각화 차트 생성 함수] ★
+def render_inbound_combo_chart(df_ib_filtered, expanded_months):
+    if df_ib_filtered.empty or '영업마감일자' not in df_ib_filtered.columns:
+        return
+
+    # 영업마감일자별 지표 통합 집계
+    daily_chart_df = df_ib_filtered.groupby('영업마감일자')[
+        ['입고건수', 'SKU개수', '입고완료수량', 'PLT수', 'BOX수']
+    ].sum().reset_index()
+
+    if daily_chart_df.empty:
+        return
+
+    # 선택된 월 기반 일자 필터링
+    if expanded_months:
+        valid_dates = []
+        for d_str in daily_chart_df['영업마감일자']:
+            m_label = f"{int(d_str[5:7])}월"
+            if m_label in expanded_months or d_str[:7] in expanded_months:
+                valid_dates.append(d_str)
+        if valid_dates:
+            daily_chart_df = daily_chart_df[daily_chart_df['영업마감일자'].isin(valid_dates)]
+
+    daily_chart_df = daily_chart_df.sort_values(by='영업마감일자').reset_index(drop=True)
+
+    fig = go.Figure()
+
+    # 1. 입고건수 (막대 그래프)
+    fig.add_trace(go.Bar(
+        x=daily_chart_df['영업마감일자'],
+        y=daily_chart_df['입고건수'],
+        name='입고건수 (건)',
+        marker_color='#38bdf8',
+        yaxis='y1'
+    ))
+
+    # 2. SKU개수 (추세선)
+    fig.add_trace(go.Scatter(
+        x=daily_chart_df['영업마감일자'],
+        y=daily_chart_df['SKU개수'],
+        name='SKU개수 (종)',
+        mode='lines+markers',
+        line=dict(color='#facc15', width=2),
+        yaxis='y1'
+    ))
+
+    # 3. PLT수 (추세선)
+    fig.add_trace(go.Scatter(
+        x=daily_chart_df['영업마감일자'],
+        y=daily_chart_df['PLT수'],
+        name='PLT수 (PLT)',
+        mode='lines+markers',
+        line=dict(color='#4ade80', width=2),
+        yaxis='y1'
+    ))
+
+    # 4. BOX수 (추세선)
+    fig.add_trace(go.Scatter(
+        x=daily_chart_df['영업마감일자'],
+        y=daily_chart_df['BOX수'],
+        name='BOX수 (BOX)',
+        mode='lines+markers',
+        line=dict(color='#a855f7', width=2),
+        yaxis='y1'
+    ))
+
+    # 5. 입고완료수량 EA (우측 보조 Y축)
+    fig.add_trace(go.Scatter(
+        x=daily_chart_df['영업마감일자'],
+        y=daily_chart_df['입고완료수량'],
+        name='입고완료수량 (EA)',
+        mode='lines+markers',
+        line=dict(color='#f43f5e', width=2, dash='dot'),
+        yaxis='y2'
+    ))
+
+    fig.update_layout(
+        title="📈 센터 및 고객사 입고 통합 종합 추세 분석 (입고건수/SKU/PLT/BOX/입고수량)",
+        paper_bgcolor='#0e1117',
+        plot_bgcolor='#0e1117',
+        font=dict(color='#e5e7eb'),
+        height=450,
+        xaxis=dict(title="영업마감일자", showgrid=False, type='category'),
+        yaxis=dict(title="건수 / 종수 / PLT / BOX", showgrid=True, gridcolor='#1f2937'),
+        yaxis2=dict(title="입고완료수량 (EA)", overlaying='y', side='right', showgrid=False),
+        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
+        margin=dict(l=20, r=20, t=60, b=20)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
 
 # 메인 종합 현황 모드
 if main_mode == "🏢 메인 : 센터 종합 현황":
@@ -1001,7 +1092,7 @@ elif main_mode == "📦 입고 현황":
                     clients_ib = []
                     st.selectbox("고객사 선택", ["고객사 숨김 상태"], disabled=True, key="inbound_client_disabled")
 
-            # 2행: 월 선택 가로 버튼 바
+            # 2행: 월 선택 가로 버튼 바 (차트 및 표 공통 기준)
             expanded_months_ib1 = render_month_button_bar(
                 df_inbound, 
                 session_key_selected="ib1_exp_months", 
@@ -1010,7 +1101,7 @@ elif main_mode == "📦 입고 현황":
                 multi_select=True
             )
 
-            # 3행: 조회 항목 선택
+            # 3행: 조회 항목 선택 (라디오 버튼)
             st.markdown("<p style='font-size:14px; font-weight:bold; margin-top:10px; margin-bottom:5px;'>조회 항목 선택:</p>", unsafe_allow_html=True)
             metric_val = st.radio(
                 "조회 항목 선택:", 
@@ -1077,6 +1168,11 @@ elif main_mode == "📦 입고 현황":
 
                 final_inbound = pd.concat([total_df_ib, body_df_ib])
                 render_sticky_pivot(final_inbound, group_cols_ib, key_suffix="inbound_tab1")
+
+                # ★ [입고 현황 시각화 차트 추가 - 라디오 버튼에 미반응, 상단 센터/고객사/기간 필터에만 반응] ★
+                st.markdown("<div style='margin-top: 25px;'></div>", unsafe_allow_html=True)
+                render_inbound_combo_chart(filtered_df_ib, expanded_months_ib1)
+
         else:
             st.info("입고 데이터가 존재하지 않습니다. 구글 드라이브에 입고요청서 엑셀 파일을 올린 후 [🔄 드라이브 & 구글시트 동기화]를 눌러주세요.")
 
