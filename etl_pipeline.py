@@ -141,13 +141,12 @@ def extract_sheet_id(url_or_id):
         return parts.split("/")[0]
     return url_or_id.strip()
 
-# ★ [구글 시트 IB 탭 정밀 PLT/BOX 수치 매칭 함수 - 명확한 에러 핸들링 추가] ★
+# ★ [구글 시트 "입고" 탭 정밀 타겟 매칭 함수] ★
 def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=""):
     if not service or not sheets_service:
-        return False
+        return 0, "서비스 계정 권한 없음"
 
     target_sheet_ids = []
-    
     input_id = extract_sheet_id(ib_sheet_url)
     if input_id:
         target_sheet_ids.append(input_id)
@@ -164,24 +163,29 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
         pass
 
     if not target_sheet_ids:
-        return False
+        return 0, "대상 구글 시트를 찾을 수 없습니다."
 
-    updated_any = False
+    matched_count = 0
+    err_msg = ""
 
     for sheet_id in target_sheet_ids:
         try:
             sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=sheet_id).execute()
             sheets = sheet_metadata.get('sheets', [])
             
+            if not sheets:
+                continue
+
             ib_sheet_title = None
+            # "입고" 탭 이름 정밀 타겟팅
             for s in sheets:
-                title = s.get('properties', {}).get('title', '')
-                if title.strip().upper() == 'IB' or '입고' in title:
+                title = s.get('properties', {}).get('title', '').strip()
+                if title == '입고' or '입고' in title or title.upper() == 'IB':
                     ib_sheet_title = title
                     break
 
-            if not ib_sheet_title:
-                continue
+            if not ib_sheet_title and len(sheets) > 0:
+                ib_sheet_title = sheets[0].get('properties', {}).get('title', 'Sheet1')
 
             range_name = f"'{ib_sheet_title}'!A:Z"
             result = sheets_service.spreadsheets().values().get(spreadsheetId=sheet_id, range=range_name).execute()
@@ -191,7 +195,7 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
                 continue
 
             header_row_idx = 0
-            for r_i, r_data in enumerate(values[:5]):
+            for r_i, r_data in enumerate(values[:10]):
                 r_str = " ".join([str(v) for v in r_data])
                 if '작업번호' in r_str or '입고번호' in r_str or 'PLT' in r_str:
                     header_row_idx = r_i
@@ -212,13 +216,14 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
                 elif '파적' in h_clean and 'BOX' in h_clean: pajok_idx = idx
 
             if job_no_idx == -1:
+                err_msg = f"헤더 행에서 '작업번호' 열을 찾지 못함 ({ib_sheet_title})"
                 continue
 
             update_tuples = []
             for row in values[header_row_idx + 1:]:
                 if len(row) > job_no_idx:
                     job_no = str(row[job_no_idx]).strip()
-                    if not job_no or job_no.lower() == 'none':
+                    if not job_no or job_no.lower() == 'none' or job_no == '작업번호':
                         continue
 
                     def parse_val(row_data, idx_pos):
@@ -244,12 +249,12 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_shee
                 WHERE 입고번호 = ?
                 """, update_tuples)
                 conn_ib.commit()
-                updated_any = True
+                matched_count = len(update_tuples)
                 break
         except Exception as e_sheet:
-            print(f"IB 구글 시트 접근 오류 ({sheet_id}): {e_sheet}")
+            err_msg = str(e_sheet)
 
-    return updated_any
+    return matched_count, err_msg
 
 def process_and_update(service, sheets_service=None, progress_callback=None, ib_sheet_url=""):
     download_db_from_drive(service, DB_B2C_PATH)
@@ -547,14 +552,14 @@ def process_and_update(service, sheets_service=None, progress_callback=None, ib_
             error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
             continue
 
-    # ★ IB 구글 시트 매칭 실행 및 보장 ★
-    ib_matched = False
+    # IB 구글 시트 매칭 실행
+    matched_count, err_msg = 0, ""
     try:
-        ib_matched = update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=ib_sheet_url)
+        matched_count, err_msg = update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=ib_sheet_url)
     except Exception as sheet_e:
-        error_logs.append(f"IB 구글 시트 접근 불가: {sheet_e}")
+        err_msg = str(sheet_e)
 
-    if ib_matched:
+    if matched_count > 0:
         inbound_updated = True
 
     conn_b2c.close()
@@ -565,5 +570,4 @@ def process_and_update(service, sheets_service=None, progress_callback=None, ib_
     if inbound_updated:
         upload_db_to_drive(service, DB_INBOUND_PATH)
 
-    if error_logs:
-        raise Exception(" | ".join(error_logs))
+    return matched_count, err_msg
