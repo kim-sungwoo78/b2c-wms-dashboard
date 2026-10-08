@@ -6,7 +6,6 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta, date
-import plotly.graph_objects as go
 
 # 페이지 기본 설정
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
@@ -508,12 +507,11 @@ def generate_pure_svg_donut(data_dict, title):
     
     return f'<div style="background-color:#0e1117; border:1px solid #1f2937; border-radius:8px; padding:12px; text-align:center;">' + "".join(svg_parts) + "".join(legend_parts) + '</div>'
 
-# ★ [입고 현황 종합 추세 시각화 차트 생성 함수] ★
-def render_inbound_combo_chart(df_ib_filtered, expanded_months):
+# ★ [순수 SVG/HTML 기반 입고 통합 콤보 차트 렌더링 함수 - 외부 패키지 모듈에러 해결] ★
+def render_inbound_pure_svg_combo_chart(df_ib_filtered, expanded_months):
     if df_ib_filtered.empty or '영업마감일자' not in df_ib_filtered.columns:
         return
 
-    # 영업마감일자별 지표 통합 집계
     daily_chart_df = df_ib_filtered.groupby('영업마감일자')[
         ['입고건수', 'SKU개수', '입고완료수량', 'PLT수', 'BOX수']
     ].sum().reset_index()
@@ -521,7 +519,6 @@ def render_inbound_combo_chart(df_ib_filtered, expanded_months):
     if daily_chart_df.empty:
         return
 
-    # 선택된 월 기반 일자 필터링
     if expanded_months:
         valid_dates = []
         for d_str in daily_chart_df['영업마감일자']:
@@ -533,71 +530,103 @@ def render_inbound_combo_chart(df_ib_filtered, expanded_months):
 
     daily_chart_df = daily_chart_df.sort_values(by='영업마감일자').reset_index(drop=True)
 
-    fig = go.Figure()
+    dates = list(daily_chart_df['영업마감일자'])
+    inbound_cnt = list(daily_chart_df['입고건수'])
+    sku_cnt = list(daily_chart_df['SKU개수'])
+    completed_ea = list(daily_chart_df['입고완료수량'])
+    plt_cnt = list(daily_chart_df['PLT수'])
+    box_cnt = list(daily_chart_df['BOX수'])
+    
+    n_points = len(dates)
+    if n_points == 0:
+        return
+    
+    width = 950
+    height = 360
+    pad_left = 60
+    pad_right = 90
+    pad_top = 40
+    pad_bottom = 60
+    
+    chart_w = width - pad_left - pad_right
+    chart_h = height - pad_top - pad_bottom
+    
+    max_bar = max(inbound_cnt) if inbound_cnt and max(inbound_cnt) > 0 else 1
+    max_lines = max(sku_cnt + plt_cnt + box_cnt) if (sku_cnt or plt_cnt or box_cnt) and max(sku_cnt + plt_cnt + box_cnt) > 0 else 1
+    max_ea = max(completed_ea) if completed_ea and max(completed_ea) > 0 else 1
 
-    # 1. 입고건수 (막대 그래프)
-    fig.add_trace(go.Bar(
-        x=daily_chart_df['영업마감일자'],
-        y=daily_chart_df['입고건수'],
-        name='입고건수 (건)',
-        marker_color='#38bdf8',
-        yaxis='y1'
-    ))
+    svg_parts = [
+        f'<div style="background-color:#0e1117; border:1px solid #1f2937; border-radius:8px; padding:18px; margin-top:25px;">',
+        f'<div style="font-size:14px; font-weight:bold; color:#f3f4f6; margin-bottom:10px; text-align:left;">📈 센터 및 고객사 입고 통합 종합 추세 분석 (입고건수 / SKU / PLT / BOX / 입고수량)</div>',
+        f'<div style="font-size:11px; margin-bottom:15px; display:flex; gap:18px; flex-wrap:wrap; color:#e5e7eb;">',
+        f'<span><span style="display:inline-block;width:10px;height:10px;background-color:#38bdf8;margin-right:5px;border-radius:2px;"></span>■ 입고건수(건)</span>',
+        f'<span><span style="display:inline-block;width:10px;height:10px;background-color:#facc15;margin-right:5px;border-radius:50%;"></span>● SKU개수(종)</span>',
+        f'<span><span style="display:inline-block;width:10px;height:10px;background-color:#4ade80;margin-right:5px;border-radius:50%;"></span>● PLT수(PLT)</span>',
+        f'<span><span style="display:inline-block;width:10px;height:10px;background-color:#a855f7;margin-right:5px;border-radius:50%;"></span>● BOX수(BOX)</span>',
+        f'<span><span style="display:inline-block;width:10px;height:10px;background-color:#f43f5e;margin-right:5px;border-radius:50%;"></span>◆ 입고완료수량(EA) [우측축]</span>',
+        f'</div>',
+        f'<svg width="100%" height="{height}" viewBox="0 0 {width} {height}" style="overflow:visible;">'
+    ]
+    
+    # 그리드선 및 Y축 눈금
+    for i in range(5):
+        y_pos = pad_top + chart_h - (i * (chart_h / 4))
+        val_bar = int(max_bar * (i / 4))
+        val_ea = int(max_ea * (i / 4))
+        svg_parts.append(f'<line x1="{pad_left}" y1="{y_pos}" x2="{width - pad_right}" y2="{y_pos}" stroke="#1f2937" stroke-dasharray="3 3"/>')
+        svg_parts.append(f'<text x="{pad_left - 8}" y="{y_pos + 4}" fill="#9ca3af" font-size="10" text-anchor="end">{val_bar:,}</text>')
+        svg_parts.append(f'<text x="{width - pad_right + 8}" y="{y_pos + 4}" fill="#f43f5e" font-size="10" text-anchor="start">{val_ea:,}</text>')
+        
+    step = chart_w / max(n_points, 1)
+    bar_width = max(min(step * 0.35, 28), 6)
+    
+    points_sku, points_plt, points_box, points_ea = [], [], [], []
+    
+    for idx, (d, b_val, s_val, p_val, box_v, ea_val) in enumerate(zip(dates, inbound_cnt, sku_cnt, plt_cnt, box_cnt, completed_ea)):
+        cx = pad_left + (idx + 0.5) * step
+        
+        # 입고건수 막대
+        bar_h = (b_val / max_bar) * chart_h if max_bar > 0 else 0
+        bar_y = pad_top + chart_h - bar_h
+        svg_parts.append(f'<rect x="{cx - bar_width/2}" y="{bar_y}" width="{bar_width}" height="{bar_h}" fill="#38bdf8" opacity="0.6" rx="2"/>')
+        if b_val > 0:
+            svg_parts.append(f'<text x="{cx}" y="{bar_y - 4}" fill="#38bdf8" font-size="9" font-weight="bold" text-anchor="middle">{b_val:,}</text>')
+            
+        # 추세선 좌표 계산
+        y_sku = pad_top + chart_h - ((s_val / max_lines) * chart_h if max_lines > 0 else 0)
+        y_plt = pad_top + chart_h - ((p_val / max_lines) * chart_h if max_lines > 0 else 0)
+        y_box = pad_top + chart_h - ((box_v / max_lines) * chart_h if max_lines > 0 else 0)
+        y_ea = pad_top + chart_h - ((ea_val / max_ea) * chart_h if max_ea > 0 else 0)
+        
+        points_sku.append(f"{cx},{y_sku}")
+        points_plt.append(f"{cx},{y_plt}")
+        points_box.append(f"{cx},{y_box}")
+        points_ea.append(f"{cx},{y_ea}")
+        
+        d_lbl = d[5:] if len(d) == 10 else d
+        svg_parts.append(f'<text x="{cx}" y="{height - pad_bottom + 18}" fill="#9ca3af" font-size="10" text-anchor="middle">{d_lbl}</text>')
 
-    # 2. SKU개수 (추세선)
-    fig.add_trace(go.Scatter(
-        x=daily_chart_df['영업마감일자'],
-        y=daily_chart_df['SKU개수'],
-        name='SKU개수 (종)',
-        mode='lines+markers',
-        line=dict(color='#facc15', width=2),
-        yaxis='y1'
-    ))
+    if n_points > 1:
+        svg_parts.append(f'<polyline points="{" ".join(points_sku)}" fill="none" stroke="#facc15" stroke-width="2"/>')
+        svg_parts.append(f'<polyline points="{" ".join(points_plt)}" fill="none" stroke="#4ade80" stroke-width="2"/>')
+        svg_parts.append(f'<polyline points="{" ".join(points_box)}" fill="none" stroke="#a855f7" stroke-width="2"/>')
+        svg_parts.append(f'<polyline points="{" ".join(points_ea)}" fill="none" stroke="#f43f5e" stroke-width="2" stroke-dasharray="4 4"/>')
 
-    # 3. PLT수 (추세선)
-    fig.add_trace(go.Scatter(
-        x=daily_chart_df['영업마감일자'],
-        y=daily_chart_df['PLT수'],
-        name='PLT수 (PLT)',
-        mode='lines+markers',
-        line=dict(color='#4ade80', width=2),
-        yaxis='y1'
-    ))
+    for pt in points_sku:
+        x, y = pt.split(',')
+        svg_parts.append(f'<circle cx="{x}" cy="{y}" r="3" fill="#facc15"/>')
+    for pt in points_plt:
+        x, y = pt.split(',')
+        svg_parts.append(f'<circle cx="{x}" cy="{y}" r="3" fill="#4ade80"/>')
+    for pt in points_box:
+        x, y = pt.split(',')
+        svg_parts.append(f'<circle cx="{x}" cy="{y}" r="3" fill="#a855f7"/>')
+    for pt in points_ea:
+        x, y = pt.split(',')
+        svg_parts.append(f'<circle cx="{x}" cy="{y}" r="3" fill="#f43f5e"/>')
 
-    # 4. BOX수 (추세선)
-    fig.add_trace(go.Scatter(
-        x=daily_chart_df['영업마감일자'],
-        y=daily_chart_df['BOX수'],
-        name='BOX수 (BOX)',
-        mode='lines+markers',
-        line=dict(color='#a855f7', width=2),
-        yaxis='y1'
-    ))
-
-    # 5. 입고완료수량 EA (우측 보조 Y축)
-    fig.add_trace(go.Scatter(
-        x=daily_chart_df['영업마감일자'],
-        y=daily_chart_df['입고완료수량'],
-        name='입고완료수량 (EA)',
-        mode='lines+markers',
-        line=dict(color='#f43f5e', width=2, dash='dot'),
-        yaxis='y2'
-    ))
-
-    fig.update_layout(
-        title="📈 센터 및 고객사 입고 통합 종합 추세 분석 (입고건수/SKU/PLT/BOX/입고수량)",
-        paper_bgcolor='#0e1117',
-        plot_bgcolor='#0e1117',
-        font=dict(color='#e5e7eb'),
-        height=450,
-        xaxis=dict(title="영업마감일자", showgrid=False, type='category'),
-        yaxis=dict(title="건수 / 종수 / PLT / BOX", showgrid=True, gridcolor='#1f2937'),
-        yaxis2=dict(title="입고완료수량 (EA)", overlaying='y', side='right', showgrid=False),
-        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
-        margin=dict(l=20, r=20, t=60, b=20)
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
+    svg_parts.append('</svg></div>')
+    st.markdown("".join(svg_parts), unsafe_allow_html=True)
 
 # 메인 종합 현황 모드
 if main_mode == "🏢 메인 : 센터 종합 현황":
@@ -1169,9 +1198,8 @@ elif main_mode == "📦 입고 현황":
                 final_inbound = pd.concat([total_df_ib, body_df_ib])
                 render_sticky_pivot(final_inbound, group_cols_ib, key_suffix="inbound_tab1")
 
-                # ★ [입고 현황 시각화 차트 추가 - 라디오 버튼에 미반응, 상단 센터/고객사/기간 필터에만 반응] ★
-                st.markdown("<div style='margin-top: 25px;'></div>", unsafe_allow_html=True)
-                render_inbound_combo_chart(filtered_df_ib, expanded_months_ib1)
+                # ★ [입고 현황 순수 SVG 시각화 차트 추가 - 모듈 에러 없음, 라디오 버튼 미반응, 상단 필터 반응] ★
+                render_inbound_pure_svg_combo_chart(filtered_df_ib, expanded_months_ib1)
 
         else:
             st.info("입고 데이터가 존재하지 않습니다. 구글 드라이브에 입고요청서 엑셀 파일을 올린 후 [🔄 드라이브 & 구글시트 동기화]를 눌러주세요.")
