@@ -19,12 +19,12 @@ DB_INBOUND_PATH = "wms_inbound.db"
 def get_drive_service(creds_dict):
     scopes = ['https://www.googleapis.com/auth/drive']
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return build('drive', '3', credentials=credentials)
+    return build('drive', 'v3', credentials=credentials)
 
 def get_sheets_service(creds_dict):
     scopes = ['https://www.googleapis.com/auth/spreadsheets.readonly']
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return build('sheets', '4', credentials=credentials)
+    return build('sheets', 'v4', credentials=credentials)
 
 def sanitize_filename(name_str):
     return str(name_str).replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_").replace("?", "_").replace('"', "_").replace("<", "_").replace(">", "_").replace("|", "_").strip()
@@ -50,7 +50,7 @@ def get_or_create_dup_folder(service):
 def rename_existing_processed_files(service):
     """'처리완료' 폴더에 이미 보관 중인 예전 파일들의 이름을 [마감일자_센터명_순번]으로 일괄 변경"""
     try:
-        q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx' and not name contains '_1.xlsx' and not name contains '_2.xlsx' and not name contains '_3.xlsx'"
+        q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'"
         results = service.files().list(q=q, fields="files(id, name)").execute()
         files = results.get('files', [])
 
@@ -58,8 +58,8 @@ def rename_existing_processed_files(service):
             file_id = f['id']
             orig_name = f['name']
 
-            # 이미 변경된 포맷의 파일은 패스
-            if orig_name.startswith("2026") or orig_name.startswith("2025") or orig_name.startswith("[중복]"):
+            # 이미 정돈된 패턴이나 중복 폴더/파일은 패스
+            if orig_name.startswith("[중복]") or orig_name == "[중복_확인필요]":
                 continue
 
             # 파일 읽기
@@ -73,21 +73,29 @@ def rename_existing_processed_files(service):
 
             try:
                 df = pd.read_excel(fh)
-                date_str = "20261008"
-                center_str = "통합센터"
-
-                if '영업마감일자' in df.columns and not df['영업마감일자'].dropna().empty:
-                    raw_d = str(df['영업마감일자'].dropna().iloc[0]).replace("-", "").replace("/", "").strip()
-                    if len(raw_d) >= 8:
-                        date_str = raw_d[:8]
                 
+                # 시작일과 종료일 계산 (통합 파일 고려)
+                date_str = "20261008"
+                if '영업마감일자' in df.columns and not df['영업마감일자'].dropna().empty:
+                    clean_dates = df['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
+                    min_d = clean_dates.min()[:8]
+                    max_d = clean_dates.max()[:8]
+                    
+                    if min_d == max_d:
+                        date_str = min_d
+                    else:
+                        date_str = f"{min_d}_{max_d}"
+
+                center_str = "통합센터"
                 if '센터' in df.columns and not df['센터'].dropna().empty:
                     center_str = sanitize_filename(df['센터'].dropna().iloc[0])
 
                 seq_num = 1
                 new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
-                
-                # 순번 중복 확인
+
+                if orig_name == new_filename:
+                    continue
+
                 existing_q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
                 existing = service.files().list(q=existing_q, fields="files(name)").execute().get('files', [])
                 if existing:
@@ -139,14 +147,19 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         try:
             df = pd.read_excel(fh)
             
+            # 시작일과 종료일 계산 (통합 파일 고려)
             date_str = datetime.now().strftime('%Y%m%d')
-            center_str = "통합센터"
-
             if '영업마감일자' in df.columns and not df['영업마감일자'].dropna().empty:
-                raw_d = str(df['영업마감일자'].dropna().iloc[0]).replace("-", "").replace("/", "").strip()
-                if len(raw_d) >= 8:
-                    date_str = raw_d[:8]
-            
+                clean_dates = df['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
+                min_d = clean_dates.min()[:8]
+                max_d = clean_dates.max()[:8]
+                
+                if min_d == max_d:
+                    date_str = min_d
+                else:
+                    date_str = f"{min_d}_{max_d}"
+
+            center_str = "통합센터"
             if '센터' in df.columns and not df['센터'].dropna().empty:
                 center_str = sanitize_filename(df['센터'].dropna().iloc[0])
 
