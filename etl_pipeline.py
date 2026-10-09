@@ -38,28 +38,24 @@ def parse_clean_float(val):
     except Exception:
         return 0.0
 
-def safe_list_files(service, query):
-    """공유 드라이브/내 드라이브 호환 파일 목록 안전 조회 함수"""
-    # 1. supportsAllDrives 기본 적용 조회
+def safe_list_files(service, folder_id):
+    """지정 폴더 내의 파일 및 하위 폴더 100% 안전 반환"""
     try:
+        q = f"'{folder_id}' in parents and trashed = false"
         res = service.files().list(
-            q=query,
+            q=q,
             fields="files(id, name, parents, mimeType)",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True
         ).execute()
-        files = res.get('files', [])
-        if files:
-            return files
-    except Exception:
-        pass
-
-    # 2. 일반 옵션 미적용 fallback
-    try:
-        res = service.files().list(q=query, fields="files(id, name, parents, mimeType)").execute()
         return res.get('files', [])
     except Exception:
-        return []
+        try:
+            q = f"'{folder_id}' in parents and trashed = false"
+            res = service.files().list(q=q, fields="files(id, name, parents, mimeType)").execute()
+            return res.get('files', [])
+        except Exception:
+            return []
 
 def safe_update_file(service, file_id, add_parents, remove_parents, new_name):
     """안전 파일 이동 및 파일명 변경 실행 함수"""
@@ -86,10 +82,10 @@ def safe_update_file(service, file_id, add_parents, remove_parents, new_name):
 def get_or_create_dup_folder(service):
     """'처리완료' 폴더 내 [중복_확인필요] 폴더 검색 및 자동 생성"""
     try:
-        q = f"'{PROCESSED_FOLDER_ID}' in parents and name = '[중복_확인필요]' and trashed = false"
-        res = safe_list_files(service, q)
-        if res:
-            return res[0]['id']
+        res = safe_list_files(service, PROCESSED_FOLDER_ID)
+        dup_folders = [f for f in res if f['name'] == '[중복_확인필요]']
+        if dup_folders:
+            return dup_folders[0]['id']
         
         folder_metadata = {
             'name': '[중복_확인필요]',
@@ -123,17 +119,15 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     dup_folder_id = get_or_create_dup_folder(service)
 
-    # 2. 업로드 대상 파일 스캔 (대시보드 업로드 및 B2C 등 하위 폴더)
-    query = f"'{RAW_FOLDER_ID}' in parents and trashed = false"
-    all_raw_items = safe_list_files(service, query)
+    # 2. 업로드 대상 파일 전수 스캔 (대시보드 업로드 및 B2C 등 하위 폴더)
+    all_raw_items = safe_list_files(service, RAW_FOLDER_ID)
     
     files = [f for f in all_raw_items if f.get('mimeType') != 'application/vnd.google-apps.folder' and (f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.xls')) and not f['name'].startswith('~$')]
 
-    # B2C 등 하위 폴더 2차 탐색
+    # B2C 등 하위 폴더 탐색
     subfolders = [f for f in all_raw_items if f.get('mimeType') == 'application/vnd.google-apps.folder' and f['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']]
     for sf in subfolders:
-        q_sub = f"'{sf['id']}' in parents and trashed = false"
-        res_sub = safe_list_files(service, q_sub)
+        res_sub = safe_list_files(service, sf['id'])
         excel_subs = [f for f in res_sub if f.get('mimeType') != 'application/vnd.google-apps.folder' and (f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.xls')) and not f['name'].startswith('~$')]
         files.extend(excel_subs)
 
@@ -252,7 +246,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     ).reset_index()
                 else:
                     summary_df = df_clean.groupby(group_cols, dropna=False).size().reset_index(name='출고건수')
-                    summary_df['총출고수량'] = summary_df['총출고수량'] = summary_df['출고건수']
+                    summary_df['총출고수량'] = summary_df['출고건수']
 
                 summary_df['영업마감일자'] = summary_df['영업마감일자'].astype(str).str.slice(0, 10)
                 summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
@@ -262,11 +256,12 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 seq_num = 1
                 new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
                 
-                ex_q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
-                ex_files = safe_list_files(service, ex_q)
+                ex_files = safe_list_files(service, PROCESSED_FOLDER_ID)
                 if ex_files:
-                    seq_num = len(ex_files) + 1
-                    new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
+                    dup_matches = [ef for ef in ex_files if date_str in ef['name'] and center_str in ef['name']]
+                    if dup_matches:
+                        seq_num = len(dup_matches) + 1
+                        new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
 
                 safe_update_file(service, file_id, PROCESSED_FOLDER_ID, parent_id, new_filename)
                 processed_files_count += 1
