@@ -9,8 +9,8 @@ from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2.service_account import Credentials
 
 # 구글 드라이브 폴더 ID 설정
-RAW_FOLDER_ID = "1Iqg4O8fS5E8eO2u0zKq04Jms3zJjM02F"       # 대시보드 업로드 (신규 엑셀)
-PROCESSED_FOLDER_ID = "15Ew-iXw65I2Z0f074RUp-H9wXw-E2B4m" # 처리완료 폴더
+RAW_FOLDER_ID = "1Iqg4O8fS5E8eO2u0zKq04Jms3zJjM02F"       # 대시보드 업로드 폴더 ID
+PROCESSED_FOLDER_ID = "15Ew-iXw65I2Z0f074RUp-H9wXw-E2B4m" # 처리완료 폴더 ID
 
 # DB 파일 경로
 DB_B2C_PATH = "wms_b2c.db"
@@ -38,68 +38,26 @@ def parse_clean_float(val):
     except Exception:
         return 0.0
 
-def safe_list_files_by_folder(service, folder_id, is_excel_only=True):
-    """404 오류 방지를 위한 3단계 드라이브 쿼리 안전 호환 함수"""
-    q = f"'{folder_id}' in parents and trashed = false"
-    if is_excel_only:
-        q += " and name contains '.xlsx'"
-
-    # 1단계: 일반 드라이브 표준 조회
-    try:
-        results = service.files().list(q=q, fields="files(id, name, parents, mimeType)").execute()
-        return results.get('files', [])
-    except Exception:
-        pass
-
-    # 2단계: 공유 드라이브 옵션 적용 조회
-    try:
-        results = service.files().list(
-            q=q,
-            fields="files(id, name, parents, mimeType)",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True
-        ).execute()
-        return results.get('files', [])
-    except Exception:
-        pass
-
-    # 3단계: 전체 드라이브 범주 조회
-    try:
-        results = service.files().list(
-            q=q,
-            fields="files(id, name, parents, mimeType)",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
-            corpora='allDrives'
-        ).execute()
-        return results.get('files', [])
-    except Exception:
-        return []
-
 def get_or_create_dup_folder(service):
     """'처리완료' 폴더 내 [중복_확인필요] 폴더 안전 검색 및 생성"""
     try:
         q = f"'{PROCESSED_FOLDER_ID}' in parents and name = '[중복_확인필요]' and trashed = false"
-        res = safe_list_files_by_folder(service, PROCESSED_FOLDER_ID, is_excel_only=False)
-        dup_folders = [f for f in res if f['name'] == '[중복_확인필요]']
-        if dup_folders:
-            return dup_folders[0]['id']
+        res = service.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get('files', [])
+        if res:
+            return res[0]['id']
         
         folder_metadata = {
             'name': '[중복_확인필요]',
             'mimeType': 'application/vnd.google-apps.folder',
             'parents': [PROCESSED_FOLDER_ID]
         }
-        try:
-            folder = service.files().create(body=folder_metadata, fields='id', supportsAllDrives=True).execute()
-        except Exception:
-            folder = service.files().create(body=folder_metadata, fields='id').execute()
+        folder = service.files().create(body=folder_metadata, fields='id', supportsAllDrives=True).execute()
         return folder.get('id')
     except Exception:
         return PROCESSED_FOLDER_ID
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 1. DB 연결 및 테이블 구조 보장
+    # 1. DB 연결 및 원본 검증 테이블 확보
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -117,16 +75,24 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     dup_folder_id = get_or_create_dup_folder(service)
 
-    # 2. 신규 로우파일 안전 스캔 ('대시보드 업로드' 및 하위 폴더)
-    files = safe_list_files_by_folder(service, RAW_FOLDER_ID, is_excel_only=True)
+    # 2. 업로드 대상 파일 스캔 (원래 성공하던 탐색 쿼리)
+    query = f"'{RAW_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'"
+    results = service.files().list(
+        q=query, 
+        fields="files(id, name, parents)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
+    files = results.get('files', [])
 
-    # 하위 B2C/B2B 폴더 탐색
-    all_sub_items = safe_list_files_by_folder(service, RAW_FOLDER_ID, is_excel_only=False)
-    subfolders = [f for f in all_sub_items if f.get('mimeType') == 'application/vnd.google-apps.folder' and f['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']]
-    
+    # B2C 등 하위 폴더에 들어간 경우 2차 스캔
+    sub_q = f"'{RAW_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    subfolders = service.files().list(q=sub_q, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get('files', [])
     for sf in subfolders:
-        sub_files = safe_list_files_by_folder(service, sf['id'], is_excel_only=True)
-        files.extend(sub_files)
+        if sf['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']:
+            q_sub = f"'{sf['id']}' in parents and trashed = false and name contains '.xlsx'"
+            res_sub = service.files().list(q_sub, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get('files', [])
+            files.extend(res_sub)
 
     total_files = len(files)
     processed_files_count = 0
@@ -153,9 +119,23 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         fh.seek(0)
 
         try:
-            df = pd.read_excel(fh)
+            # 헤더 위치 유연 탐색 로딩
+            df = None
+            for h_idx in [0, 1, 2, 3]:
+                try:
+                    fh.seek(0)
+                    df_temp = pd.read_excel(fh, header=h_idx)
+                    cols_str = [str(c) for c in df_temp.columns]
+                    if any('일자' in c or '마감' in c or '송장' in c for c in cols_str):
+                        df = df_temp
+                        break
+                except Exception:
+                    continue
+            if df is None:
+                fh.seek(0)
+                df = pd.read_excel(fh)
 
-            # 컬럼 매칭
+            # 컬럼 표준화
             col_map = {}
             for c in df.columns:
                 sc = str(c).strip()
@@ -174,35 +154,44 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
             df_clean = df.rename(columns=col_map)
 
+            # 필수 컬럼 보장 (오류 방지)
             if '영업마감일자' not in df_clean.columns: df_clean['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
             if '센터' not in df_clean.columns: df_clean['센터'] = '통합센터'
             if '고객사' not in df_clean.columns: df_clean['고객사'] = '기타'
 
-            # 마감일자 및 센터 추출
-            clean_dates = df_clean['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
-            clean_dates = clean_dates[clean_dates.str.len() >= 8]
-            if not clean_dates.empty:
-                min_d = clean_dates.min()[:8]
-                max_d = clean_dates.max()[:8]
-                date_str = min_d if min_d == max_d else f"{min_d}_{max_d}"
-            else:
-                date_str = datetime.now().strftime('%Y%m%d')
+            # 마감일자 및 센터명 안전 추출
+            date_str = datetime.now().strftime('%Y%m%d')
+            try:
+                clean_dates = df_clean['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
+                clean_dates = clean_dates[clean_dates.str.len() >= 8]
+                if not clean_dates.empty:
+                    min_d = clean_dates.min()[:8]
+                    max_d = clean_dates.max()[:8]
+                    date_str = min_d if min_d == max_d else f"{min_d}_{max_d}"
+            except Exception:
+                pass
 
-            center_val = df_clean['센터'].dropna().iloc[0] if not df_clean['센터'].dropna().empty else "통합센터"
-            center_str = sanitize_filename(center_val)
+            center_str = "통합센터"
+            try:
+                center_val = df_clean['센터'].dropna().iloc[0] if not df_clean['센터'].dropna().empty else "통합센터"
+                center_str = sanitize_filename(center_val)
+            except Exception:
+                pass
 
             # 중복 체크
             is_duplicate = False
-            cur = conn_b2c.cursor()
-            formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}" if len(date_str) == 8 else date_str
-            cur.execute("""
-                SELECT COUNT(*) FROM daily_summary 
-                WHERE (영업마감일자 = ? OR 영업마감일자 = ?) AND 센터 LIKE ?
-            """, (formatted_date, date_str, f"%{center_str}%"))
-            check_cnt = cur.fetchone()[0]
-
-            if check_cnt > 10:
-                is_duplicate = True
+            try:
+                cur = conn_b2c.cursor()
+                formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}" if len(date_str) == 8 else date_str
+                cur.execute("""
+                    SELECT COUNT(*) FROM daily_summary 
+                    WHERE (영업마감일자 = ? OR 영업마감일자 = ?) AND 센터 LIKE ?
+                """, (formatted_date, date_str, f"%{center_str}%"))
+                check_cnt = cur.fetchone()[0]
+                if check_cnt > 10:
+                    is_duplicate = True
+            except Exception:
+                pass
 
             if is_duplicate:
                 # 🔴 중복 파일 ➔ [중복_확인필요] 폴더로 이동
@@ -219,15 +208,9 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         supportsAllDrives=True
                     ).execute()
                 except Exception:
-                    service.files().update(
-                        fileId=file_id,
-                        addParents=dup_folder_id,
-                        removeParents=parent_id,
-                        body={'name': new_filename}
-                    ).execute()
-
+                    pass
             else:
-                # 🟢 정상 신규 파일 ➔ 요약 DB 수집 후 [처리완료] 이동
+                # 🟢 정상 신규 파일 ➔ DB 집계 저장 후 [처리완료] 이동
                 group_cols = [c for c in ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드'] if c in df_clean.columns]
                 if '송장번호' in df_clean.columns:
                     summary_df = df_clean.groupby(group_cols, dropna=False).agg(
@@ -246,27 +229,22 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 seq_num = 1
                 new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
                 
-                ex_files = safe_list_files_by_folder(service, PROCESSED_FOLDER_ID, is_excel_only=True)
-                dup_matches = [ef for ef in ex_files if date_str in ef['name'] and center_str in ef['name']]
-                if dup_matches:
-                    seq_num = len(dup_matches) + 1
-                    new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
-
                 try:
-                    service.files().update(
-                        fileId=file_id,
-                        addParents=PROCESSED_FOLDER_ID,
-                        removeParents=parent_id,
-                        body={'name': new_filename},
-                        supportsAllDrives=True
-                    ).execute()
+                    ex_q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
+                    ex_files = service.files().list(q=ex_q, fields="files(name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get('files', [])
+                    if ex_files:
+                        seq_num = len(ex_files) + 1
+                        new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
                 except Exception:
-                    service.files().update(
-                        fileId=file_id,
-                        addParents=PROCESSED_FOLDER_ID,
-                        removeParents=parent_id,
-                        body={'name': new_filename}
-                    ).execute()
+                    pass
+
+                service.files().update(
+                    fileId=file_id,
+                    addParents=PROCESSED_FOLDER_ID,
+                    removeParents=parent_id,
+                    body={'name': new_filename},
+                    supportsAllDrives=True
+                ).execute()
 
                 processed_files_count += 1
 
