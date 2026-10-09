@@ -39,35 +39,38 @@ def parse_clean_float(val):
         return 0.0
 
 def safe_list_files(service, query):
-    """모든 404 에러를 방지하는 100% 안전 구글 드라이브 목록 조회 함수"""
-    # 1차 시도: 표준 내 드라이브 방식
-    try:
-        res = service.files().list(q=query, fields="files(id, name, parents)").execute()
-        return res.get('files', [])
-    except Exception:
-        pass
-
-    # 2차 시도: 공유 드라이브 옵션 적용 방식
+    """공유 드라이브/내 드라이브 호환 파일 목록 안전 조회 함수"""
+    # 1. supportsAllDrives 기본 적용 조회
     try:
         res = service.files().list(
             q=query,
-            fields="files(id, name, parents)",
+            fields="files(id, name, parents, mimeType)",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True
         ).execute()
+        files = res.get('files', [])
+        if files:
+            return files
+    except Exception:
+        pass
+
+    # 2. 일반 옵션 미적용 fallback
+    try:
+        res = service.files().list(q=query, fields="files(id, name, parents, mimeType)").execute()
         return res.get('files', [])
     except Exception:
         return []
 
 def safe_update_file(service, file_id, add_parents, remove_parents, new_name):
-    """안전한 파일 이동 및 파일명 변경 실행 함수"""
+    """안전 파일 이동 및 파일명 변경 실행 함수"""
     body = {'name': new_name}
     try:
         service.files().update(
             fileId=file_id,
             addParents=add_parents,
             removeParents=remove_parents,
-            body=body
+            body=body,
+            supportsAllDrives=True
         ).execute()
     except Exception:
         try:
@@ -75,14 +78,13 @@ def safe_update_file(service, file_id, add_parents, remove_parents, new_name):
                 fileId=file_id,
                 addParents=add_parents,
                 removeParents=remove_parents,
-                body=body,
-                supportsAllDrives=True
+                body=body
             ).execute()
         except Exception as e:
             print(f"File update error for {file_id}: {e}")
 
 def get_or_create_dup_folder(service):
-    """'처리완료' 폴더 내 [중복_확인필요] 폴더 안전 검색 및 생성"""
+    """'처리완료' 폴더 내 [중복_확인필요] 폴더 검색 및 자동 생성"""
     try:
         q = f"'{PROCESSED_FOLDER_ID}' in parents and name = '[중복_확인필요]' and trashed = false"
         res = safe_list_files(service, q)
@@ -95,9 +97,9 @@ def get_or_create_dup_folder(service):
             'parents': [PROCESSED_FOLDER_ID]
         }
         try:
-            folder = service.files().create(body=folder_metadata, fields='id').execute()
-        except Exception:
             folder = service.files().create(body=folder_metadata, fields='id', supportsAllDrives=True).execute()
+        except Exception:
+            folder = service.files().create(body=folder_metadata, fields='id').execute()
         return folder.get('id')
     except Exception:
         return PROCESSED_FOLDER_ID
@@ -121,18 +123,19 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     dup_folder_id = get_or_create_dup_folder(service)
 
-    # 2. 업로드 대상 파일 안전 스캔 (하드코딩 옵션 전면 제거 및 safe_list_files 통일)
-    query = f"'{RAW_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'"
-    files = safe_list_files(service, query)
+    # 2. 업로드 대상 파일 스캔 (대시보드 업로드 및 B2C 등 하위 폴더)
+    query = f"'{RAW_FOLDER_ID}' in parents and trashed = false"
+    all_raw_items = safe_list_files(service, query)
+    
+    files = [f for f in all_raw_items if f.get('mimeType') != 'application/vnd.google-apps.folder' and (f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.xls')) and not f['name'].startswith('~$')]
 
     # B2C 등 하위 폴더 2차 탐색
-    sub_q = f"'{RAW_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    subfolders = safe_list_files(service, sub_q)
+    subfolders = [f for f in all_raw_items if f.get('mimeType') == 'application/vnd.google-apps.folder' and f['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']]
     for sf in subfolders:
-        if sf['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']:
-            q_sub = f"'{sf['id']}' in parents and trashed = false and name contains '.xlsx'"
-            res_sub = safe_list_files(service, q_sub)
-            files.extend(res_sub)
+        q_sub = f"'{sf['id']}' in parents and trashed = false"
+        res_sub = safe_list_files(service, q_sub)
+        excel_subs = [f for f in res_sub if f.get('mimeType') != 'application/vnd.google-apps.folder' and (f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.xls')) and not f['name'].startswith('~$')]
+        files.extend(excel_subs)
 
     total_files = len(files)
     processed_files_count = 0
@@ -159,7 +162,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         fh.seek(0)
 
         try:
-            # 헤더 위치 유연 파싱
+            # 헤더 위치 유연 탐색
             df = None
             for h_idx in [0, 1, 2, 3]:
                 try:
@@ -249,7 +252,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     ).reset_index()
                 else:
                     summary_df = df_clean.groupby(group_cols, dropna=False).size().reset_index(name='출고건수')
-                    summary_df['총출고수량'] = summary_df['출고건수']
+                    summary_df['총출고수량'] = summary_df['총출고수량'] = summary_df['출고건수']
 
                 summary_df['영업마감일자'] = summary_df['영업마감일자'].astype(str).str.slice(0, 10)
                 summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
@@ -301,7 +304,9 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn_b2c.close()
 
-    if dup_files_count > 0:
+    if processed_files_count > 0:
+        err_msg = f"🎉 B2C 신규 파일 {processed_files_count}건 성공적으로 동기화 완료!"
+    elif dup_files_count > 0:
         err_msg = f"⚠️ 중복 파일 {dup_files_count}건 감지됨 ➔ [중복_확인필요] 폴더로 이동 완료"
 
     return matched_inbound_count, err_msg
