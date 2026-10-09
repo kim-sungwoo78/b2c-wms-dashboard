@@ -38,26 +38,68 @@ def parse_clean_float(val):
     except Exception:
         return 0.0
 
+def safe_list_files_by_folder(service, folder_id, is_excel_only=True):
+    """404 오류 방지를 위한 3단계 드라이브 쿼리 안전 호환 함수"""
+    q = f"'{folder_id}' in parents and trashed = false"
+    if is_excel_only:
+        q += " and name contains '.xlsx'"
+
+    # 1단계: 일반 드라이브 표준 조회
+    try:
+        results = service.files().list(q=q, fields="files(id, name, parents, mimeType)").execute()
+        return results.get('files', [])
+    except Exception:
+        pass
+
+    # 2단계: 공유 드라이브 옵션 적용 조회
+    try:
+        results = service.files().list(
+            q=q,
+            fields="files(id, name, parents, mimeType)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+        return results.get('files', [])
+    except Exception:
+        pass
+
+    # 3단계: 전체 드라이브 범주 조회
+    try:
+        results = service.files().list(
+            q=q,
+            fields="files(id, name, parents, mimeType)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            corpora='allDrives'
+        ).execute()
+        return results.get('files', [])
+    except Exception:
+        return []
+
 def get_or_create_dup_folder(service):
-    """'처리완료' 폴더 내에 [중복_확인필요] 폴더가 없으면 자동 생성 후 ID 반환"""
+    """'처리완료' 폴더 내 [중복_확인필요] 폴더 안전 검색 및 생성"""
     try:
         q = f"'{PROCESSED_FOLDER_ID}' in parents and name = '[중복_확인필요]' and trashed = false"
-        res = service.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get('files', [])
-        if res:
-            return res[0]['id']
+        res = safe_list_files_by_folder(service, PROCESSED_FOLDER_ID, is_excel_only=False)
+        dup_folders = [f for f in res if f['name'] == '[중복_확인필요]']
+        if dup_folders:
+            return dup_folders[0]['id']
         
         folder_metadata = {
             'name': '[중복_확인필요]',
             'mimeType': 'application/vnd.google-apps.folder',
             'parents': [PROCESSED_FOLDER_ID]
         }
-        folder = service.files().create(body=folder_metadata, fields='id', supportsAllDrives=True).execute()
+        try:
+            folder = service.files().create(body=folder_metadata, fields='id', supportsAllDrives=True).execute()
+        except Exception:
+            folder = service.files().create(body=folder_metadata, fields='id').execute()
         return folder.get('id')
     except Exception:
         return PROCESSED_FOLDER_ID
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 1. DB 연결 및 원본 검증 테이블 확보
+    # 1. DB 연결 및 테이블 구조 보장
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -75,25 +117,16 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     dup_folder_id = get_or_create_dup_folder(service)
 
-    # 2. 원본 방식: 업로드 폴더 내의 .xlsx 파일 스캔
-    query = f"'{RAW_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'"
-    results = service.files().list(
-        q=query, 
-        fields="files(id, name, parents)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
-    files = results.get('files', [])
+    # 2. 신규 로우파일 안전 스캔 ('대시보드 업로드' 및 하위 폴더)
+    files = safe_list_files_by_folder(service, RAW_FOLDER_ID, is_excel_only=True)
 
-    # 만약 B2C 하위 폴더에 들어간 경우까지 대비
-    if not files:
-        sub_q = f"'{RAW_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        subfolders = service.files().list(q=sub_q, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get('files', [])
-        for sf in subfolders:
-            if sf['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']:
-                q_sub = f"'{sf['id']}' in parents and trashed = false and name contains '.xlsx'"
-                res_sub = service.files().list(q=q_sub, fields="files(id, name, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get('files', [])
-                files.extend(res_sub)
+    # 하위 B2C/B2B 폴더 탐색
+    all_sub_items = safe_list_files_by_folder(service, RAW_FOLDER_ID, is_excel_only=False)
+    subfolders = [f for f in all_sub_items if f.get('mimeType') == 'application/vnd.google-apps.folder' and f['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']]
+    
+    for sf in subfolders:
+        sub_files = safe_list_files_by_folder(service, sf['id'], is_excel_only=True)
+        files.extend(sub_files)
 
     total_files = len(files)
     processed_files_count = 0
@@ -101,7 +134,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     matched_inbound_count = 0
     err_msg = None
 
-    # 3. 로우파일 순회 가공 및 이동 처리
+    # 3. 로우파일 순회 가공 및 이동
     for idx, f in enumerate(files, 1):
         file_id = f['id']
         orig_name = f['name']
@@ -110,7 +143,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         if progress_callback:
             progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 동기화 중")
 
-        # 파일 다운로드
+        # 다운로드
         request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -158,7 +191,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             center_val = df_clean['센터'].dropna().iloc[0] if not df_clean['센터'].dropna().empty else "통합센터"
             center_str = sanitize_filename(center_val)
 
-            # 중복 체크 (DB에 이미 데이터가 있는지 검증)
+            # 중복 체크
             is_duplicate = False
             cur = conn_b2c.cursor()
             formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}" if len(date_str) == 8 else date_str
@@ -172,20 +205,29 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 is_duplicate = True
 
             if is_duplicate:
-                # 🔴 중복 파일: [중복_확인필요] 폴더로 이동
+                # 🔴 중복 파일 ➔ [중복_확인필요] 폴더로 이동
                 dup_files_count += 1
                 seq_num = 1
                 new_filename = f"[중복]_{date_str}_{center_str}_{seq_num}.xlsx"
 
-                service.files().update(
-                    fileId=file_id,
-                    addParents=dup_folder_id,
-                    removeParents=parent_id,
-                    body={'name': new_filename},
-                    supportsAllDrives=True
-                ).execute()
+                try:
+                    service.files().update(
+                        fileId=file_id,
+                        addParents=dup_folder_id,
+                        removeParents=parent_id,
+                        body={'name': new_filename},
+                        supportsAllDrives=True
+                    ).execute()
+                except Exception:
+                    service.files().update(
+                        fileId=file_id,
+                        addParents=dup_folder_id,
+                        removeParents=parent_id,
+                        body={'name': new_filename}
+                    ).execute()
+
             else:
-                # 🟢 신규 파일: 요약 집계 DB 수집 후 [처리완료] 폴더로 이동
+                # 🟢 정상 신규 파일 ➔ 요약 DB 수집 후 [처리완료] 이동
                 group_cols = [c for c in ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드'] if c in df_clean.columns]
                 if '송장번호' in df_clean.columns:
                     summary_df = df_clean.groupby(group_cols, dropna=False).agg(
@@ -200,23 +242,31 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
                 summary_df.to_sql('shipment_raw', conn_b2c, if_exists='append', index=False)
 
-                # 스마트 파일명 생성 및 이동
+                # 파일명 변경 및 이동
                 seq_num = 1
                 new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
                 
-                ex_q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
-                ex_files = service.files().list(q=ex_q, fields="files(name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get('files', [])
-                if ex_files:
-                    seq_num = len(ex_files) + 1
+                ex_files = safe_list_files_by_folder(service, PROCESSED_FOLDER_ID, is_excel_only=True)
+                dup_matches = [ef for ef in ex_files if date_str in ef['name'] and center_str in ef['name']]
+                if dup_matches:
+                    seq_num = len(dup_matches) + 1
                     new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
 
-                service.files().update(
-                    fileId=file_id,
-                    addParents=PROCESSED_FOLDER_ID,
-                    removeParents=parent_id,
-                    body={'name': new_filename},
-                    supportsAllDrives=True
-                ).execute()
+                try:
+                    service.files().update(
+                        fileId=file_id,
+                        addParents=PROCESSED_FOLDER_ID,
+                        removeParents=parent_id,
+                        body={'name': new_filename},
+                        supportsAllDrives=True
+                    ).execute()
+                except Exception:
+                    service.files().update(
+                        fileId=file_id,
+                        addParents=PROCESSED_FOLDER_ID,
+                        removeParents=parent_id,
+                        body={'name': new_filename}
+                    ).execute()
 
                 processed_files_count += 1
 
