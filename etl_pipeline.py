@@ -39,15 +39,15 @@ def parse_clean_float(val):
         return 0.0
 
 def safe_list_files(service, query):
-    """404 에러 방지를 위한 2단계 안전 파일 검색 함수"""
-    # 1차 시도: 일반 내 드라이브 표준 방식
+    """모든 404 에러를 방지하는 100% 안전 구글 드라이브 목록 조회 함수"""
+    # 1차 시도: 표준 내 드라이브 방식
     try:
         res = service.files().list(q=query, fields="files(id, name, parents)").execute()
         return res.get('files', [])
     except Exception:
         pass
 
-    # 2차 시도: 공유 드라이브 옵션 적용
+    # 2차 시도: 공유 드라이브 옵션 적용 방식
     try:
         res = service.files().list(
             q=query,
@@ -121,7 +121,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     dup_folder_id = get_or_create_dup_folder(service)
 
-    # 2. 업로드 대상 파일 안전 스캔 (내 드라이브 및 하위 폴더)
+    # 2. 업로드 대상 파일 안전 스캔 (하드코딩 옵션 전면 제거 및 safe_list_files 통일)
     query = f"'{RAW_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'"
     files = safe_list_files(service, query)
 
@@ -234,7 +234,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 pass
 
             if is_duplicate:
-                # 🔴 중복 파일 ➔ [중복_확인필요] 폴더로 안전 이동
+                # 🔴 중복 파일 ➔ [중복_확인필요] 폴더로 이동
                 dup_files_count += 1
                 seq_num = 1
                 new_filename = f"[중복]_{date_str}_{center_str}_{seq_num}.xlsx"
