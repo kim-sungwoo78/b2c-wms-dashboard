@@ -39,7 +39,7 @@ def parse_clean_float(val):
         return 0.0
 
 def safe_list_files(service, folder_id):
-    """지정 폴더 내의 파일 및 하위 폴더 100% 안전 반환"""
+    """지정 폴더 내 파일 100% 안전 목록 조회"""
     try:
         q = f"'{folder_id}' in parents and trashed = false"
         res = service.files().list(
@@ -79,29 +79,8 @@ def safe_update_file(service, file_id, add_parents, remove_parents, new_name):
         except Exception as e:
             print(f"File update error for {file_id}: {e}")
 
-def get_or_create_dup_folder(service):
-    """'처리완료' 폴더 내 [중복_확인필요] 폴더 검색 및 자동 생성"""
-    try:
-        res = safe_list_files(service, PROCESSED_FOLDER_ID)
-        dup_folders = [f for f in res if f['name'] == '[중복_확인필요]']
-        if dup_folders:
-            return dup_folders[0]['id']
-        
-        folder_metadata = {
-            'name': '[중복_확인필요]',
-            'mimeType': 'application/vnd.google-apps.folder',
-            'parents': [PROCESSED_FOLDER_ID]
-        }
-        try:
-            folder = service.files().create(body=folder_metadata, fields='id', supportsAllDrives=True).execute()
-        except Exception:
-            folder = service.files().create(body=folder_metadata, fields='id').execute()
-        return folder.get('id')
-    except Exception:
-        return PROCESSED_FOLDER_ID
-
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 1. DB 연결 및 원본 검증 테이블 확보
+    # 1. DB 테이블 준비
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -117,36 +96,38 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     """)
     conn_b2c.commit()
 
-    dup_folder_id = get_or_create_dup_folder(service)
-
-    # 2. 업로드 대상 파일 전수 스캔 (대시보드 업로드 및 B2C 등 하위 폴더)
-    all_raw_items = safe_list_files(service, RAW_FOLDER_ID)
+    # 2. ★ [핵심: 신규 업로드 폴더 + 이미 '처리완료' 폴더에 들어간 모든 파일까지 전수 수집] ★
+    target_folder_ids = [RAW_FOLDER_ID, PROCESSED_FOLDER_ID]
     
-    files = [f for f in all_raw_items if f.get('mimeType') != 'application/vnd.google-apps.folder' and (f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.xls')) and not f['name'].startswith('~$')]
-
-    # B2C 등 하위 폴더 탐색
-    subfolders = [f for f in all_raw_items if f.get('mimeType') == 'application/vnd.google-apps.folder' and f['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']]
+    # B2C 등 하위 폴더 ID 수집
+    raw_sub_items = safe_list_files(service, RAW_FOLDER_ID)
+    subfolders = [f for f in raw_sub_items if f.get('mimeType') == 'application/vnd.google-apps.folder' and f['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']]
     for sf in subfolders:
-        res_sub = safe_list_files(service, sf['id'])
-        excel_subs = [f for f in res_sub if f.get('mimeType') != 'application/vnd.google-apps.folder' and (f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.xls')) and not f['name'].startswith('~$')]
-        files.extend(excel_subs)
+        target_folder_ids.append(sf['id'])
 
-    total_files = len(files)
-    processed_files_count = 0
-    dup_files_count = 0
+    all_target_files = []
+    for f_id in target_folder_ids:
+        items = safe_list_files(service, f_id)
+        for item in items:
+            if item.get('mimeType') != 'application/vnd.google-apps.folder':
+                fname = item['name'].lower()
+                if (fname.endswith('.xlsx') or fname.endswith('.xls')) and not fname.startswith('~$') and not fname.startswith('[중복]'):
+                    all_target_files.append((item, f_id))
+
+    total_files = len(all_target_files)
+    processed_cnt = 0
     matched_inbound_count = 0
     err_msg = None
 
-    # 3. 로우파일 순회 가공 및 이동
-    for idx, f in enumerate(files, 1):
-        file_id = f['id']
-        orig_name = f['name']
-        parent_id = f.get('parents', [RAW_FOLDER_ID])[0]
+    # 3. 전수 로우파일 순회 및 DB 완벽 재생성 + 파일명 정돈
+    for idx, (f_info, current_folder_id) in enumerate(all_target_files, 1):
+        file_id = f_info['id']
+        orig_name = f_info['name']
 
         if progress_callback:
             progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 동기화 중")
 
-        # 다운로드
+        # 파일 다운로드
         request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -156,7 +137,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         fh.seek(0)
 
         try:
-            # 헤더 위치 유연 탐색
+            # 헤더 파싱
             df = None
             for h_idx in [0, 1, 2, 3]:
                 try:
@@ -172,7 +153,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 fh.seek(0)
                 df = pd.read_excel(fh)
 
-            # 컬럼 표준화
+            # 컬럼 매칭
             col_map = {}
             for c in df.columns:
                 sc = str(c).strip()
@@ -191,7 +172,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
             df_clean = df.rename(columns=col_map)
 
-            # 필수 컬럼 보장
             if '영업마감일자' not in df_clean.columns: df_clean['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
             if '센터' not in df_clean.columns: df_clean['센터'] = '통합센터'
             if '고객사' not in df_clean.columns: df_clean['고객사'] = '기타'
@@ -215,56 +195,36 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             except Exception:
                 pass
 
-            # 중복 체크
-            is_duplicate = False
-            try:
-                cur = conn_b2c.cursor()
-                formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}" if len(date_str) == 8 else date_str
-                cur.execute("""
-                    SELECT COUNT(*) FROM daily_summary 
-                    WHERE (영업마감일자 = ? OR 영업마감일자 = ?) AND 센터 LIKE ?
-                """, (formatted_date, date_str, f"%{center_str}%"))
-                check_cnt = cur.fetchone()[0]
-                if check_cnt > 10:
-                    is_duplicate = True
-            except Exception:
-                pass
-
-            if is_duplicate:
-                # 🔴 중복 파일 ➔ [중복_확인필요] 폴더로 이동
-                dup_files_count += 1
-                seq_num = 1
-                new_filename = f"[중복]_{date_str}_{center_str}_{seq_num}.xlsx"
-                safe_update_file(service, file_id, dup_folder_id, parent_id, new_filename)
+            # DB 집계 저장 (daily_summary + shipment_raw)
+            group_cols = [c for c in ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드'] if c in df_clean.columns]
+            if '송장번호' in df_clean.columns:
+                summary_df = df_clean.groupby(group_cols, dropna=False).agg(
+                    출고건수=('송장번호', 'nunique'),
+                    총출고수량=('송장번호', 'count')
+                ).reset_index()
             else:
-                # 🟢 정상 신규 파일 ➔ DB 저장 후 [처리완료] 폴더로 이동
-                group_cols = [c for c in ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드'] if c in df_clean.columns]
-                if '송장번호' in df_clean.columns:
-                    summary_df = df_clean.groupby(group_cols, dropna=False).agg(
-                        출고건수=('송장번호', 'nunique'),
-                        총출고수량=('송장번호', 'count')
-                    ).reset_index()
-                else:
-                    summary_df = df_clean.groupby(group_cols, dropna=False).size().reset_index(name='출고건수')
-                    summary_df['총출고수량'] = summary_df['출고건수']
+                summary_df = df_clean.groupby(group_cols, dropna=False).size().reset_index(name='출고건수')
+                summary_df['총출고수량'] = summary_df['출고건수']
 
-                summary_df['영업마감일자'] = summary_df['영업마감일자'].astype(str).str.slice(0, 10)
-                summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
-                summary_df.to_sql('shipment_raw', conn_b2c, if_exists='append', index=False)
+            summary_df['영업마감일자'] = summary_df['영업마감일자'].astype(str).str.slice(0, 10)
+            summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
+            summary_df.to_sql('shipment_raw', conn_b2c, if_exists='append', index=False)
 
-                # 파일명 변경 및 이동
-                seq_num = 1
-                new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
-                
-                ex_files = safe_list_files(service, PROCESSED_FOLDER_ID)
-                if ex_files:
-                    dup_matches = [ef for ef in ex_files if date_str in ef['name'] and center_str in ef['name']]
-                    if dup_matches:
-                        seq_num = len(dup_matches) + 1
-                        new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
+            # 파일명 자동 정돈 및 '처리완료' 폴더로 이동
+            seq_num = idx
+            new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
 
-                safe_update_file(service, file_id, PROCESSED_FOLDER_ID, parent_id, new_filename)
-                processed_files_count += 1
+            if current_folder_id != PROCESSED_FOLDER_ID:
+                safe_update_file(service, file_id, PROCESSED_FOLDER_ID, current_folder_id, new_filename)
+            else:
+                if orig_name != new_filename:
+                    body = {'name': new_filename}
+                    try:
+                        service.files().update(fileId=file_id, body=body, supportsAllDrives=True).execute()
+                    except Exception:
+                        service.files().update(fileId=file_id, body=body).execute()
+
+            processed_cnt += 1
 
         except Exception as e:
             print(f"File process error ({orig_name}): {e}")
@@ -299,9 +259,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn_b2c.close()
 
-    if processed_files_count > 0:
-        err_msg = f"🎉 B2C 신규 파일 {processed_files_count}건 성공적으로 동기화 완료!"
-    elif dup_files_count > 0:
-        err_msg = f"⚠️ 중복 파일 {dup_files_count}건 감지됨 ➔ [중복_확인필요] 폴더로 이동 완료"
+    if processed_cnt > 0:
+        err_msg = f"🎉 B2C 파일 {processed_cnt}건 가공 및 DB 재구축 완료!"
 
     return matched_inbound_count, err_msg
