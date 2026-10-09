@@ -39,9 +39,9 @@ def parse_clean_float(val):
         return 0.0
 
 def safe_list_files(service, folder_id):
-    """지정 폴더 내 엑셀 파일 목록 조회"""
+    """지정 폴더 내 파일 안전 목록 조회 (에러 발생 시 예외 메시지 반환)"""
+    q = f"'{folder_id}' in parents and trashed = false"
     try:
-        q = f"'{folder_id}' in parents and trashed = false"
         results = service.files().list(
             q=q,
             fields="files(id, name, parents, mimeType)",
@@ -55,15 +55,24 @@ def safe_list_files(service, folder_id):
             if f.get('mimeType') != 'application/vnd.google-apps.folder':
                 if not f['name'].startswith('~$') and f['name'] != "[중복_확인필요]":
                     valid_files.append(f)
-        return valid_files
+        return valid_files, None
     except Exception as e:
-        print(f"List files error: {e}")
-        return []
+        # 공유 드라이브 옵션 제거 후 2차 시도
+        try:
+            results = service.files().list(
+                q=q,
+                fields="files(id, name, parents, mimeType)"
+            ).execute()
+            files = results.get('files', [])
+            valid_files = [f for f in files if f.get('mimeType') != 'application/vnd.google-apps.folder' and not f['name'].startswith('~$')]
+            return valid_files, None
+        except Exception as ex:
+            return [], f"Folder ({folder_id}) Read Error: {str(ex)}"
 
 def safe_list_subfolders(service, parent_id):
     """하위 폴더 목록 조회"""
+    q = f"'{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     try:
-        q = f"'{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         results = service.files().list(
             q=q,
             fields="files(id, name)",
@@ -72,7 +81,11 @@ def safe_list_subfolders(service, parent_id):
         ).execute()
         return results.get('files', [])
     except Exception:
-        return []
+        try:
+            results = service.files().list(q=q, fields="files(id, name)").execute()
+            return results.get('files', [])
+        except Exception:
+            return []
 
 def read_excel_smart(fh):
     """엑셀 헤더 위치 자동 파싱 로더"""
@@ -151,14 +164,14 @@ def process_file_content(df, conn_b2c):
 
     summary_df['영업마감일자'] = summary_df['영업마감일자'].astype(str).str.slice(0, 10)
 
-    # daily_summary 와 shipment_raw 양쪽에 집계 축적
+    # daily_summary 및 shipment_raw 양쪽에 집계 데이터 축적
     summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
     summary_df.to_sql('shipment_raw', conn_b2c, if_exists='append', index=False)
 
     return date_str, center_str
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 1. DB 연결 및 테이블 초기화
+    # 1. DB 연결 및 테이블 생성
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -174,7 +187,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     """)
     conn_b2c.commit()
 
-    # 2. ★ [모든 폴더 전수 스캔: 업로드, B2C/B2B 하위폴더, 처리완료 폴더] ★
+    # 2. 타겟 폴더 수집
     target_folders = [RAW_FOLDER_ID, PROCESSED_FOLDER_ID]
     subfolders = safe_list_subfolders(service, RAW_FOLDER_ID)
     for sf in subfolders:
@@ -182,28 +195,29 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             target_folders.append(sf['id'])
 
     all_files_to_process = []
+    scan_errors = []
+
     for folder_id in target_folders:
-        files = safe_list_files(service, folder_id)
+        files, err = safe_list_files(service, folder_id)
+        if err:
+            scan_errors.append(err)
         for f in files:
-            # 중복 표기 파일 및 중복 폴더는 제외
             if not f['name'].startswith("[중복]"):
                 all_files_to_process.append((f, folder_id))
 
     total_files = len(all_files_to_process)
     processed_cnt = 0
     matched_inbound_count = 0
-    err_msg = None
+    err_msg = scan_errors[0] if scan_errors else None
 
-    # 3. 로우파일 전수 가공 및 프로그래스바(진행 상황) 실시간 표시
+    # 3. 로우파일 전수 가공
     for idx, (f_info, parent_folder_id) in enumerate(all_files_to_process, 1):
         file_id = f_info['id']
         orig_name = f_info['name']
 
-        # ★ 진행 상황 팝업/프로그래스바에 실시간 전달 ★
         if progress_callback:
             progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 처리 중")
 
-        # 파일 다운로드
         request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -216,13 +230,12 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             df = read_excel_smart(fh)
             date_str, center_str = process_file_content(df, conn_b2c)
 
-            # 새 파일명 생성 ([마감일]_[센터명]_[순번].xlsx)
             seq_num = 1
             new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
             if not new_filename.endswith('.xlsx'):
                 new_filename += '.xlsx'
 
-            # '처리완료' 폴더로 이동 및 파일명 정돈
+            # '처리완료' 폴더로 이동
             if parent_folder_id != PROCESSED_FOLDER_ID:
                 current_parents = f_info.get('parents', [parent_folder_id])
                 remove_parents_str = ",".join(current_parents)
@@ -235,7 +248,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     supportsAllDrives=True
                 ).execute()
             else:
-                # 이미 처리완료 폴더에 있던 과거 파일도 신규 포맷으로 이름 변경
                 if orig_name != new_filename:
                     service.files().update(
                         fileId=file_id,
@@ -273,7 +285,12 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             conn_ib.commit()
             conn_ib.close()
         except Exception as e:
-            err_msg = str(e)
+            if not err_msg:
+                err_msg = str(e)
 
     conn_b2c.close()
+
+    if total_files == 0 and not err_msg:
+        err_msg = "ℹ️ 감지된 신규 로우파일이 없습니다. (업로드 폴더 확인 필요)"
+
     return matched_inbound_count, err_msg
