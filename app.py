@@ -64,26 +64,10 @@ st.markdown("""
         color: #AAAAAA;
         margin-top: 5px;
     }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 10px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        height: 50px;
-        white-space: pre-wrap;
-        background-color: #262626;
-        border-radius: 8px 8px 0px 0px;
-        gap: 2px;
-        padding-top: 10px;
-        padding-bottom: 10px;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: #0E1117 !important;
-        border-bottom: 3px solid #4CAF50 !important;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# 1. 인증 및 구글 드라이브 최신 DB 동기화
+# 1. 인증 및 서비스 연결
 @st.cache_resource
 def init_services():
     try:
@@ -93,12 +77,12 @@ def init_services():
         if drive_service:
             sync_db_from_drive(drive_service)
         return drive_service, sheets_service
-    except Exception as e:
+    except Exception:
         return None, None
 
 drive_service, sheets_service = init_services()
 
-# 2. 사이드바 컨트롤러 및 동기화 버튼
+# 2. 사이드바
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/000000/warehouse.png", width=70)
     st.title("⚙️ 시스템 설정")
@@ -109,7 +93,7 @@ with st.sidebar:
     
     if st.button("🔄 드라이브 & 구글시트 동기화", use_container_width=True, type="primary"):
         if not drive_service:
-            st.error("❌ Google 인증 정보(st.secrets)가 설정되지 않았습니다.")
+            st.error("❌ Google 인증 정보가 설정되지 않았습니다.")
         else:
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -119,7 +103,7 @@ with st.sidebar:
                 progress_bar.progress(percent)
                 status_text.text(f"⏳ 동기화 진행 중 ({current}/{total})\n📄 {filename}")
 
-            with st.spinner("구글 드라이브 로우파일 수집 및 DB 변환 중..."):
+            with st.spinner("구글 드라이브 동기화 진행 중..."):
                 matched_cnt, msg = process_and_update(drive_service, sheets_service, update_progress)
                 progress_bar.empty()
                 status_text.empty()
@@ -128,18 +112,17 @@ with st.sidebar:
                 st.rerun()
 
     st.markdown("---")
-    st.markdown("### 📌 시스템 안내")
     st.info("""
     - **B2C 출고**: 구글 드라이브 로우파일 자동 집계
     - **입고 현황**: 구글 스마트 시트 실시간 연동
     - **B2B 연동**: 시스템 연결 구성 중
     """)
 
-# 헤더 영역
+# 헤더
 st.markdown('<div class="main-header">🏢 센터 통합 물류 운영 대시보드</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">실시간 B2C 출고 데이터 및 입고 운영 실적 모니터링</div>', unsafe_allow_html=True)
 
-# 3. 글로벌 필터링 컨트롤러 (센터 & 기준월)
+# 3. 글로벌 필터
 st.subheader("📊 조회 필터 설정")
 col_f1, col_f2 = st.columns([1, 2])
 
@@ -170,19 +153,18 @@ with col_f2:
 
 st.markdown("---")
 
-# 4. 데이터 로딩 로직 (SQLite DB)
+# 4. DB 로딩
 def load_b2c_data(selected_m, center_filter):
     if not os.path.exists("wms_b2c.db"):
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame()
 
     try:
         conn = sqlite3.connect("wms_b2c.db")
         df_summary = pd.read_sql("SELECT * FROM daily_summary", conn)
-        df_raw = pd.read_sql("SELECT * FROM shipment_raw", conn)
         conn.close()
 
         if df_summary.empty:
-            return pd.DataFrame(), pd.DataFrame()
+            return pd.DataFrame()
 
         df_summary['영업마감일자'] = pd.to_datetime(df_summary['영업마감일자'], errors='coerce')
         df_filtered = df_summary[df_summary['영업마감일자'].dt.month == selected_m].copy()
@@ -190,17 +172,9 @@ def load_b2c_data(selected_m, center_filter):
         if center_filter != "전체":
             df_filtered = df_filtered[df_filtered['센터'] == center_filter]
 
-        if not df_raw.empty:
-            df_raw['영업마감일자'] = pd.to_datetime(df_raw['영업마감일자'], errors='coerce')
-            df_raw_filtered = df_raw[df_raw['영업마감일자'].dt.month == selected_m].copy()
-            if center_filter != "전체":
-                df_raw_filtered = df_raw_filtered[df_raw_filtered['센터'] == center_filter]
-        else:
-            df_raw_filtered = pd.DataFrame()
-
-        return df_filtered, df_raw_filtered
+        return df_filtered
     except Exception:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame()
 
 def load_inbound_data(selected_m):
     if not os.path.exists("wms_inbound.db"):
@@ -218,17 +192,15 @@ def load_inbound_data(selected_m):
     except Exception:
         return pd.DataFrame()
 
-df_b2c, df_b2c_raw = load_b2c_data(selected_month, selected_center)
+df_b2c = load_b2c_data(selected_month, selected_center)
 df_ib = load_inbound_data(selected_month)
 
-# 주요 핵심 KPI 집계
 total_b2c_cnt = int(df_b2c['출고건수'].sum()) if not df_b2c.empty and '출고건수' in df_b2c.columns else 0
 total_b2c_qty = int(df_b2c['총출고수량'].sum()) if not df_b2c.empty and '총출고수량' in df_b2c.columns else 0
 total_ib_cnt = len(df_ib) if not df_ib.empty else 0
 total_plt_cnt = float(df_ib['PLT수'].sum()) if not df_ib.empty and 'PLT수' in df_ib.columns else 0.0
 total_box_cnt = float(df_ib['BOX수'].sum()) if not df_ib.empty and 'BOX수' in df_ib.columns else 0.0
 
-# KPI 카드 영역
 kpi1, kpi2, kpi3 = st.columns(3)
 
 with kpi1:
@@ -260,18 +232,16 @@ with kpi3:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# 5. 메인 탭 영역 (종합 / B2C 상세 / 입고 상세)
+# 5. 탭 구성
 tab1, tab2, tab3 = st.tabs(["🏛️ 메인: 센터 종합 현황", "🚚 B2C 출고 현황", "📦 입고 현황"])
 
-# [탭 1] 메인: 센터 종합 현황
 with tab1:
     st.markdown(f"### 📊 {selected_month}월 센터별 운영 현황 요약")
     
     if df_b2c.empty and df_ib.empty:
-        st.info(f"ℹ️ {selected_month}월 집계 데이터가 존재하지 않습니다. 사이드바의 [동기화] 버튼을 클릭해 주세요.")
+        st.info(f"ℹ️ {selected_month}월 집계 데이터가 없습니다. 사이드바의 [동기화] 버튼을 클릭해 주세요.")
     else:
         c1, c2 = st.columns(2)
-        
         with c1:
             st.markdown("#### 🚚 고객사별 B2C 출고 TOP 10")
             if not df_b2c.empty and '고객사' in df_b2c.columns:
@@ -284,19 +254,18 @@ with tab1:
         with c2:
             st.markdown("#### 📦 일자별 B2C 출고 추이")
             if not df_b2c.empty and '영업마감일자' in df_b2c.columns:
-                df_b2c['일자'] = df_b2c['영업마감일자'].dt.strftime('%m-%d')
-                daily_df = df_b2c.groupby('일자', as_index=False)['출고건수'].sum()
+                df_b2c_copy = df_b2c.copy()
+                df_b2c_copy['일자'] = df_b2c_copy['영업마감일자'].dt.strftime('%m-%d')
+                daily_df = df_b2c_copy.groupby('일자', as_index=False)['출고건수'].sum()
                 st.dataframe(daily_df, use_container_width=True, hide_index=True)
                 st.line_chart(daily_df.set_index('일자')['출고건수'])
             else:
                 st.caption("일자별 집계 데이터가 없습니다.")
 
-# [탭 2] B2C 출고 상세 현황
 with tab2:
     st.markdown(f"### 🚚 B2C 출고 상세 내역 ({selected_month}월)")
     
     if not df_b2c.empty:
-        # 서치 필터 및 엑셀 다운로드
         col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
         with col_s1:
             search_customer = st.text_input("🔍 고객사 검색:", "")
@@ -324,7 +293,6 @@ with tab2:
                 use_container_width=True
             )
 
-        # 표시용 날짜 문자열 변환
         display_df = filtered_df.copy()
         if '영업마감일자' in display_df.columns:
             display_df['영업마감일자'] = display_df['영업마감일자'].dt.strftime('%Y-%m-%d')
@@ -333,7 +301,6 @@ with tab2:
     else:
         st.info("선택된 월의 B2C 출고 데이터가 없습니다.")
 
-# [탭 3] 입고 현황
 with tab3:
     st.markdown(f"### 📦 입고 상세 내역 ({selected_month}월)")
     
