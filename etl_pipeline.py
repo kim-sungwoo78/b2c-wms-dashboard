@@ -29,6 +29,16 @@ def get_sheets_service(creds_dict):
 def sanitize_filename(name_str):
     return str(name_str).replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_").replace("?", "_").replace('"', "_").replace("<", "_").replace(">", "_").replace("|", "_").strip()
 
+def parse_clean_float(val):
+    """'22,000' 과 같은 콤마 포함 문자열 수치를 안전하게 float로 변환"""
+    if not val:
+        return 0.0
+    try:
+        clean_s = str(val).replace(",", "").strip()
+        return float(clean_s)
+    except Exception:
+        return 0.0
+
 def safe_list_files(service, query):
     """공유 드라이브(Shared Drive) 호환성을 보장하는 파일 안전 조회 함수"""
     try:
@@ -40,9 +50,8 @@ def safe_list_files(service, query):
             corpora='allDrives'
         ).execute()
         return results.get('files', [])
-    except Exception as e:
+    except Exception:
         try:
-            # corpora 옵션 제외 후 2차 시도
             results = service.files().list(
                 q=query,
                 fields="files(id, name)",
@@ -85,10 +94,11 @@ def rename_existing_processed_files(service):
             file_id = f['id']
             orig_name = f['name']
 
+            # 이미 정돈된 패턴 및 특수 폴더는 건너뜀
             if orig_name.startswith("[중복]") or orig_name == "[중복_확인필요]":
                 continue
 
-            # 파일 읽기
+            # 파일 다운로드 및 헤더 추출 (대형 파일 고려 nrows=50 설정으로 초속 읽기)
             request = service.files().get_media(fileId=file_id)
             fh = io.BytesIO()
             downloader = MediaIoBaseDownload(fh, request)
@@ -98,7 +108,8 @@ def rename_existing_processed_files(service):
             fh.seek(0)
 
             try:
-                df = pd.read_excel(fh)
+                # 상위 50행만 읽어 날짜 및 센터명 빠르게 판별
+                df = pd.read_excel(fh, nrows=50)
                 
                 date_str = "20261008"
                 if '영업마감일자' in df.columns and not df['영업마감일자'].dropna().empty:
@@ -128,14 +139,14 @@ def rename_existing_processed_files(service):
                     seq_num = len(existing) + 1
                     new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
 
-                # 이름 업데이트
+                # 구글 드라이브 상의 파일명 즉시 업데이트
                 service.files().update(
                     fileId=file_id, 
                     body={'name': new_filename},
                     supportsAllDrives=True
                 ).execute()
-            except Exception:
-                pass
+            except Exception as ex:
+                print(f"File rename exception for {orig_name}: {ex}")
     except Exception as e:
         print(f"Batch rename warning: {e}")
 
@@ -265,7 +276,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         except Exception as e:
             print(f"File process error ({orig_name}): {e}")
 
-    # 구글 시트 매칭
+    # 구글 시트 매칭 (안전한 parse_clean_float 함수 사용)
     if sheets_service:
         try:
             conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
@@ -277,8 +288,8 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             for row in rows:
                 if len(row) >= 6:
                     ib_no = row[1] if len(row) > 1 else ""
-                    plt_val = float(row[4]) if len(row) > 4 and row[4] else 0.0
-                    box_val = float(row[5]) if len(row) > 5 and row[5] else 0.0
+                    plt_val = parse_clean_float(row[4]) if len(row) > 4 else 0.0
+                    box_val = parse_clean_float(row[5]) if len(row) > 5 else 0.0
 
                     if ib_no:
                         conn_ib.execute("""
