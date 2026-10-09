@@ -39,7 +39,6 @@ def parse_clean_float(val):
         return 0.0
 
 def safe_list_files(service, query):
-    """공유 드라이브(Shared Drive) 호환성을 안전하게 보장하는 파일 목록 조회 함수"""
     try:
         results = service.files().list(
             q=query,
@@ -168,7 +167,13 @@ def process_file_content(df, conn_b2c):
     return date_str, center_str
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # DB 테이블 생성 및 가공
+    # ★ [기존 로컬 DB 삭제 후 초기화 재생성] ★
+    if os.path.exists(DB_B2C_PATH):
+        try:
+            os.remove(DB_B2C_PATH)
+        except Exception:
+            pass
+
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -180,7 +185,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     dup_folder_id = get_or_create_dup_folder(service)
 
-    # 1. 파일 목록 정확히 검색 (업로드 하위 B2C 폴더 포함 + 처리완료 폴더)
+    # 1. 파일 목록 검색 (B2C, B2B, 입고 등 하위 업로드 폴더 전체 + 처리완료 폴더)
     raw_files_with_parent = get_all_excel_files(service)
     processed_files = safe_list_files(service, f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'")
 
@@ -197,7 +202,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     matched_inbound_count = 0
     err_msg = None
 
-    # 2. 로우파일 분석 및 초경량 DB 수집 / 자동 파일명 변경
+    # 2. 로우파일 가공 및 자동 파일명 변경 / 초경량 DB 수집
     for idx, (f_info, parent_folder) in enumerate(all_target_files, 1):
         file_id = f_info['id']
         orig_name = f_info['name']
@@ -226,7 +231,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 seq_num = len(existing) + 1
                 new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
 
-            # 파일 이동 및 파일명 변경
+            # 업로드 영역(B2C 폴더 포함)에 있던 파일은 처리완료 폴더로 이동하며 이름 변경
             if parent_folder != PROCESSED_FOLDER_ID:
                 service.files().update(
                     fileId=file_id,
@@ -274,14 +279,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             conn_ib.close()
         except Exception as e:
             err_msg = str(e)
-
-    # DB 다이어트 정돈
-    try:
-        conn_b2c.execute("DELETE FROM shipment_raw WHERE 1=1;")
-        conn_b2c.execute("VACUUM;")
-        conn_b2c.commit()
-    except Exception:
-        pass
 
     conn_b2c.close()
     return matched_inbound_count, err_msg
