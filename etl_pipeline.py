@@ -33,7 +33,13 @@ def get_or_create_dup_folder(service):
     """'처리완료' 폴더 내에 [중복_확인필요] 폴더가 없으면 자동 생성 후 ID 반환"""
     try:
         q = f"'{PROCESSED_FOLDER_ID}' in parents and name = '[중복_확인필요]' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        res = service.files().list(q=q, fields="files(id)").execute().get('files', [])
+        res = service.files().list(
+            q=q, 
+            fields="files(id)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute().get('files', [])
+        
         if res:
             return res[0]['id']
         
@@ -42,23 +48,32 @@ def get_or_create_dup_folder(service):
             'mimeType': 'application/vnd.google-apps.folder',
             'parents': [PROCESSED_FOLDER_ID]
         }
-        folder = service.files().create(body=folder_metadata, fields='id').execute()
+        folder = service.files().create(
+            body=folder_metadata, 
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
         return folder.get('id')
-    except Exception:
+    except Exception as e:
+        print(f"Dup folder warning: {e}")
         return PROCESSED_FOLDER_ID
 
 def rename_existing_processed_files(service):
     """'처리완료' 폴더에 이미 보관 중인 예전 파일들의 이름을 [마감일자_센터명_순번]으로 일괄 변경"""
     try:
         q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'"
-        results = service.files().list(q=q, fields="files(id, name)").execute()
+        results = service.files().list(
+            q=q, 
+            fields="files(id, name)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
         files = results.get('files', [])
 
         for f in files:
             file_id = f['id']
             orig_name = f['name']
 
-            # 이미 정돈된 패턴이나 중복 폴더/파일은 패스
             if orig_name.startswith("[중복]") or orig_name == "[중복_확인필요]":
                 continue
 
@@ -74,7 +89,6 @@ def rename_existing_processed_files(service):
             try:
                 df = pd.read_excel(fh)
                 
-                # 시작일과 종료일 계산 (통합 파일 고려)
                 date_str = "20261008"
                 if '영업마감일자' in df.columns and not df['영업마감일자'].dropna().empty:
                     clean_dates = df['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
@@ -97,13 +111,23 @@ def rename_existing_processed_files(service):
                     continue
 
                 existing_q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
-                existing = service.files().list(q=existing_q, fields="files(name)").execute().get('files', [])
+                existing = service.files().list(
+                    q=existing_q, 
+                    fields="files(name)",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True
+                ).execute().get('files', [])
+                
                 if existing:
                     seq_num = len(existing) + 1
                     new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
 
                 # 이름 업데이트
-                service.files().update(fileId=file_id, body={'name': new_filename}).execute()
+                service.files().update(
+                    fileId=file_id, 
+                    body={'name': new_filename},
+                    supportsAllDrives=True
+                ).execute()
             except Exception:
                 pass
     except Exception as e:
@@ -115,7 +139,12 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     # 1. 신규 엑셀 파일 스캔
     query = f"'{RAW_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
+    results = service.files().list(
+        q=query, 
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
     files = results.get('files', [])
 
     total_files = len(files)
@@ -147,7 +176,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         try:
             df = pd.read_excel(fh)
             
-            # 시작일과 종료일 계산 (통합 파일 고려)
             date_str = datetime.now().strftime('%Y%m%d')
             if '영업마감일자' in df.columns and not df['영업마감일자'].dropna().empty:
                 clean_dates = df['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
@@ -184,7 +212,13 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 new_filename = f"[중복]_{date_str}_{center_str}_{seq_num}.xlsx"
                 
                 existing_dup_q = f"'{dup_folder_id}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
-                existing_dups = service.files().list(q=existing_dup_q, fields="files(name)").execute().get('files', [])
+                existing_dups = service.files().list(
+                    q=existing_dup_q, 
+                    fields="files(name)",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True
+                ).execute().get('files', [])
+                
                 if existing_dups:
                     seq_num = len(existing_dups) + 1
                     new_filename = f"[중복]_{date_str}_{center_str}_{seq_num}.xlsx"
@@ -193,7 +227,8 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     fileId=file_id,
                     addParents=dup_folder_id,
                     removeParents=RAW_FOLDER_ID,
-                    body={'name': new_filename}
+                    body={'name': new_filename},
+                    supportsAllDrives=True
                 ).execute()
 
             else:
@@ -216,7 +251,13 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
                 
                 existing_query = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
-                existing_files = service.files().list(q=existing_query, fields="files(name)").execute().get('files', [])
+                existing_files = service.files().list(
+                    q=existing_query, 
+                    fields="files(name)",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True
+                ).execute().get('files', [])
+                
                 if existing_files:
                     seq_num = len(existing_files) + 1
                     new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
@@ -225,7 +266,8 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     fileId=file_id,
                     addParents=PROCESSED_FOLDER_ID,
                     removeParents=RAW_FOLDER_ID,
-                    body={'name': new_filename}
+                    body={'name': new_filename},
+                    supportsAllDrives=True
                 ).execute()
 
                 processed_files_count += 1
