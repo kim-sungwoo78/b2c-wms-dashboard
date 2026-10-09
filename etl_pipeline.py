@@ -10,7 +10,7 @@ from google.oauth2.service_account import Credentials
 
 # 구글 드라이브 폴더 ID 설정
 RAW_FOLDER_ID = "1Iqg4O8fS5E8eO2u0zKq04Jms3zJjM02F"       # 대시보드 업로드 폴더 ID
-DB_FOLDER_ID = "15Ew-iXw65I2Z0f074RUp-H9wXw-E2B4m"        # [DB전용] 절대 삭제 금지 폴더 ID
+PROCESSED_FOLDER_ID = "15Ew-iXw65I2Z0f074RUp-H9wXw-E2B4m" # DB전용 & 처리완료 폴더 ID
 
 # DB 파일 경로
 DB_B2C_PATH = "wms_b2c.db"
@@ -52,25 +52,8 @@ def safe_drive_list(service, query):
         except Exception:
             return []
 
-def sync_db_from_drive(service):
-    """서버 시작 시 구글 드라이브 [DB전용] 폴더에서 DB 파일 최신 다운로드"""
-    for db_name in [DB_B2C_PATH, DB_INBOUND_PATH]:
-        try:
-            q = f"'{DB_FOLDER_ID}' in parents and name = '{db_name}' and trashed = false"
-            files = safe_drive_list(service, q)
-            if files:
-                file_id = files[0]['id']
-                request = service.files().get_media(fileId=file_id)
-                with open(db_name, 'wb') as f:
-                    downloader = MediaIoBaseDownload(f, request)
-                    done = False
-                    while not done:
-                        _, done = downloader.next_chunk()
-        except Exception as e:
-            print(f"DB Sync Download Error ({db_name}): {e}")
-
 def get_all_raw_excel_files(service):
-    """B2C 로우 파일 전수 수집"""
+    """B2C 로우 파일 및 부모 폴더 ID 함께 수집"""
     target_files = []
     queries = [
         f"'{RAW_FOLDER_ID}' in parents and trashed = false",
@@ -88,11 +71,14 @@ def get_all_raw_excel_files(service):
                 if (fname_l.endswith('.xlsx') or fname_l.endswith('.xls')) and not fname_l.startswith('~$') and not fname_l.startswith('[중복]'):
                     if fid not in seen_ids:
                         seen_ids.add(fid)
-                        target_files.append(item)
+                        parents = item.get('parents', [])
+                        parent_id = parents[0] if parents else RAW_FOLDER_ID
+                        if parent_id != PROCESSED_FOLDER_ID:
+                            target_files.append((item, parent_id))
     return target_files
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 1. DB 준비
+    # 1. DB 테이블 초기화
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -116,10 +102,10 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     if total_files == 0:
         conn_b2c.close()
-        return 0, "ℹ️ 동기화할 B2C 로우 파일이 감지되지 않았습니다."
+        return 0, "ℹ️ 동기화할 B2C 로우 파일이 없습니다."
 
-    # 3. 로우 파일 순회 가공 및 DB 구축
-    for idx, f_info in enumerate(target_files, 1):
+    # 3. 로우 파일 순회 가공 ➔ DB 저장 ➔ '처리완료' 폴더로 이동
+    for idx, (f_info, actual_parent_id) in enumerate(target_files, 1):
         file_id = f_info['id']
         orig_name = f_info['name']
 
@@ -135,7 +121,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         fh.seek(0)
 
         try:
-            # 엑셀 로딩
+            # 원본 헤더 자동 파싱
             df = None
             for h_idx in [0, 1, 2, 3]:
                 try:
@@ -151,7 +137,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 fh.seek(0)
                 df = pd.read_excel(fh)
 
-            # 중복 컬럼 완전 제거 보장
+            # 중복 컬럼 제거
             df = df.loc[:, ~df.columns.duplicated()]
 
             # 컬럼 매칭
@@ -201,6 +187,18 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
             summary_df.to_sql('shipment_raw', conn_b2c, if_exists='append', index=False)
 
+            # 가공 완료된 파일 '처리완료' 폴더로 이동
+            if actual_parent_id != PROCESSED_FOLDER_ID:
+                try:
+                    service.files().update(
+                        fileId=file_id,
+                        addParents=PROCESSED_FOLDER_ID,
+                        removeParents=actual_parent_id,
+                        supportsAllDrives=True
+                    ).execute()
+                except Exception as mv_e:
+                    print(f"File move warning ({orig_name}): {mv_e}")
+
             processed_cnt += 1
 
         except Exception as e:
@@ -209,7 +207,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     conn_b2c.commit()
     conn_b2c.close()
 
-    # 4. 입고 시트 연동 매칭
+    # 4. 입고 구글 시트 연동
     if sheets_service:
         try:
             conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
@@ -239,16 +237,16 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     # 5. [DB전용] 절대 삭제 금지 폴더로 wms_b2c.db 자동 업로드
     try:
-        db_q = f"'{DB_FOLDER_ID}' in parents and name = 'wms_b2c.db' and trashed = false"
+        db_q = f"'{PROCESSED_FOLDER_ID}' in parents and name = 'wms_b2c.db' and trashed = false"
         db_files = safe_drive_list(service, db_q)
         
         media = MediaFileUpload(DB_B2C_PATH, mimetype='application/x-sqlite3', resumable=True)
         if db_files:
             service.files().update(fileId=db_files[0]['id'], media_body=media, supportsAllDrives=True).execute()
         else:
-            file_metadata = {'name': 'wms_b2c.db', 'parents': [DB_FOLDER_ID]}
+            file_metadata = {'name': 'wms_b2c.db', 'parents': [PROCESSED_FOLDER_ID]}
             service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
     except Exception as db_err:
         print(f"DB Upload Warning: {db_err}")
 
-    return matched_inbound_count, f"🎉 B2C 로우 파일 총 {processed_cnt}개 DB 반영 및 구글 드라이브 업로드 성공!"
+    return matched_inbound_count, f"🎉 B2C 로우 파일 총 {processed_cnt}개 DB 반영, 드라이브 업로드 및 이동 완료!"
