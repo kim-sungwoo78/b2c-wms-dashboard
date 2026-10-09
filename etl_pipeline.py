@@ -10,10 +10,9 @@ from google.oauth2.service_account import Credentials
 
 # 구글 드라이브 폴더 ID 설정
 RAW_FOLDER_ID = "1Iqg4O8fS5E8eO2u0zKq04Jms3zJjM02F"       # 대시보드 업로드 폴더 ID
-PROCESSED_FOLDER_ID = "15Ew-iXw65I2Z0f074RUp-H9wXw-E2B4m" # 처리완료 폴더 ID
+PROCESSED_FOLDER_ID = "15Ew-iXw65I2Z0f074RUp-H9wXw-E2B4m" # DB 전용/보존 폴더 ID
 
-# DB 파일 경로
-DB_B2C_PATH = "wms_b2c.db"
+# DB 경로 템플릿
 DB_INBOUND_PATH = "wms_inbound.db"
 
 def get_drive_service(creds_dict):
@@ -26,9 +25,6 @@ def get_sheets_service(creds_dict):
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return build('sheets', 'v4', credentials=credentials)
 
-def sanitize_filename(name_str):
-    return str(name_str).replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_").replace("?", "_").replace('"', "_").replace("<", "_").replace(">", "_").replace("|", "_").strip()
-
 def parse_clean_float(val):
     if not val:
         return 0.0
@@ -39,7 +35,7 @@ def parse_clean_float(val):
         return 0.0
 
 def safe_drive_list(service, query):
-    """안전 목록 조회 함수"""
+    """공유 드라이브/내 드라이브 호환 안전 목록 조회"""
     try:
         res = service.files().list(
             q=query,
@@ -56,7 +52,7 @@ def safe_drive_list(service, query):
             return []
 
 def get_all_raw_excel_files(service):
-    """B2C 하위 폴더 로우파일 안전 스캔"""
+    """B2C 로우 파일 전수 수집"""
     target_files = []
     queries = [
         f"'{RAW_FOLDER_ID}' in parents and trashed = false",
@@ -74,10 +70,7 @@ def get_all_raw_excel_files(service):
                 if (fname_l.endswith('.xlsx') or fname_l.endswith('.xls')) and not fname_l.startswith('~$') and not fname_l.startswith('[중복]'):
                     if fid not in seen_ids:
                         seen_ids.add(fid)
-                        parents = item.get('parents', [])
-                        parent_id = parents[0] if parents else RAW_FOLDER_ID
-                        if parent_id != PROCESSED_FOLDER_ID:
-                            target_files.append((item, parent_id))
+                        target_files.append(item)
     return target_files
 
 def read_excel_smart(fh):
@@ -94,43 +87,43 @@ def read_excel_smart(fh):
     fh.seek(0)
     return pd.read_excel(fh)
 
-def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 1. DB 준비
-    conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
-    conn_b2c.execute("""
+def init_b2c_db(db_path):
+    """월별 B2C DB 테이블 초기화"""
+    conn = sqlite3.connect(db_path, timeout=10)
+    conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
         출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER
     )
     """)
-    conn_b2c.execute("""
+    conn.execute("""
     CREATE TABLE IF NOT EXISTS shipment_raw (
         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
         출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER
     )
     """)
-    conn_b2c.commit()
+    conn.commit()
+    return conn
 
-    # 2. B2C 로우파일 검색
+def process_and_update(service, sheets_service=None, progress_callback=None):
+    # 1. B2C 로우 파일 수집
     target_files = get_all_raw_excel_files(service)
-
     total_files = len(target_files)
     processed_cnt = 0
     matched_inbound_count = 0
+    created_db_files = set()
 
     if total_files == 0:
-        conn_b2c.close()
-        return 0, "ℹ️ 동기화할 신규 B2C 로우파일이 없습니다."
+        return 0, "ℹ️ 동기화할 B2C 로우 파일이 감지되지 않았습니다."
 
-    # 3. 로우파일 순회 가공
-    for idx, (f_info, parent_folder_id) in enumerate(target_files, 1):
+    # 2. 로우 파일 순회 및 월별 DB 분할 수집
+    for idx, f_info in enumerate(target_files, 1):
         file_id = f_info['id']
         orig_name = f_info['name']
 
         if progress_callback:
-            progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 동기화 중")
+            progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 월별 DB 동기화 중")
 
-        # 파일 다운로드
         request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -165,26 +158,23 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             if '센터' not in df_clean.columns: df_clean['센터'] = '통합센터'
             if '고객사' not in df_clean.columns: df_clean['고객사'] = '기타'
 
-            # 마감일자 및 센터명 산출
-            date_str = datetime.now().strftime('%Y%m%d')
-            try:
-                clean_dates = df_clean['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
-                clean_dates = clean_dates[clean_dates.str.len() >= 8]
-                if not clean_dates.empty:
-                    min_d = clean_dates.min()[:8]
-                    max_d = clean_dates.max()[:8]
-                    date_str = min_d if min_d == max_d else f"{min_d}_{max_d}"
-            except Exception:
-                pass
+            # 날짜 파싱 및 년월(YYYYMM) 추출
+            clean_dates = df_clean['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
+            clean_dates = clean_dates[clean_dates.str.len() >= 8]
+            if not clean_dates.empty:
+                ym_str = clean_dates.iloc[0][:6]
+            else:
+                ym_str = datetime.now().strftime('%Y%m')
 
-            center_str = "통합센터"
-            try:
-                center_val = df_clean['센터'].dropna().iloc[0] if not df_clean['센터'].dropna().empty else "통합센터"
-                center_str = sanitize_filename(center_val)
-            except Exception:
-                pass
+            # 해당 월별 DB 지정 (예: wms_b2c_202610.db 및 통합 wms_b2c.db)
+            month_db_path = f"wms_b2c_{ym_str}.db"
+            created_db_files.add(month_db_path)
+            created_db_files.add("wms_b2c.db")
 
-            # DB 집계 및 저장
+            conn_m = init_b2c_db(month_db_path)
+            conn_main = init_b2c_db("wms_b2c.db")
+
+            # 요약 집계
             group_cols = [c for c in ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드'] if c in df_clean.columns]
             if '송장번호' in df_clean.columns:
                 summary_df = df_clean.groupby(group_cols, dropna=False).agg(
@@ -197,38 +187,19 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
             summary_df['영업마감일자'] = summary_df['영업마감일자'].astype(str).str.slice(0, 10)
 
-            summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
-            summary_df.to_sql('shipment_raw', conn_b2c, if_exists='append', index=False)
-
-            # 안전한 신규 파일명 생성 ([마감일]_[센터명]_[순번].xlsx)
-            new_filename = f"{date_str}_{center_str}_{idx}.xlsx"
-
-            # '처리완료' 폴더로 이동 및 파일명 변경
-            try:
-                service.files().update(
-                    fileId=file_id,
-                    addParents=PROCESSED_FOLDER_ID,
-                    removeParents=parent_folder_id,
-                    body={'name': new_filename},
-                    supportsAllDrives=True
-                ).execute()
-            except Exception:
-                try:
-                    service.files().update(
-                        fileId=file_id,
-                        addParents=PROCESSED_FOLDER_ID,
-                        removeParents=parent_folder_id,
-                        body={'name': new_filename}
-                    ).execute()
-                except Exception as m_err:
-                    print(f"Move Error for {orig_name}: {m_err}")
+            # 월별 DB 및 메인 DB에 동시 축적
+            for conn_target in [conn_m, conn_main]:
+                summary_df.to_sql('daily_summary', conn_target, if_exists='append', index=False)
+                summary_df.to_sql('shipment_raw', conn_target, if_exists='append', index=False)
+                conn_target.commit()
+                conn_target.close()
 
             processed_cnt += 1
 
         except Exception as e:
             print(f"File process error ({orig_name}): {e}")
 
-    # 4. 입고 시트 매칭
+    # 3. 입고 시트 연동 매칭
     if sheets_service:
         try:
             conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
@@ -253,23 +224,23 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
             conn_ib.commit()
             conn_ib.close()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"Inbound sheet sync error: {ex}")
 
-    conn_b2c.close()
+    # 4. 생성된 월별 DB 파일들 구글 드라이브 [DB전용] 폴더로 자동 업로드
+    for db_f in created_db_files:
+        if os.path.exists(db_f):
+            try:
+                db_q = f"'{PROCESSED_FOLDER_ID}' in parents and name = '{db_f}' and trashed = false"
+                db_files = safe_drive_list(service, db_q)
+                
+                media = MediaFileUpload(db_f, mimetype='application/x-sqlite3', resumable=True)
+                if db_files:
+                    service.files().update(fileId=db_files[0]['id'], media_body=media, supportsAllDrives=True).execute()
+                else:
+                    file_metadata = {'name': db_f, 'parents': [PROCESSED_FOLDER_ID]}
+                    service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
+            except Exception as db_err:
+                print(f"DB Upload Warning ({db_f}): {db_err}")
 
-    # 5. 새로 생성된 wms_b2c.db 구글 드라이브 [DB전용] 폴더로 업로드
-    try:
-        db_q = f"'{PROCESSED_FOLDER_ID}' in parents and name = 'wms_b2c.db' and trashed = false"
-        db_files = safe_drive_list(service, db_q)
-        
-        media = MediaFileUpload(DB_B2C_PATH, mimetype='application/x-sqlite3', resumable=True)
-        if db_files:
-            service.files().update(fileId=db_files[0]['id'], media_body=media, supportsAllDrives=True).execute()
-        else:
-            file_metadata = {'name': 'wms_b2c.db', 'parents': [PROCESSED_FOLDER_ID]}
-            service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
-    except Exception as db_err:
-        print(f"DB Upload Warning: {db_err}")
-
-    return matched_inbound_count, f"🎉 B2C 로우파일 총 {processed_cnt}개 가공 및 DB 반영 성공!"
+    return matched_inbound_count, f"🎉 B2C 월별 DB 분할 동기화 성공! (총 {processed_cnt}개 로우 반영)"
