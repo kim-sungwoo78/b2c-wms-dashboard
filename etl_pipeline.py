@@ -39,7 +39,7 @@ def parse_clean_float(val):
         return 0.0
 
 def safe_drive_list(service, query):
-    """공유 드라이브 호환 100% 안전 목록 조회"""
+    """공유 드라이브/내 드라이브 100% 호환 안전 목록 조회"""
     try:
         res = service.files().list(
             q=query,
@@ -56,7 +56,7 @@ def safe_drive_list(service, query):
             return []
 
 def get_all_raw_excel_files(service):
-    """B2C 로우파일 전수 검색"""
+    """B2C 로우파일 전수 직접 검색"""
     target_files = []
     queries = [
         f"'{RAW_FOLDER_ID}' in parents and trashed = false",
@@ -79,31 +79,19 @@ def get_all_raw_excel_files(service):
                             target_files.append((item, parent_id))
     return target_files
 
-def read_excel_memory_safe(fh):
-    """87MB 대용량 엑셀도 메모리 초과(OOM) 없이 초고속 파싱하는 메모리 최적화 로더"""
+def read_excel_smart(fh):
+    """표준 엑셀 파싱 로더"""
     for h_idx in [0, 1, 2, 3, 4]:
         try:
             fh.seek(0)
-            # calamine 엔진을 우선 사용 (메모리 사용량 90% 감소)
-            df = pd.read_excel(fh, header=h_idx, engine='calamine')
+            df = pd.read_excel(fh, header=h_idx)
             cols_str = [str(c) for c in df.columns]
             if any('일자' in c or '마감' in c or '송장' in c for c in cols_str):
                 return df
         except Exception:
-            try:
-                fh.seek(0)
-                df = pd.read_excel(fh, header=h_idx)
-                cols_str = [str(c) for c in df.columns]
-                if any('일자' in c or '마감' in c or '송장' in c for c in cols_str):
-                    return df
-            except Exception:
-                continue
+            continue
     fh.seek(0)
-    try:
-        return pd.read_excel(fh, engine='calamine')
-    except Exception:
-        fh.seek(0)
-        return pd.read_excel(fh)
+    return pd.read_excel(fh)
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
     # 1. DB 준비
@@ -122,7 +110,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     """)
     conn_b2c.commit()
 
-    # 2. 신규 B2C 로우파일 검색
+    # 2. B2C 로우파일 검색
     target_files = get_all_raw_excel_files(service)
 
     total_files = len(target_files)
@@ -133,13 +121,13 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         conn_b2c.close()
         return 0, "ℹ️ 동기화할 신규 B2C 로우파일이 없습니다."
 
-    # 3. 로우파일 순회 가공 (대용량 파일 메모리 안전 가공)
+    # 3. 로우파일 순회 가공
     for idx, (f_info, current_folder_id) in enumerate(target_files, 1):
         file_id = f_info['id']
         orig_name = f_info['name']
 
         if progress_callback:
-            progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 메모리 안전 가공 중")
+            progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 가공 중")
 
         request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
@@ -150,8 +138,8 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         fh.seek(0)
 
         try:
-            # 대용량 안전 파싱
-            df = read_excel_memory_safe(fh)
+            # 표준 엑셀 로더로 읽기
+            df = read_excel_smart(fh)
 
             # 컬럼 표준화
             col_map = {}
@@ -269,7 +257,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn_b2c.close()
 
-    # ★ [핵심 5. 새로 가공된 wms_b2c.db 구글 드라이브 [DB전용] 폴더로 자동 업로드] ★
+    # 5. DB 자동 업로드
     try:
         db_q = f"'{PROCESSED_FOLDER_ID}' in parents and name = 'wms_b2c.db' and trashed = false"
         db_files = safe_drive_list(service, db_q)
