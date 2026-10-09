@@ -11,7 +11,6 @@ try:
         get_drive_service,
         get_sheets_service,
         process_and_update,
-        sync_db_from_drive,
         DB_B2C_PATH,
         DB_INBOUND_PATH
     )
@@ -36,15 +35,13 @@ st.markdown("""
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
-# 1. 인증 및 서버 시작 시 DB 구글 드라이브 동기화
+# 1. 인증
 @st.cache_resource
 def init_services():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
         drive_service = get_drive_service(creds_dict)
         sheets_service = get_sheets_service(creds_dict)
-        if drive_service:
-            sync_db_from_drive(drive_service)
         return drive_service, sheets_service
     except Exception:
         return None, None
