@@ -38,49 +38,8 @@ def parse_clean_float(val):
     except Exception:
         return 0.0
 
-def safe_list_files(service, folder_id):
-    """지정 폴더 내 파일 100% 안전 목록 조회"""
-    try:
-        q = f"'{folder_id}' in parents and trashed = false"
-        res = service.files().list(
-            q=q,
-            fields="files(id, name, parents, mimeType)",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True
-        ).execute()
-        return res.get('files', [])
-    except Exception:
-        try:
-            q = f"'{folder_id}' in parents and trashed = false"
-            res = service.files().list(q=q, fields="files(id, name, parents, mimeType)").execute()
-            return res.get('files', [])
-        except Exception:
-            return []
-
-def safe_update_file(service, file_id, add_parents, remove_parents, new_name):
-    """안전 파일 이동 및 파일명 변경 실행 함수"""
-    body = {'name': new_name}
-    try:
-        service.files().update(
-            fileId=file_id,
-            addParents=add_parents,
-            removeParents=remove_parents,
-            body=body,
-            supportsAllDrives=True
-        ).execute()
-    except Exception:
-        try:
-            service.files().update(
-                fileId=file_id,
-                addParents=add_parents,
-                removeParents=remove_parents,
-                body=body
-            ).execute()
-        except Exception as e:
-            print(f"File update error for {file_id}: {e}")
-
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 1. DB 테이블 준비
+    # 1. DB 초기화 및 테이블 준비
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -96,38 +55,52 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     """)
     conn_b2c.commit()
 
-    # 2. ★ [핵심: 신규 업로드 폴더 + 이미 '처리완료' 폴더에 들어간 모든 파일까지 전수 수집] ★
-    target_folder_ids = [RAW_FOLDER_ID, PROCESSED_FOLDER_ID]
+    # 2. 구글 드라이브 파일 탐색 (가장 단순하고 확실한 내 드라이브 API 호출 방식)
+    target_files = []
     
-    # B2C 등 하위 폴더 ID 수집
-    raw_sub_items = safe_list_files(service, RAW_FOLDER_ID)
-    subfolders = [f for f in raw_sub_items if f.get('mimeType') == 'application/vnd.google-apps.folder' and f['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']]
-    for sf in subfolders:
-        target_folder_ids.append(sf['id'])
-
-    all_target_files = []
-    for f_id in target_folder_ids:
-        items = safe_list_files(service, f_id)
-        for item in items:
-            if item.get('mimeType') != 'application/vnd.google-apps.folder':
+    # 2-1. '대시보드 업로드' 및 '처리완료' 폴더 파일 스캔
+    for fid in [RAW_FOLDER_ID, PROCESSED_FOLDER_ID]:
+        try:
+            res = service.files().list(q=f"'{fid}' in parents and trashed = false", fields="files(id, name, parents)").execute()
+            items = res.get('files', [])
+            for item in items:
                 fname = item['name'].lower()
                 if (fname.endswith('.xlsx') or fname.endswith('.xls')) and not fname.startswith('~$') and not fname.startswith('[중복]'):
-                    all_target_files.append((item, f_id))
+                    target_files.append((item, fid))
+        except Exception as e:
+            print(f"List error for folder {fid}: {e}")
 
-    total_files = len(all_target_files)
+    # 2-2. B2C 등 하위 폴더 스캔
+    try:
+        sub_res = service.files().list(q=f"'{RAW_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false", fields="files(id, name)").execute()
+        subfolders = sub_res.get('files', [])
+        for sf in subfolders:
+            if sf['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']:
+                s_res = service.files().list(q=f"'{sf['id']}' in parents and trashed = false", fields="files(id, name, parents)").execute()
+                for item in s_res.get('files', []):
+                    fname = item['name'].lower()
+                    if (fname.endswith('.xlsx') or fname.endswith('.xls')) and not fname.startswith('~$') and not fname.startswith('[중복]'):
+                        target_files.append((item, sf['id']))
+    except Exception as e:
+        print(f"Subfolder scan error: {e}")
+
+    total_files = len(target_files)
     processed_cnt = 0
     matched_inbound_count = 0
     err_msg = None
 
-    # 3. 전수 로우파일 순회 및 DB 완벽 재생성 + 파일명 정돈
-    for idx, (f_info, current_folder_id) in enumerate(all_target_files, 1):
+    if total_files == 0:
+        conn_b2c.close()
+        return 0, "⚠️ 감지된 B2C 로우파일이 0개입니다. (구글 드라이브 업로드 폴더 확인 필요)"
+
+    # 3. 로우파일 가공 및 DB 재구축
+    for idx, (f_info, current_folder_id) in enumerate(target_files, 1):
         file_id = f_info['id']
         orig_name = f_info['name']
 
         if progress_callback:
             progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 동기화 중")
 
-        # 파일 다운로드
         request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -137,7 +110,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         fh.seek(0)
 
         try:
-            # 헤더 파싱
+            # 엑셀 헤더 유연 로딩
             df = None
             for h_idx in [0, 1, 2, 3]:
                 try:
@@ -153,7 +126,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 fh.seek(0)
                 df = pd.read_excel(fh)
 
-            # 컬럼 매칭
+            # 컬럼 표준화
             col_map = {}
             for c in df.columns:
                 sc = str(c).strip()
@@ -176,7 +149,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             if '센터' not in df_clean.columns: df_clean['센터'] = '통합센터'
             if '고객사' not in df_clean.columns: df_clean['고객사'] = '기타'
 
-            # 마감일자 및 센터명 안전 추출
+            # 마감일자 및 센터명 산출
             date_str = datetime.now().strftime('%Y%m%d')
             try:
                 clean_dates = df_clean['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
@@ -210,26 +183,33 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
             summary_df.to_sql('shipment_raw', conn_b2c, if_exists='append', index=False)
 
-            # 파일명 자동 정돈 및 '처리완료' 폴더로 이동
+            # 파일명 변경 및 '처리완료' 이동
             seq_num = idx
             new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
 
             if current_folder_id != PROCESSED_FOLDER_ID:
-                safe_update_file(service, file_id, PROCESSED_FOLDER_ID, current_folder_id, new_filename)
+                try:
+                    service.files().update(
+                        fileId=file_id,
+                        addParents=PROCESSED_FOLDER_ID,
+                        removeParents=current_folder_id,
+                        body={'name': new_filename}
+                    ).execute()
+                except Exception:
+                    pass
             else:
                 if orig_name != new_filename:
-                    body = {'name': new_filename}
                     try:
-                        service.files().update(fileId=file_id, body=body, supportsAllDrives=True).execute()
+                        service.files().update(fileId=file_id, body={'name': new_filename}).execute()
                     except Exception:
-                        service.files().update(fileId=file_id, body=body).execute()
+                        pass
 
             processed_cnt += 1
 
         except Exception as e:
             print(f"File process error ({orig_name}): {e}")
 
-    # 4. 입고 구글 시트 매칭
+    # 4. 입고 시트 매칭
     if sheets_service:
         try:
             conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
@@ -260,6 +240,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     conn_b2c.close()
 
     if processed_cnt > 0:
-        err_msg = f"🎉 B2C 파일 {processed_cnt}건 가공 및 DB 재구축 완료!"
+        err_msg = f"🎉 B2C 로우파일 총 {processed_cnt}개 가공 및 DB 완벽 반영 성공!"
 
     return matched_inbound_count, err_msg
