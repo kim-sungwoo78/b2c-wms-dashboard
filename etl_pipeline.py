@@ -38,54 +38,53 @@ def parse_clean_float(val):
     except Exception:
         return 0.0
 
-def safe_drive_list(service, query):
-    """공유 드라이브 호환 100% 안전 구글 API 목록 조회 함수"""
-    try:
-        res = service.files().list(
-            q=query,
-            fields="files(id, name, parents, mimeType)",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True
-        ).execute()
-        return res.get('files', [])
-    except Exception:
-        try:
-            res = service.files().list(q=query, fields="files(id, name, parents, mimeType)").execute()
-            return res.get('files', [])
-        except Exception:
-            return []
-
 def get_all_raw_excel_files(service):
-    """'대시보드 업로드' 및 'B2C' 등 하위 폴더의 엑셀 파일 전수 탐색"""
+    """폴더 제약 없이 서비스 계정이 접근 가능한 B2C 엑셀 로우파일 전수 직접 검색"""
     target_files = []
     
-    # 1. '대시보드 업로드' 최상위 폴더 항목 조회
-    top_items = safe_drive_list(service, f"'{RAW_FOLDER_ID}' in parents and trashed = false")
+    # 1. '대시보드 업로드' 하위 및 드라이브 내 엑셀 파일 전수 검색
+    queries = [
+        f"'{RAW_FOLDER_ID}' in parents and trashed = false",
+        "trashed = false and (name contains '송장' or name contains '출고' or name contains '.xlsx' or name contains '.xls')"
+    ]
     
-    folder_ids = [RAW_FOLDER_ID]
-    for item in top_items:
-        if item.get('mimeType') == 'application/vnd.google-apps.folder':
-            if item['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']:
-                folder_ids.append(item['id'])
-        else:
-            fname = item['name'].lower()
-            if (fname.endswith('.xlsx') or fname.endswith('.xls')) and not fname.startswith('~$') and not fname.startswith('[중복]'):
-                target_files.append((item, RAW_FOLDER_ID))
+    seen_ids = set()
+    for q in queries:
+        try:
+            res = service.files().list(
+                q=q,
+                fields="files(id, name, parents, mimeType)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute()
+            items = res.get('files', [])
+        except Exception:
+            try:
+                res = service.files().list(q=q, fields="files(id, name, parents, mimeType)").execute()
+                items = res.get('files', [])
+            except Exception:
+                items = []
 
-    # 2. 하위 폴더(B2C, B2B 등) 내 엑셀 파일 탐색
-    for fid in folder_ids:
-        if fid != RAW_FOLDER_ID:
-            sub_items = safe_drive_list(service, f"'{fid}' in parents and trashed = false")
-            for sub_item in sub_items:
-                if sub_item.get('mimeType') != 'application/vnd.google-apps.folder':
-                    fname = sub_item['name'].lower()
-                    if (fname.endswith('.xlsx') or fname.endswith('.xls')) and not fname.startswith('~$') and not fname.startswith('[중복]'):
-                        target_files.append((sub_item, fid))
+        for item in items:
+            fid = item['id']
+            fname = item['name']
+            mtype = item.get('mimeType', '')
+
+            # 엑셀 파일이고 '처리완료' 폴더/DB 파일이 아닌 경우
+            if mtype != 'application/vnd.google-apps.folder':
+                fname_l = fname.lower()
+                if (fname_l.endswith('.xlsx') or fname_l.endswith('.xls')) and not fname_l.startswith('~$') and not fname_l.startswith('[중복]'):
+                    if fid not in seen_ids:
+                        seen_ids.add(fid)
+                        parent_id = item.get('parents', [RAW_FOLDER_ID])[0]
+                        # 처리완료 폴더에 이미 들어간 파일은 신규 대상에서 제외
+                        if parent_id != PROCESSED_FOLDER_ID:
+                            target_files.append((item, parent_id))
 
     return target_files
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 1. DB 준비
+    # 1. DB 준비 및 테이블 보장
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -101,7 +100,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     """)
     conn_b2c.commit()
 
-    # 2. B2C 하위 폴더 포함 전수 파일 탐색
+    # 2. 전역 스마트 엑셀 파일 전수 탐색
     target_files = get_all_raw_excel_files(service)
 
     total_files = len(target_files)
@@ -110,7 +109,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     if total_files == 0:
         conn_b2c.close()
-        return 0, "⚠️ 감지된 B2C 로우파일이 0개입니다. (구글 드라이브 B2C 폴더 권한 확인 필요)"
+        return 0, "⚠️ 감지된 B2C 로우파일이 0개입니다. (구글 드라이브 파일 이름 확인 필요)"
 
     # 3. 로우파일 순회 가공 및 이동
     for idx, (f_info, current_folder_id) in enumerate(target_files, 1):
