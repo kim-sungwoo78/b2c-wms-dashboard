@@ -5,12 +5,13 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.oauth2.service_account import Credentials
 
 # 구글 드라이브 폴더 ID 설정
-RAW_FOLDER_ID = "1Iqg4O8fS5E8eO2u0zKq04Jms3zJjM02F"       # 대시보드 업로드
-PROCESSED_FOLDER_ID = "15Ew-iXw65I2Z0f074RUp-H9wXw-E2B4m" # 처리완료 폴더
+RAW_FOLDER_ID = "1Iqg4O8fS5E8eO2u0zKq04Jms3zJjM02F"       # 대시보드 업로드 폴더 ID
+PROCESSED_FOLDER_ID = "15Ew-iXw65I2Z0f074RUp-H9wXw-E2B4m" # 처리완료 폴더 ID
+DB_FOLDER_ID = "1d-75-b2c-DB-Folder-ID-Placeholder"       # DB 보관 폴더 ID
 
 # DB 파일 경로
 DB_B2C_PATH = "wms_b2c.db"
@@ -38,65 +39,38 @@ def parse_clean_float(val):
     except Exception:
         return 0.0
 
-def safe_list_files(service, query):
+def safe_list_files(service, folder_id):
+    """지정 폴더 내의 엑셀 파일 안전 목록 조회"""
     try:
+        q = f"'{folder_id}' in parents and trashed = false"
         results = service.files().list(
-            q=query,
-            fields="files(id, name, mimeType)",
+            q=q,
+            fields="files(id, name, parents)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+        files = results.get('files', [])
+        return [f for f in files if (f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.xls')) and not f['name'].startswith('~$')]
+    except Exception as e:
+        print(f"List files error: {e}")
+        return []
+
+def safe_list_subfolders(service, parent_id):
+    """하위 폴더(B2C, B2B 등) 목록 조회"""
+    try:
+        q = f"'{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        results = service.files().list(
+            q=q,
+            fields="files(id, name)",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True
         ).execute()
         return results.get('files', [])
-    except Exception as e:
-        print(f"Drive API List Error: {e}")
+    except Exception:
         return []
 
-def get_all_excel_files(service):
-    """'대시보드 업로드' 폴더 및 'B2C' 등 모든 하위 폴더의 엑셀 파일 전수 수집"""
-    found_files = []
-    
-    # 1. 하위 폴더 검색 (B2C, B2B, 입고 등)
-    subfolders = safe_list_files(service, f"'{RAW_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false")
-    
-    target_folder_ids = [RAW_FOLDER_ID]
-    for sf in subfolders:
-        if sf['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']:
-            target_folder_ids.append(sf['id'])
-
-    # 2. 업로드 폴더들 내 .xlsx / .xls 파일 탐색
-    for f_id in target_folder_ids:
-        q = f"'{f_id}' in parents and trashed = false"
-        files = safe_list_files(service, q)
-        for f in files:
-            fname = f['name'].lower()
-            if (fname.endswith('.xlsx') or fname.endswith('.xls')) and not fname.startswith('~$'):
-                found_files.append((f, f_id))
-                
-    return found_files
-
-def get_or_create_dup_folder(service):
-    try:
-        q = f"'{PROCESSED_FOLDER_ID}' in parents and name = '[중복_확인필요]' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        res = safe_list_files(service, q)
-        if res:
-            return res[0]['id']
-        
-        folder_metadata = {
-            'name': '[중복_확인필요]',
-            'mimeType': 'application/vnd.google-apps.folder',
-            'parents': [PROCESSED_FOLDER_ID]
-        }
-        folder = service.files().create(
-            body=folder_metadata, 
-            fields='id',
-            supportsAllDrives=True
-        ).execute()
-        return folder.get('id')
-    except Exception:
-        return PROCESSED_FOLDER_ID
-
 def read_excel_smart(fh):
-    """엑셀 상단 제목/빈 행에 관계없이 데이터 헤더를 최적 자동 파싱"""
+    """엑셀 상단 헤더 위치 자동 감지 로더"""
     for header_idx in [0, 1, 2, 3, 4, 5]:
         try:
             fh.seek(0)
@@ -110,7 +84,7 @@ def read_excel_smart(fh):
     return pd.read_excel(fh)
 
 def process_file_content(df, conn_b2c):
-    """다양한 형태의 컬럼명을 유연하게 매칭하여 daily_summary 에 집계 저장"""
+    """유연한 컬럼 매칭 및 daily_summary 요약 집계 축적"""
     col_map = {}
     for c in df.columns:
         sc = str(c).strip()
@@ -138,7 +112,7 @@ def process_file_content(df, conn_b2c):
 
     df_clean = df.rename(columns=col_map)
 
-    # 기본값 보장
+    # 기본값 설정
     if '영업마감일자' not in df_clean.columns:
         df_clean['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
     if '센터' not in df_clean.columns:
@@ -146,7 +120,7 @@ def process_file_content(df, conn_b2c):
     if '고객사' not in df_clean.columns:
         df_clean['고객사'] = '기타'
 
-    # 날짜 범위 및 센터명 계산 (파일명 변경용)
+    # 날짜 범위 및 센터명 산출 (파일명 포맷용)
     clean_dates = df_clean['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
     clean_dates = clean_dates[clean_dates.str.len() >= 8]
     if not clean_dates.empty:
@@ -159,7 +133,7 @@ def process_file_content(df, conn_b2c):
     center_val = df_clean['센터'].dropna().iloc[0] if not df_clean['센터'].dropna().empty else "통합센터"
     center_str = sanitize_filename(center_val)
 
-    # daily_summary 집계 축적
+    # daily_summary 요약 집계
     group_cols = [c for c in ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드'] if c in df_clean.columns]
     
     if '송장번호' in df_clean.columns:
@@ -177,13 +151,7 @@ def process_file_content(df, conn_b2c):
     return date_str, center_str
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # DB 초기화 및 생성
-    if os.path.exists(DB_B2C_PATH):
-        try:
-            os.remove(DB_B2C_PATH)
-        except Exception:
-            pass
-
+    # 1. DB 연결 및 테이블 확보
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -193,34 +161,34 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     """)
     conn_b2c.commit()
 
-    dup_folder_id = get_or_create_dup_folder(service)
+    # 2. 업로드 타겟 폴더 수집 ('대시보드 업로드' 및 'B2C' 등 하위 폴더)
+    target_folders = [RAW_FOLDER_ID]
+    subfolders = safe_list_subfolders(service, RAW_FOLDER_ID)
+    for sf in subfolders:
+        if sf['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']:
+            target_folders.append(sf['id'])
 
-    # 1. 파일 전수 스캔 (업로드 영역 하위 B2C 폴더 포함 + 처리완료 영역)
-    raw_files_with_parent = get_all_excel_files(service)
-    processed_files = safe_list_files(service, f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false")
+    # 업로드 대상 신규 로우파일 수집
+    raw_files_to_process = []
+    for folder_id in target_folders:
+        files = safe_list_files(service, folder_id)
+        for f in files:
+            raw_files_to_process.append((f, folder_id))
 
-    all_target_files = []
-    for f in processed_files:
-        fname = f['name'].lower()
-        if (fname.endswith('.xlsx') or fname.endswith('.xls')) and f['name'] != "[중복_확인필요]" and not f['name'].startswith("[중복]"):
-            all_target_files.append((f, PROCESSED_FOLDER_ID))
-            
-    for f_item, parent_id in raw_files_with_parent:
-        all_target_files.append((f_item, parent_id))
-
-    total_files = len(all_target_files)
+    total_files = len(raw_files_to_process)
     processed_cnt = 0
     matched_inbound_count = 0
     err_msg = None
 
-    # 2. 로우파일 수집 및 자동 집계
-    for idx, (f_info, parent_folder) in enumerate(all_target_files, 1):
+    # 3. 신규 로우파일 가공 및 자동 파일명 변경 / '처리완료' 이동
+    for idx, (f_info, parent_folder_id) in enumerate(raw_files_to_process, 1):
         file_id = f_info['id']
         orig_name = f_info['name']
 
         if progress_callback:
             progress_callback(idx, total_files, orig_name, "")
 
+        # 파일 다운로드
         request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -233,37 +201,34 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             df = read_excel_smart(fh)
             date_str, center_str = process_file_content(df, conn_b2c)
 
+            # 새 파일명 생성 ([마감일]_[센터명]_[순번].xlsx)
             seq_num = 1
             new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
 
-            existing_q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
-            existing = safe_list_files(service, existing_q)
-            if existing:
-                seq_num = len(existing) + 1
+            # '처리완료' 폴더에 동일 패턴 존재 시 순번 증가
+            existing_files = safe_list_files(service, PROCESSED_FOLDER_ID)
+            dup_matches = [ef for ef in existing_files if date_str in ef['name'] and center_str in ef['name']]
+            if dup_matches:
+                seq_num = len(dup_matches) + 1
                 new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
 
-            # 파일 이동 및 파일명 정돈
-            if parent_folder != PROCESSED_FOLDER_ID:
-                service.files().update(
-                    fileId=file_id,
-                    addParents=PROCESSED_FOLDER_ID,
-                    removeParents=parent_folder,
-                    body={'name': new_filename},
-                    supportsAllDrives=True
-                ).execute()
-            else:
-                if orig_name != new_filename:
-                    service.files().update(
-                        fileId=file_id,
-                        body={'name': new_filename},
-                        supportsAllDrives=True
-                    ).execute()
+            # 구글 드라이브 파일명 변경 및 '처리완료' 폴더로 이동
+            current_parents = f_info.get('parents', [parent_folder_id])
+            remove_parents_str = ",".join(current_parents)
+
+            service.files().update(
+                fileId=file_id,
+                addParents=PROCESSED_FOLDER_ID,
+                removeParents=remove_parents_str,
+                body={'name': new_filename},
+                supportsAllDrives=True
+            ).execute()
 
             processed_cnt += 1
         except Exception as e:
             print(f"File process error ({orig_name}): {e}")
 
-    # 3. 입고 구글 시트 매칭
+    # 4. 입고 구글 시트 매칭 업데이트
     if sheets_service:
         try:
             conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
@@ -291,5 +256,14 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         except Exception as e:
             err_msg = str(e)
 
+    # 5. DB 정리 및 연결 종료
+    try:
+        conn_b2c.execute("DELETE FROM shipment_raw WHERE 1=1;")
+        conn_b2c.execute("VACUUM;")
+        conn_b2c.commit()
+    except Exception:
+        pass
+
     conn_b2c.close()
+
     return matched_inbound_count, err_msg
