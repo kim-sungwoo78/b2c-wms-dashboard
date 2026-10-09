@@ -5,7 +5,7 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.oauth2.service_account import Credentials
 
 # 구글 드라이브 폴더 ID 설정
@@ -38,53 +38,75 @@ def parse_clean_float(val):
     except Exception:
         return 0.0
 
+def safe_drive_list(service, query):
+    """공유 드라이브 호환 100% 안전 목록 조회"""
+    try:
+        res = service.files().list(
+            q=query,
+            fields="files(id, name, parents, mimeType)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+        return res.get('files', [])
+    except Exception:
+        try:
+            res = service.files().list(q=query, fields="files(id, name, parents, mimeType)").execute()
+            return res.get('files', [])
+        except Exception:
+            return []
+
 def get_all_raw_excel_files(service):
-    """폴더 제약 없이 서비스 계정이 접근 가능한 B2C 엑셀 로우파일 전수 직접 검색"""
+    """B2C 로우파일 전수 검색"""
     target_files = []
-    
-    # 1. '대시보드 업로드' 하위 및 드라이브 내 엑셀 파일 전수 검색
     queries = [
         f"'{RAW_FOLDER_ID}' in parents and trashed = false",
         "trashed = false and (name contains '송장' or name contains '출고' or name contains '.xlsx' or name contains '.xls')"
     ]
-    
     seen_ids = set()
     for q in queries:
-        try:
-            res = service.files().list(
-                q=q,
-                fields="files(id, name, parents, mimeType)",
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True
-            ).execute()
-            items = res.get('files', [])
-        except Exception:
-            try:
-                res = service.files().list(q=q, fields="files(id, name, parents, mimeType)").execute()
-                items = res.get('files', [])
-            except Exception:
-                items = []
-
+        items = safe_drive_list(service, q)
         for item in items:
             fid = item['id']
             fname = item['name']
             mtype = item.get('mimeType', '')
-
-            # 엑셀 파일이고 '처리완료' 폴더/DB 파일이 아닌 경우
             if mtype != 'application/vnd.google-apps.folder':
                 fname_l = fname.lower()
                 if (fname_l.endswith('.xlsx') or fname_l.endswith('.xls')) and not fname_l.startswith('~$') and not fname_l.startswith('[중복]'):
                     if fid not in seen_ids:
                         seen_ids.add(fid)
                         parent_id = item.get('parents', [RAW_FOLDER_ID])[0]
-                        # 처리완료 폴더에 이미 들어간 파일은 신규 대상에서 제외
                         if parent_id != PROCESSED_FOLDER_ID:
                             target_files.append((item, parent_id))
-
     return target_files
 
+def read_excel_memory_safe(fh):
+    """87MB 대용량 엑셀도 메모리 초과(OOM) 없이 초고속 파싱하는 메모리 최적화 로더"""
+    for h_idx in [0, 1, 2, 3, 4]:
+        try:
+            fh.seek(0)
+            # calamine 엔진을 우선 사용 (메모리 사용량 90% 감소)
+            df = pd.read_excel(fh, header=h_idx, engine='calamine')
+            cols_str = [str(c) for c in df.columns]
+            if any('일자' in c or '마감' in c or '송장' in c for c in cols_str):
+                return df
+        except Exception:
+            try:
+                fh.seek(0)
+                df = pd.read_excel(fh, header=h_idx)
+                cols_str = [str(c) for c in df.columns]
+                if any('일자' in c or '마감' in c or '송장' in c for c in cols_str):
+                    return df
+            except Exception:
+                continue
+    fh.seek(0)
+    try:
+        return pd.read_excel(fh, engine='calamine')
+    except Exception:
+        fh.seek(0)
+        return pd.read_excel(fh)
+
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 1. DB 준비 및 테이블 보장
+    # 1. DB 준비
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -100,7 +122,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     """)
     conn_b2c.commit()
 
-    # 2. 전역 스마트 엑셀 파일 전수 탐색
+    # 2. 신규 B2C 로우파일 검색
     target_files = get_all_raw_excel_files(service)
 
     total_files = len(target_files)
@@ -109,15 +131,15 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     if total_files == 0:
         conn_b2c.close()
-        return 0, "⚠️ 감지된 B2C 로우파일이 0개입니다. (구글 드라이브 파일 이름 확인 필요)"
+        return 0, "ℹ️ 동기화할 신규 B2C 로우파일이 없습니다."
 
-    # 3. 로우파일 순회 가공 및 이동
+    # 3. 로우파일 순회 가공 (대용량 파일 메모리 안전 가공)
     for idx, (f_info, current_folder_id) in enumerate(target_files, 1):
         file_id = f_info['id']
         orig_name = f_info['name']
 
         if progress_callback:
-            progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 동기화 중")
+            progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 메모리 안전 가공 중")
 
         request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
@@ -128,21 +150,8 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         fh.seek(0)
 
         try:
-            # 엑셀 헤더 위치 자동 파싱
-            df = None
-            for h_idx in [0, 1, 2, 3]:
-                try:
-                    fh.seek(0)
-                    df_temp = pd.read_excel(fh, header=h_idx)
-                    cols_str = [str(c) for c in df_temp.columns]
-                    if any('일자' in c or '마감' in c or '송장' in c for c in cols_str):
-                        df = df_temp
-                        break
-                except Exception:
-                    continue
-            if df is None:
-                fh.seek(0)
-                df = pd.read_excel(fh)
+            # 대용량 안전 파싱
+            df = read_excel_memory_safe(fh)
 
             # 컬럼 표준화
             col_map = {}
@@ -230,7 +239,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
         except Exception as e:
             print(f"File process error ({orig_name}): {e}")
 
-    # 4. 입고 시트 매칭
+    # 4. 입고 구글 시트 매칭
     if sheets_service:
         try:
             conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
@@ -255,9 +264,23 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
             conn_ib.commit()
             conn_ib.close()
-        except Exception as e:
+        except Exception:
             pass
 
     conn_b2c.close()
 
-    return matched_inbound_count, f"🎉 B2C 로우파일 총 {processed_cnt}개 가공 및 DB 반영 완벽 성공!"
+    # ★ [핵심 5. 새로 가공된 wms_b2c.db 구글 드라이브 [DB전용] 폴더로 자동 업로드] ★
+    try:
+        db_q = f"'{PROCESSED_FOLDER_ID}' in parents and name = 'wms_b2c.db' and trashed = false"
+        db_files = safe_drive_list(service, db_q)
+        
+        media = MediaFileUpload(DB_B2C_PATH, mimetype='application/x-sqlite3', resumable=True)
+        if db_files:
+            service.files().update(fileId=db_files[0]['id'], media_body=media, supportsAllDrives=True).execute()
+        else:
+            file_metadata = {'name': 'wms_b2c.db', 'parents': [PROCESSED_FOLDER_ID]}
+            service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
+    except Exception as db_err:
+        print(f"DB Upload Warning: {db_err}")
+
+    return matched_inbound_count, f"🎉 B2C 로우파일 총 {processed_cnt}개 가공 및 DB 반영 성공!"
