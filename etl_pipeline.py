@@ -29,17 +29,35 @@ def get_sheets_service(creds_dict):
 def sanitize_filename(name_str):
     return str(name_str).replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_").replace("?", "_").replace('"', "_").replace("<", "_").replace(">", "_").replace("|", "_").strip()
 
+def safe_list_files(service, query):
+    """공유 드라이브(Shared Drive) 호환성을 보장하는 파일 안전 조회 함수"""
+    try:
+        results = service.files().list(
+            q=query,
+            fields="files(id, name)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            corpora='allDrives'
+        ).execute()
+        return results.get('files', [])
+    except Exception as e:
+        try:
+            # corpora 옵션 제외 후 2차 시도
+            results = service.files().list(
+                q=query,
+                fields="files(id, name)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute()
+            return results.get('files', [])
+        except Exception:
+            return []
+
 def get_or_create_dup_folder(service):
     """'처리완료' 폴더 내에 [중복_확인필요] 폴더가 없으면 자동 생성 후 ID 반환"""
     try:
         q = f"'{PROCESSED_FOLDER_ID}' in parents and name = '[중복_확인필요]' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        res = service.files().list(
-            q=q, 
-            fields="files(id)",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True
-        ).execute().get('files', [])
-        
+        res = safe_list_files(service, q)
         if res:
             return res[0]['id']
         
@@ -54,21 +72,14 @@ def get_or_create_dup_folder(service):
             supportsAllDrives=True
         ).execute()
         return folder.get('id')
-    except Exception as e:
-        print(f"Dup folder warning: {e}")
+    except Exception:
         return PROCESSED_FOLDER_ID
 
 def rename_existing_processed_files(service):
     """'처리완료' 폴더에 이미 보관 중인 예전 파일들의 이름을 [마감일자_센터명_순번]으로 일괄 변경"""
     try:
         q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'"
-        results = service.files().list(
-            q=q, 
-            fields="files(id, name)",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True
-        ).execute()
-        files = results.get('files', [])
+        files = safe_list_files(service, q)
 
         for f in files:
             file_id = f['id']
@@ -111,12 +122,7 @@ def rename_existing_processed_files(service):
                     continue
 
                 existing_q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
-                existing = service.files().list(
-                    q=existing_q, 
-                    fields="files(name)",
-                    supportsAllDrives=True,
-                    includeItemsFromAllDrives=True
-                ).execute().get('files', [])
+                existing = safe_list_files(service, existing_q)
                 
                 if existing:
                     seq_num = len(existing) + 1
@@ -139,13 +145,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     # 1. 신규 엑셀 파일 스캔
     query = f"'{RAW_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'"
-    results = service.files().list(
-        q=query, 
-        fields="files(id, name)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
-    files = results.get('files', [])
+    files = safe_list_files(service, query)
 
     total_files = len(files)
     processed_files_count = 0
@@ -212,12 +212,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 new_filename = f"[중복]_{date_str}_{center_str}_{seq_num}.xlsx"
                 
                 existing_dup_q = f"'{dup_folder_id}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
-                existing_dups = service.files().list(
-                    q=existing_dup_q, 
-                    fields="files(name)",
-                    supportsAllDrives=True,
-                    includeItemsFromAllDrives=True
-                ).execute().get('files', [])
+                existing_dups = safe_list_files(service, existing_dup_q)
                 
                 if existing_dups:
                     seq_num = len(existing_dups) + 1
@@ -251,12 +246,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
                 
                 existing_query = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
-                existing_files = service.files().list(
-                    q=existing_query, 
-                    fields="files(name)",
-                    supportsAllDrives=True,
-                    includeItemsFromAllDrives=True
-                ).execute().get('files', [])
+                existing_files = safe_list_files(service, existing_query)
                 
                 if existing_files:
                     seq_num = len(existing_files) + 1
