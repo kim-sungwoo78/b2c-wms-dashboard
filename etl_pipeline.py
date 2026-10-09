@@ -3,322 +3,66 @@ import io
 import time
 import sqlite3
 import pandas as pd
-from datetime import datetime, timedelta
-from google.oauth2.service_account import Credentials
+from datetime import datetime
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
-import openpyxl
+from googleapiclient.http import MediaIoBaseDownload
+from google.oauth2.service_account import Credentials
 
-TOP_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'       # 대시보드 업로드
-B2C_FOLDER_ID = '1ArGfyeVpZDJYUrdlGNSCrhj734JrqGW9'        # B2C 폴더
-INBOUND_FOLDER_ID = '1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp'    # 입고 폴더
-B2B_FOLDER_ID = '1wpqrIBC8HnWTU20rShcg0Yvkcc1VIsml'        # B2B 폴더
-PROCESSED_FOLDER_ID = '1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ'  # 처리완료 폴더
+# 구글 드라이브 폴더 ID 설정
+RAW_FOLDER_ID = "1Iqg4O8fS5E8eO2u0zKq04Jms3zJjM02F"       # B2C 대시보드 업로드 (신규 엑셀)
+PROCESSED_FOLDER_ID = "15Ew-iXw65I2Z0f074RUp-H9wXw-E2B4m" # 처리완료 폴더
 
-DB_FOLDER_ID = '1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9'
-
-# ★ IB 구글 시트 ID 고정 지정 ★
-DEFAULT_IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
-
-DB_B2C_PATH = 'wms_b2c.db'
-DB_INBOUND_PATH = 'wms_inbound.db'
-DB_B2B_PATH = 'wms_b2b.db'
+# DB 파일 경로
+DB_B2C_PATH = "wms_b2c.db"
+DB_INBOUND_PATH = "wms_inbound.db"
 
 def get_drive_service(creds_dict):
-    creds = Credentials.from_service_account_info(
-        creds_dict, 
-        scopes=[
-            'https://www.googleapis.com/auth/drive',
-            'https://www.googleapis.com/auth/spreadsheets.readonly'
-        ]
-    )
-    return build('drive', 'v3', credentials=creds)
+    scopes = ['https://www.googleapis.com/auth/drive']
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return build('drive', '3', credentials=credentials)
 
 def get_sheets_service(creds_dict):
-    creds = Credentials.from_service_account_info(
-        creds_dict, 
-        scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
-    )
-    return build('sheets', 'v4', credentials=creds)
+    scopes = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return build('sheets', '4', credentials=credentials)
 
-def download_db_from_drive(service, db_filename):
+def sanitize_filename(name_str):
+    return str(name_str).replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_").replace("?", "_").replace('"', "_").replace("<", "_").replace(">", "_").replace("|", "_").strip()
+
+def get_or_create_dup_folder(service):
+    """'처리완료' 폴더 내에 [중복_확인필요] 폴더가 없으면 자동 생성 후 ID 반환"""
     try:
-        query = f"'{DB_FOLDER_ID}' in parents and name = '{db_filename}' and trashed = false"
-        results = service.files().list(
-            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True
-        ).execute()
-        files = results.get('files', [])
-
-        if files:
-            file_id = files[0]['id']
-            request = service.files().get_media(fileId=file_id)
-            with open(db_filename, 'wb') as f:
-                downloader = MediaIoBaseDownload(f, request)
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
-            return True
-    except Exception as e:
-        print(f"DB Download Error ({db_filename}): {e}")
-    return False
-
-def upload_db_to_drive(service, db_filename):
-    if not os.path.exists(db_filename):
-        return
-    try:
-        query = f"'{DB_FOLDER_ID}' in parents and name = '{db_filename}' and trashed = false"
-        results = service.files().list(
-            q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True
-        ).execute()
-        files = results.get('files', [])
-
-        media = MediaFileUpload(db_filename, mimetype='application/x-sqlite3', resumable=True)
-
-        if files:
-            file_id = files[0]['id']
-            service.files().update(
-                fileId=file_id, media_body=media, supportsAllDrives=True
-            ).execute()
-        else:
-            file_metadata = {
-                'name': db_filename,
-                'parents': [DB_FOLDER_ID]
-            }
-            service.files().create(
-                body=file_metadata, media_body=media, supportsAllDrives=True
-            ).execute()
-    except Exception as e:
-        print(f"DB Upload Error ({db_filename}): {e}")
-
-def list_files_in_folder(service, folder_id):
-    try:
-        query = f"'{folder_id}' in parents and trashed = false"
-        results = service.files().list(
-            q=query, fields="files(id, name, mimeType, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True
-        ).execute()
-        files = results.get('files', [])
-        return [f for f in files if not f['name'].lower().endswith('.db')]
-    except Exception as e:
-        print(f"Folder list error ({folder_id}): {e}")
-        return []
-
-def read_excel_fast(fh):
-    try:
-        wb = openpyxl.load_workbook(fh, read_only=True, data_only=True)
-        target_sheet = wb.active
+        q = f"'{PROCESSED_FOLDER_ID}' in parents and name = '[중복_확인필요]' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        res = service.files().list(q=q, fields="files(id)").execute().get('files', [])
+        if res:
+            return res[0]['id']
         
-        for sheet_name in wb.sheetnames:
-            s = wb[sheet_name]
-            for row in list(s.iter_rows(max_row=5, values_only=True)):
-                row_str = " ".join([str(v) for v in row if v is not None])
-                if any(k in row_str for k in ['송장 번호', '송장번호', '마감 일시', '마감일시', 'SKU명', '입고번호', '입고 번호']):
-                    target_sheet = s
-                    break
-            else:
-                continue
-            break
-
-        rows = target_sheet.iter_rows(values_only=True)
-        headers = list(next(rows))
-        
-        clean_headers = []
-        counts = {}
-        for h in headers:
-            h_str = str(h).strip() if h is not None else "Unnamed"
-            counts[h_str] = counts.get(h_str, 0) + 1
-            clean_headers.append(f"{h_str}_{counts[h_str]}" if counts[h_str] > 1 else h_str)
-
-        data = [r for r in rows if any(v is not None for v in r)]
-        df = pd.DataFrame(data, columns=clean_headers)
-        wb.close()
-        return df
+        folder_metadata = {
+            'name': '[중복_확인필요]',
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [PROCESSED_FOLDER_ID]
+        }
+        folder = service.files().create(body=folder_metadata, fields='id').execute()
+        return folder.get('id')
     except Exception:
-        fh.seek(0)
-        return pd.read_excel(fh, engine='openpyxl')
+        return PROCESSED_FOLDER_ID
 
-def extract_sheet_id(url_or_id):
-    if not url_or_id:
-        return ""
-    if "/d/" in url_or_id:
-        parts = url_or_id.split("/d/")[1]
-        return parts.split("/")[0]
-    return url_or_id.strip()
+def rename_existing_processed_files(service):
+    """'처리완료' 폴더에 이미 보관 중인 예전 파일들의 이름을 [마감일자_센터명_순번]으로 일괄 변경"""
+    try:
+        q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx' and not name contains '_1.xlsx' and not name contains '_2.xlsx' and not name contains '_3.xlsx'"
+        results = service.files().list(q=q, fields="files(id, name)").execute()
+        files = results.get('files', [])
 
-# ★ [구글 시트 "입고" 탭 자동 연동 및 PLT/BOX 수치 정밀 매칭 함수] ★
-def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=""):
-    if not service or not sheets_service:
-        return 0, "서비스 계정 권한 없음"
-
-    target_sheet_ids = []
-    
-    input_id = extract_sheet_id(ib_sheet_url)
-    if input_id:
-        target_sheet_ids.append(input_id)
-    else:
-        target_sheet_ids.append(DEFAULT_IB_SHEET_ID)
-
-    matched_count = 0
-    err_msg = ""
-
-    for sheet_id in target_sheet_ids:
-        try:
-            sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=sheet_id).execute()
-            sheets = sheet_metadata.get('sheets', [])
-            
-            if not sheets:
-                continue
-
-            ib_sheet_title = None
-            # 탭 이름에서 공백 제거 후 '입고' 탭 정밀 스캔
-            for s in sheets:
-                title = s.get('properties', {}).get('title', '').strip()
-                title_clean = title.replace(" ", "")
-                if title_clean == '입고' or '입고' in title_clean or title_clean.upper() == 'IB':
-                    ib_sheet_title = title
-                    break
-
-            if not ib_sheet_title and len(sheets) > 0:
-                ib_sheet_title = sheets[0].get('properties', {}).get('title', 'Sheet1')
-
-            range_name = f"'{ib_sheet_title}'!A:Z"
-            result = sheets_service.spreadsheets().values().get(spreadsheetId=sheet_id, range=range_name).execute()
-            values = result.get('values', [])
-
-            if not values or len(values) < 2:
-                err_msg = "구글 시트에 데이터 행이 없음"
-                continue
-
-            header_row_idx = 0
-            for r_i, r_data in enumerate(values[:10]):
-                r_str = " ".join([str(v) for v in r_data])
-                if '작업번호' in r_str or '입고번호' in r_str or 'PLT' in r_str:
-                    header_row_idx = r_i
-                    break
-
-            headers = [str(h).strip() for h in values[header_row_idx]]
-
-            job_no_idx = -1
-            plt_idx = -1
-            box_idx = -1
-            pajok_idx = -1
-
-            for idx, h in enumerate(headers):
-                h_clean = h.replace(" ", "").upper()
-                if '작업번호' in h_clean or '입고번호' in h_clean: job_no_idx = idx
-                elif h_clean == 'PLT': plt_idx = idx
-                elif h_clean == 'BOX': box_idx = idx
-                elif '파적' in h_clean and 'BOX' in h_clean: pajok_idx = idx
-
-            if job_no_idx == -1:
-                err_msg = f"헤더 행에서 '작업번호' 열을 찾지 못함 ({ib_sheet_title})"
-                continue
-
-            update_tuples = []
-            for row in values[header_row_idx + 1:]:
-                if len(row) > job_no_idx:
-                    job_no = str(row[job_no_idx]).strip()
-                    if not job_no or job_no.lower() == 'none' or job_no == '작업번호':
-                        continue
-
-                    def parse_val(row_data, idx_pos):
-                        if idx_pos != -1 and len(row_data) > idx_pos:
-                            v_str = str(row_data[idx_pos]).replace(',', '').strip()
-                            try:
-                                return float(v_str)
-                            except Exception:
-                                return 0.0
-                        return 0.0
-
-                    plt_val = parse_val(row, plt_idx)
-                    box_val = parse_val(row, box_idx)
-                    pajok_val = parse_val(row, pajok_idx)
-
-                    if plt_val > 0 or box_val > 0 or pajok_val > 0:
-                        update_tuples.append((plt_val, box_val, pajok_val, job_no))
-
-            if update_tuples:
-                conn_ib.executemany("""
-                UPDATE inbound_summary
-                SET PLT수 = ?, BOX수 = ?, 파적BOX수 = ?
-                WHERE 입고번호 = ?
-                """, update_tuples)
-                conn_ib.commit()
-                matched_count = len(update_tuples)
-                break
-        except Exception as e_sheet:
-            err_msg = str(e_sheet)
-
-    return matched_count, err_msg
-
-def process_and_update(service, sheets_service=None, progress_callback=None, ib_sheet_url=""):
-    download_db_from_drive(service, DB_B2C_PATH)
-    download_db_from_drive(service, DB_INBOUND_PATH)
-
-    conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=30)
-    conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=30)
-    
-    conn_b2c.execute("""
-    CREATE TABLE IF NOT EXISTS shipment_raw (
-        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
-        출고박스종류 TEXT, 송장번호 TEXT, 마감일시 TEXT, 마감자 TEXT, 주문일시 TEXT,
-        결제일시 TEXT, 등록일시 TEXT, 할당일시 TEXT, 출력일시 TEXT, 브랜드 TEXT,
-        배송계약태그 TEXT, 주문번호 TEXT, 개별주문번호 TEXT, 피킹지시서번호 TEXT,
-        품고추적번호 TEXT, CS TEXT,
-        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호)
-    )
-    """)
-
-    conn_b2c.execute("""
-    CREATE TABLE IF NOT EXISTS daily_summary (
-        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
-        출고박스종류 TEXT, SKU명 TEXT, 바코드 TEXT, 출고건수 INTEGER, 총출고수량 INTEGER,
-        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드)
-    )
-    """)
-
-    conn_ib.execute("""
-    CREATE TABLE IF NOT EXISTS inbound_summary (
-        영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 상태 TEXT, 입고번호 TEXT,
-        입고방법 TEXT, SKU명 TEXT, 바코드 TEXT, 소비기한 TEXT, 로트 TEXT,
-        기본로케이션 TEXT, 예정수량 INTEGER, 요청SKU수량 INTEGER, 총예정수량 INTEGER,
-        총검수완료수량 INTEGER, PLT수 REAL, BOX수 REAL, 파적BOX수 REAL, 등록일시 TEXT, 변경자 TEXT,
-        최종변경일시 TEXT, 입고완료일시 TEXT,
-        PRIMARY KEY (영업마감일자, 센터, 고객사, 상태, 입고번호, SKU명, 바코드)
-    )
-    """)
-
-    folder_mapping = [
-        (INBOUND_FOLDER_ID, 'INBOUND'),
-        (B2C_FOLDER_ID, 'B2C'),
-        (TOP_FOLDER_ID, 'AUTO')
-    ]
-
-    all_target_files = []
-    for f_id, category in folder_mapping:
-        files = list_files_in_folder(service, f_id)
         for f in files:
-            if f['name'].lower().endswith('.xlsx') or f['name'].lower().endswith('.csv'):
-                f['category'] = category
-                f['source_folder_id'] = f_id
-                all_target_files.append(f)
+            file_id = f['id']
+            orig_name = f['name']
 
-    total_count = len(all_target_files)
-    b2c_updated = False
-    inbound_updated = False
-    error_logs = []
+            # 이미 변경된 포맷의 파일은 패스
+            if orig_name.startswith("2026") or orig_name.startswith("2025") or orig_name.startswith("[중복]"):
+                continue
 
-    cleaned_b2c_pairs = set()
-    cleaned_ib_files = False
-
-    for idx, f in enumerate(all_target_files, 1):
-        file_id, file_name = f['id'], f['name']
-        category = f['category']
-        src_folder = f['source_folder_id']
-
-        if progress_callback:
-            progress_callback(current=idx, total=total_count, filename=file_name, eta=0)
-
-        try:
+            # 파일 읽기
             request = service.files().get_media(fileId=file_id)
             fh = io.BytesIO()
             downloader = MediaIoBaseDownload(fh, request)
@@ -327,239 +71,194 @@ def process_and_update(service, sheets_service=None, progress_callback=None, ib_
                 _, done = downloader.next_chunk()
             fh.seek(0)
 
-            if file_name.lower().endswith('.csv'):
-                df = pd.read_csv(fh)
-            else:
-                df = read_excel_fast(fh)
-            
-            df_cols_no_space = [str(c).replace(" ", "").strip() for c in df.columns]
-            is_inbound = (category == 'INBOUND') or any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량', '입고방법']) or ('입고요청서' in file_name)
-
-            if is_inbound:
-                if not cleaned_ib_files:
-                    conn_ib.execute("DELETE FROM inbound_summary")
-                    conn_ib.commit()
-                    cleaned_ib_files = True
-
-                col_map_inbound = {}
-                for orig_c in df.columns:
-                    clean_c = str(orig_c).replace(" ", "").strip()
-                    if '상태' == clean_c: col_map_inbound[orig_c] = '상태'
-                    elif '센터' == clean_c: col_map_inbound[orig_c] = '센터'
-                    elif '고객사' == clean_c: col_map_inbound[orig_c] = '고객사'
-                    elif '입고번호' in clean_c: col_map_inbound[orig_c] = '입고번호'
-                    elif '입고방법' in clean_c: col_map_inbound[orig_c] = '입고방법'
-                    elif 'SKU명' in clean_c or '상품명' in clean_c: col_map_inbound[orig_c] = 'SKU명'
-                    elif '바코드' == clean_c: col_map_inbound[orig_c] = '바코드'
-                    elif '소비기한' in clean_c or '유통기한' in clean_c: col_map_inbound[orig_c] = '소비기한'
-                    elif '로트' in clean_c or 'LOT' in clean_c.upper(): col_map_inbound[orig_c] = '로트'
-                    elif '로케이션' in clean_c: col_map_inbound[orig_c] = '기본로케이션'
-                    elif '예정수량' == clean_c: col_map_inbound[orig_c] = '예정수량'
-                    elif '요청SKU' in clean_c or '요청sku' in clean_c: col_map_inbound[orig_c] = '요청SKU수량'
-                    elif '총예정수량' in clean_c: col_map_inbound[orig_c] = '총예정수량'
-                    elif '총검수완료수량' in clean_c or '검수완료' in clean_c: col_map_inbound[orig_c] = '총검수완료수량'
-                    elif '등록일시' in clean_c: col_map_inbound[orig_c] = '등록일시'
-                    elif '변경자' in clean_c: col_map_inbound[orig_c] = '변경자'
-                    elif '최종변경일시' in clean_c or '최종변경' in clean_c: col_map_inbound[orig_c] = '최종변경일시'
-                    elif '입고완료일시' in clean_c or '입고완료' in clean_c: col_map_inbound[orig_c] = '입고완료일시'
-
-                df_in = df.rename(columns=col_map_inbound)
-                df_in = df_in.loc[:, ~df_in.columns.duplicated()]
-
-                if '상태' not in df_in.columns: 
-                    df_in['상태'] = '입고 완료'
-
-                def parse_inbound_date(row):
-                    st_val = str(row.get('상태', '')).replace(" ", "").strip()
-                    if '입고완료' in st_val:
-                        raw_date = row.get('입고완료일시', None)
-                    else:  # 승인대기 등
-                        raw_date = row.get('최종변경일시', None)
-                    
-                    if pd.isna(raw_date) or str(raw_date).strip() == '' or str(raw_date) == 'nan':
-                        raw_date = row.get('등록일시', None)
-
-                    try:
-                        return pd.to_datetime(raw_date).strftime('%Y-%m-%d')
-                    except Exception:
-                        return datetime.now().strftime('%Y-%m-%d')
-
-                df_in['영업마감일자'] = df_in.apply(parse_inbound_date, axis=1)
-
-                req_cols_ib = [
-                    '영업마감일자', '센터', '고객사', '상태', '입고번호', '입고방법', 'SKU명', '바코드',
-                    '소비기한', '로트', '기본로케이션', '예정수량', '요청SKU수량', '총예정수량',
-                    '총검수완료수량', '등록일시', '변경자', '최종변경일시', '입고완료일시'
-                ]
-                for tc in req_cols_ib:
-                    if tc not in df_in.columns: df_in[tc] = '미지정' if '수량' not in tc else 0
-                    df_in[tc] = df_in[tc].fillna('미지정' if '수량' not in tc else 0)
-
-                for num_c in ['예정수량', '요청SKU수량', '총예정수량', '총검수완료수량']:
-                    df_in[num_c] = pd.to_numeric(df_in[num_c], errors='coerce').fillna(0)
-
-                for _, row_in in df_in.iterrows():
-                    conn_ib.execute("""
-                    INSERT OR REPLACE INTO inbound_summary
-                    (영업마감일자, 센터, 고객사, 상태, 입고번호, 입고방법, SKU명, 바코드, 소비기한, 로트,
-                     기본로케이션, 예정수량, 요청SKU수량, 총예정수량, 총검수완료수량, PLT수, BOX수, 파적BOX수, 등록일시, 변경자,
-                     최종변경일시, 입고완료일시)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, 0.0, ?, ?, ?, ?)
-                    """, (
-                        row_in['영업마감일자'], row_in['센터'], row_in['고객사'], row_in['상태'],
-                        str(row_in['입고번호']), str(row_in['입고방법']), str(row_in['SKU명']), str(row_in['바코드']),
-                        str(row_in['소비기한']), str(row_in['로트']), str(row_in['기본로케이션']),
-                        int(row_in['예정수량']), int(row_in['요청SKU수량']), int(row_in['총예정수량']), int(row_in['총검수완료수량']),
-                        str(row_in['등록일시']), str(row_in['변경자']), str(row_in['최종변경일시']), str(row_in['입고완료일시'])
-                    ))
-                conn_ib.commit()
-                inbound_updated = True
-
-            else:
-                col_map_b2c = {}
-                for orig_c in df.columns:
-                    clean_c = str(orig_c).replace(" ", "").strip()
-                    if '상세' in clean_c or '이형' in clean_c: 
-                        continue
-                    if '센터' in clean_c: col_map_b2c[orig_c] = '센터'
-                    elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
-                    elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
-                    elif '판매플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매처'
-                    elif clean_c == '출고박스' or clean_c == '박스' or (('출고박스' in clean_c or '박스' in clean_c) and '바코드' not in clean_c and '사용' not in clean_c): col_map_b2c[orig_c] = '출고박스종류'
-                    elif 'SKU' in clean_c or '상품명' in clean_c: col_map_b2c[orig_c] = 'SKU명'
-                    elif '바코드' in clean_c: col_map_b2c[orig_c] = '바코드'
-                    elif '송장번호' in clean_c or '운송장' in clean_c: col_map_b2c[orig_c] = '송장번호'
-                    elif '마감일시' in clean_c or '마감일' in clean_c: col_map_b2c[orig_c] = '마감일시'
-                    elif '마감자' == clean_c: col_map_b2c[orig_c] = '마감자'
-                    elif '주문일시' in clean_c or '주문일' in clean_c: col_map_b2c[orig_c] = '주문일시'
-                    elif '결제일시' in clean_c or '결제일' in clean_c: col_map_b2c[orig_c] = '결제일시'
-                    elif '등록일시' in clean_c or '등록일' in clean_c: col_map_b2c[orig_c] = '등록일시'
-                    elif '할당일시' in clean_c or '할당일' in clean_c: col_map_b2c[orig_c] = '할당일시'
-                    elif '출력일시' in clean_c or '출력일' in clean_c: col_map_b2c[orig_c] = '출력일시'
-                    elif '브랜드' in clean_c: col_map_b2c[orig_c] = '브랜드'
-                    elif '배송계약' in clean_c or '태그' in clean_c: col_map_b2c[orig_c] = '배송계약태그'
-                    elif '개별주문' in clean_c or '개별주문번호' in clean_c: col_map_b2c[orig_c] = '개별주문번호'
-                    elif '주문번호' in clean_c: col_map_b2c[orig_c] = '주문번호'
-                    elif '피킹지시서' in clean_c: col_map_b2c[orig_c] = '피킹지시서번호'
-                    elif '품고추적' in clean_c or '품고' in clean_c: col_map_b2c[orig_c] = '품고추적번호'
-                    elif 'CS' in clean_c or 'cs' in clean_c: col_map_b2c[orig_c] = 'CS'
-                    elif '출고수량' in clean_c or '수량' in clean_c or '수' in clean_c: col_map_b2c[orig_c] = '총출고수량'
-
-                df_b2c_f = df.rename(columns=col_map_b2c)
-                df_b2c_f = df_b2c_f.loc[:, ~df_b2c_f.columns.duplicated()]
-                df_b2c_f = df_b2c_f.ffill()
-
-                date_col_name = None
-                for c in ['마감일시', '주문일시', '등록일시']:
-                    if c in df_b2c_f.columns:
-                        date_col_name = c
-                        break
-
-                if date_col_name is not None:
-                    raw_date_data = df_b2c_f[date_col_name]
-                    df_b2c_f['dt_temp'] = pd.to_datetime(raw_date_data, errors='coerce')
-                    df_b2c_f['영업마감일자'] = (df_b2c_f['dt_temp'] - pd.Timedelta(hours=6)).dt.strftime('%Y-%m-%d')
-                else:
-                    df_b2c_f['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
-
-                df_b2c_f['영업마감일자'] = df_b2c_f['영업마감일자'].fillna(datetime.now().strftime('%Y-%m-%d'))
-
-                req_cols_b2c = [
-                    '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드', '송장번호',
-                    '마감일시', '마감자', '주문일시', '결제일시', '등록일시', '할당일시', '출력일시',
-                    '브랜드', '배송계약태그', '주문번호', '개별주문번호', '피킹지시서번호', '품고추적번호', 'CS'
-                ]
-                for tc in req_cols_b2c:
-                    if tc not in df_b2c_f.columns: df_b2c_f[tc] = '미지정'
-                    df_b2c_f[tc] = df_b2c_f[tc].fillna('미지정')
-
-                if '총출고수량' not in df_b2c_f.columns: df_b2c_f['총출고수량'] = 1
-                df_b2c_f['총출고수량'] = pd.to_numeric(df_b2c_f['총출고수량'], errors='coerce').fillna(1)
-
-                valid_mask = ~df_b2c_f['송장번호'].astype(str).str.contains('상세|보기|미지정', na=False)
-                df_b2c_valid = df_b2c_f[valid_mask]
-
-                center_date_pairs = df_b2c_valid[['영업마감일자', '센터']].drop_duplicates()
-                for _, cd_row in center_date_pairs.iterrows():
-                    d_val = cd_row['영업마감일자']
-                    c_val = cd_row['센터']
-                    pair_key = (d_val, c_val)
-                    if pair_key not in cleaned_b2c_pairs:
-                        conn_b2c.execute("DELETE FROM shipment_raw WHERE 영업마감일자 = ? AND 센터 = ?", (d_val, c_val))
-                        conn_b2c.execute("DELETE FROM daily_summary WHERE 영업마감일자 = ? AND 센터 = ?", (d_val, c_val))
-                        cleaned_b2c_pairs.add(pair_key)
-
-                shipment_distinct = df_b2c_valid[
-                    ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호',
-                     '마감일시', '마감자', '주문일시', '결제일시', '등록일시', '할당일시', '출력일시',
-                     '브랜드', '배송계약태그', '주문번호', '개별주문번호', '피킹지시서번호', '품고추적번호', 'CS']
-                ].drop_duplicates(subset=['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호'])
-
-                for _, row_s in shipment_distinct.iterrows():
-                    conn_b2c.execute("""
-                    INSERT OR REPLACE INTO shipment_raw
-                    (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호,
-                     마감일시, 마감자, 주문일시, 결제일시, 등록일시, 할당일시, 출력일시,
-                     브랜드, 배송계약태그, 주문번호, 개별주문번호, 피킹지시서번호, 품고추적번호, CS)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        row_s['영업마감일자'], row_s['센터'], row_s['고객사'], row_s['배송속성'],
-                        row_s['판매처'], row_s['출고박스종류'], row_s['송장번호'], str(row_s['마감일시']),
-                        str(row_s['마감자']), str(row_s['주문일시']), str(row_s['결제일시']),
-                        str(row_s['등록일시']), str(row_s['할당일시']), str(row_s['출력일시']),
-                        str(row_s['브랜드']), str(row_s['배송계약태그']), str(row_s['주문번호']),
-                        str(row_s['개별주문번호']), str(row_s['피킹지시서번호']), str(row_s['품고추적번호']), str(row_s['CS'])
-                    ))
-
-                b2c_sum = df_b2c_valid.groupby(
-                    ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드']
-                ).agg(
-                    출고건수=('송장번호', 'nunique'),
-                    총출고수량=('총출고수량', 'sum')
-                ).reset_index()
-
-                for _, row_b2c in b2c_sum.iterrows():
-                    conn_b2c.execute("""
-                    INSERT OR REPLACE INTO daily_summary
-                    (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드, 출고건수, 총출고수량)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        row_b2c['영업마감일자'], row_b2c['센터'], row_b2c['고객사'], row_b2c['배송속성'], row_b2c['판매처'],
-                        row_b2c['출고박스종류'], row_b2c['SKU명'], row_b2c['바코드'],
-                        int(row_b2c['출고건수']), int(row_b2c['총출고수량'])
-                    ))
-                conn_b2c.commit()
-                b2c_updated = True
-
             try:
+                df = pd.read_excel(fh)
+                date_str = "20261008"
+                center_str = "통합센터"
+
+                if '영업마감일자' in df.columns and not df['영업마감일자'].dropna().empty:
+                    raw_d = str(df['영업마감일자'].dropna().iloc[0]).replace("-", "").replace("/", "").strip()
+                    if len(raw_d) >= 8:
+                        date_str = raw_d[:8]
+                
+                if '센터' in df.columns and not df['센터'].dropna().empty:
+                    center_str = sanitize_filename(df['센터'].dropna().iloc[0])
+
+                seq_num = 1
+                new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
+                
+                # 순번 중복 확인
+                existing_q = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
+                existing = service.files().list(q=existing_q, fields="files(name)").execute().get('files', [])
+                if existing:
+                    seq_num = len(existing) + 1
+                    new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
+
+                # 이름 업데이트
+                service.files().update(fileId=file_id, body={'name': new_filename}).execute()
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"Batch rename warning: {e}")
+
+def process_and_update(service, sheets_service=None, progress_callback=None):
+    # 0. 기존 '처리완료' 폴더 파일들 이름 일괄 정돈 실행
+    rename_existing_processed_files(service)
+
+    # 1. 신규 엑셀 파일 스캔
+    query = f"'{RAW_FOLDER_ID}' in parents and trashed = false and name contains '.xlsx'"
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get('files', [])
+
+    total_files = len(files)
+    processed_files_count = 0
+    dup_files_count = 0
+    matched_inbound_count = 0
+    err_msg = None
+
+    dup_folder_id = get_or_create_dup_folder(service)
+    conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
+    
+    # 2. 신규 로우파일 가공 및 파일명 변경 / 중복 체크 처리
+    for idx, f in enumerate(files, 1):
+        file_id = f['id']
+        orig_name = f['name']
+
+        if progress_callback:
+            progress_callback(idx, total_files, orig_name, "")
+
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        fh.seek(0)
+        
+        try:
+            df = pd.read_excel(fh)
+            
+            date_str = datetime.now().strftime('%Y%m%d')
+            center_str = "통합센터"
+
+            if '영업마감일자' in df.columns and not df['영업마감일자'].dropna().empty:
+                raw_d = str(df['영업마감일자'].dropna().iloc[0]).replace("-", "").replace("/", "").strip()
+                if len(raw_d) >= 8:
+                    date_str = raw_d[:8]
+            
+            if '센터' in df.columns and not df['센터'].dropna().empty:
+                center_str = sanitize_filename(df['센터'].dropna().iloc[0])
+
+            # 중복 체크
+            is_duplicate = False
+            if '영업마감일자' in df.columns and '센터' in df.columns:
+                formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}" if len(date_str) == 8 else date_str
+                cur = conn_b2c.cursor()
+                cur.execute("""
+                    SELECT COUNT(*) FROM daily_summary 
+                    WHERE (영업마감일자 = ? OR 영업마감일자 = ?) AND 센터 LIKE ?
+                """, (formatted_date, date_str, f"%{center_str}%"))
+                check_count = cur.fetchone()[0]
+                
+                if check_count > 10:
+                    is_duplicate = True
+
+            if is_duplicate:
+                # 🔴 중복 파일: [중복_확인필요] 폴더로 이동
+                dup_files_count += 1
+                seq_num = 1
+                new_filename = f"[중복]_{date_str}_{center_str}_{seq_num}.xlsx"
+                
+                existing_dup_q = f"'{dup_folder_id}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
+                existing_dups = service.files().list(q=existing_dup_q, fields="files(name)").execute().get('files', [])
+                if existing_dups:
+                    seq_num = len(existing_dups) + 1
+                    new_filename = f"[중복]_{date_str}_{center_str}_{seq_num}.xlsx"
+
+                service.files().update(
+                    fileId=file_id,
+                    addParents=dup_folder_id,
+                    removeParents=RAW_FOLDER_ID,
+                    body={'name': new_filename}
+                ).execute()
+
+            else:
+                # 🟢 신규 파일: 요약 DB 집계 후 [처리완료] 이동
+                if '영업마감일자' in df.columns and '센터' in df.columns and '고객사' in df.columns:
+                    group_cols = [c for c in ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드'] if c in df.columns]
+                    
+                    if '송장번호' in df.columns:
+                        summary_df = df.groupby(group_cols).agg(
+                            출고건수=('송장번호', 'nunique'),
+                            총출고수량=('총출고수량', 'sum') if '총출고수량' in df.columns else ('송장번호', 'count')
+                        ).reset_index()
+                    else:
+                        summary_df = df.groupby(group_cols).size().reset_index(name='출고건수')
+                        summary_df['총출고수량'] = summary_df['출고건수']
+
+                    summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
+
+                seq_num = 1
+                new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
+                
+                existing_query = f"'{PROCESSED_FOLDER_ID}' in parents and trashed = false and name contains '{date_str}_{center_str}'"
+                existing_files = service.files().list(q=existing_query, fields="files(name)").execute().get('files', [])
+                if existing_files:
+                    seq_num = len(existing_files) + 1
+                    new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
+
                 service.files().update(
                     fileId=file_id,
                     addParents=PROCESSED_FOLDER_ID,
-                    removeParents=src_folder,
-                    supportsAllDrives=True,
-                    fields='id, parents'
+                    removeParents=RAW_FOLDER_ID,
+                    body={'name': new_filename}
                 ).execute()
-            except Exception as move_e:
-                error_logs.append(f"이동 실패 ({file_name}): {move_e}")
 
-        except Exception as file_e:
-            error_logs.append(f"파싱 실패 ({file_name}): {file_e}")
-            continue
+                processed_files_count += 1
 
-    # IB 내장 구글 시트 매칭 실행 및 강제 저장 보장
-    matched_count, err_msg = 0, ""
+        except Exception as e:
+            print(f"File process error ({orig_name}): {e}")
+
+    # 구글 시트 매칭
+    if sheets_service:
+        try:
+            conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
+            SPREADSHEET_ID = "1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0"
+            range_name = "입고!A2:Z1000"
+            result = sheets_service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=range_name).execute()
+            rows = result.get('values', [])
+
+            for row in rows:
+                if len(row) >= 6:
+                    ib_no = row[1] if len(row) > 1 else ""
+                    plt_val = float(row[4]) if len(row) > 4 and row[4] else 0.0
+                    box_val = float(row[5]) if len(row) > 5 and row[5] else 0.0
+
+                    if ib_no:
+                        conn_ib.execute("""
+                            UPDATE inbound_summary
+                            SET PLT수 = ?, BOX수 = ?
+                            WHERE 입고번호 = ?
+                        """, (plt_val, box_val, ib_no))
+                        matched_inbound_count += 1
+
+            conn_ib.commit()
+            conn_ib.close()
+        except Exception as e:
+            err_msg = str(e)
+
+    # DB 다이어트 실행
     try:
-        matched_count, err_msg = update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib, ib_sheet_url=ib_sheet_url)
-    except Exception as sheet_e:
-        err_msg = str(sheet_e)
+        conn_b2c.execute("DELETE FROM shipment_raw WHERE 1=1;")
+        conn_b2c.execute("VACUUM;")
+        conn_b2c.commit()
+    except Exception:
+        pass
 
     conn_b2c.close()
-    conn_ib.close()
 
-    if b2c_updated:
-        upload_db_to_drive(service, DB_B2C_PATH)
+    if dup_files_count > 0:
+        err_msg = f"⚠️ 중복 파일 {dup_files_count}건 감지됨 ➔ [중복_확인필요] 폴더로 이동 완료"
 
-    if matched_count > 0 or inbound_updated:
-        upload_db_to_drive(service, DB_INBOUND_PATH)
-
-    return matched_count, err_msg
+    return matched_inbound_count, err_msg
