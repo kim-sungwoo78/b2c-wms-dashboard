@@ -39,7 +39,7 @@ def parse_clean_float(val):
         return 0.0
 
 def safe_list_files(service, folder_id):
-    """지정 폴더 내 파일 안전 목록 조회"""
+    """지정 폴더 내 엑셀 파일 목록 조회"""
     try:
         q = f"'{folder_id}' in parents and trashed = false"
         results = service.files().list(
@@ -53,7 +53,7 @@ def safe_list_files(service, folder_id):
         valid_files = []
         for f in files:
             if f.get('mimeType') != 'application/vnd.google-apps.folder':
-                if not f['name'].startswith('~$'):
+                if not f['name'].startswith('~$') and f['name'] != "[중복_확인필요]":
                     valid_files.append(f)
         return valid_files
     except Exception as e:
@@ -61,7 +61,7 @@ def safe_list_files(service, folder_id):
         return []
 
 def safe_list_subfolders(service, parent_id):
-    """하위 폴더(B2C, B2B 등) 목록 조회"""
+    """하위 폴더 목록 조회"""
     try:
         q = f"'{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         results = service.files().list(
@@ -75,7 +75,7 @@ def safe_list_subfolders(service, parent_id):
         return []
 
 def read_excel_smart(fh):
-    """엑셀 상단 헤더 위치 자동 감지 로더"""
+    """엑셀 헤더 위치 자동 파싱 로더"""
     for header_idx in [0, 1, 2, 3, 4, 5]:
         try:
             fh.seek(0)
@@ -89,7 +89,7 @@ def read_excel_smart(fh):
     return pd.read_excel(fh)
 
 def process_file_content(df, conn_b2c):
-    """유연한 컬럼 매칭 및 daily_summary / shipment_raw 집계 동시 저장"""
+    """유연한 컬럼 매칭 및 daily_summary / shipment_raw 집계 축적"""
     col_map = {}
     for c in df.columns:
         sc = str(c).strip()
@@ -117,7 +117,6 @@ def process_file_content(df, conn_b2c):
 
     df_clean = df.rename(columns=col_map)
 
-    # 기본값 설정
     if '영업마감일자' not in df_clean.columns:
         df_clean['영업마감일자'] = datetime.now().strftime('%Y-%m-%d')
     if '센터' not in df_clean.columns:
@@ -125,7 +124,7 @@ def process_file_content(df, conn_b2c):
     if '고객사' not in df_clean.columns:
         df_clean['고객사'] = '기타'
 
-    # 날짜 범위 및 센터명 산출 (파일명 포맷용)
+    # 날짜 범위 및 센터명 산출
     clean_dates = df_clean['영업마감일자'].dropna().astype(str).str.replace("-", "").str.replace("/", "").str.strip()
     clean_dates = clean_dates[clean_dates.str.len() >= 8]
     if not clean_dates.empty:
@@ -152,14 +151,14 @@ def process_file_content(df, conn_b2c):
 
     summary_df['영업마감일자'] = summary_df['영업마감일자'].astype(str).str.slice(0, 10)
 
-    # ★ [핵심] daily_summary 와 shipment_raw 두 테이블에 모두 보존하여 대시보드 100% 호환 ★
+    # daily_summary 와 shipment_raw 양쪽에 집계 축적
     summary_df.to_sql('daily_summary', conn_b2c, if_exists='append', index=False)
     summary_df.to_sql('shipment_raw', conn_b2c, if_exists='append', index=False)
 
     return date_str, center_str
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 1. DB 연결 및 테이블 생성
+    # 1. DB 연결 및 테이블 초기화
     conn_b2c = sqlite3.connect(DB_B2C_PATH, timeout=10)
     conn_b2c.execute("""
     CREATE TABLE IF NOT EXISTS daily_summary (
@@ -175,32 +174,34 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     """)
     conn_b2c.commit()
 
-    # 2. 타겟 업로드 폴더 수집 ('대시보드 업로드' 및 'B2C' 등 하위 폴더)
-    target_folders = [RAW_FOLDER_ID]
+    # 2. ★ [모든 폴더 전수 스캔: 업로드, B2C/B2B 하위폴더, 처리완료 폴더] ★
+    target_folders = [RAW_FOLDER_ID, PROCESSED_FOLDER_ID]
     subfolders = safe_list_subfolders(service, RAW_FOLDER_ID)
     for sf in subfolders:
         if sf['name'] not in ['처리완료', '[DB전용] 절대 삭제 금지', '[중복_확인필요]']:
             target_folders.append(sf['id'])
 
-    # 업로드 대상 신규 로우파일 수집
-    raw_files_to_process = []
+    all_files_to_process = []
     for folder_id in target_folders:
         files = safe_list_files(service, folder_id)
         for f in files:
-            raw_files_to_process.append((f, folder_id))
+            # 중복 표기 파일 및 중복 폴더는 제외
+            if not f['name'].startswith("[중복]"):
+                all_files_to_process.append((f, folder_id))
 
-    total_files = len(raw_files_to_process)
+    total_files = len(all_files_to_process)
     processed_cnt = 0
     matched_inbound_count = 0
     err_msg = None
 
-    # 3. 신규 로우파일 가공 및 파일명 자동 변경 / '처리완료' 이동
-    for idx, (f_info, parent_folder_id) in enumerate(raw_files_to_process, 1):
+    # 3. 로우파일 전수 가공 및 프로그래스바(진행 상황) 실시간 표시
+    for idx, (f_info, parent_folder_id) in enumerate(all_files_to_process, 1):
         file_id = f_info['id']
         orig_name = f_info['name']
 
+        # ★ 진행 상황 팝업/프로그래스바에 실시간 전달 ★
         if progress_callback:
-            progress_callback(idx, total_files, orig_name, "")
+            progress_callback(idx, total_files, orig_name, f"{idx}/{total_files} 파일 처리 중")
 
         # 파일 다운로드
         request = service.files().get_media(fileId=file_id)
@@ -221,24 +222,26 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             if not new_filename.endswith('.xlsx'):
                 new_filename += '.xlsx'
 
-            # '처리완료' 폴더 내 기존 파일 확인
-            existing_files = safe_list_files(service, PROCESSED_FOLDER_ID)
-            dup_matches = [ef for ef in existing_files if date_str in ef['name'] and center_str in ef['name']]
-            if dup_matches:
-                seq_num = len(dup_matches) + 1
-                new_filename = f"{date_str}_{center_str}_{seq_num}.xlsx"
+            # '처리완료' 폴더로 이동 및 파일명 정돈
+            if parent_folder_id != PROCESSED_FOLDER_ID:
+                current_parents = f_info.get('parents', [parent_folder_id])
+                remove_parents_str = ",".join(current_parents)
 
-            # 구글 드라이브 파일명 변경 및 '처리완료' 폴더로 이동
-            current_parents = f_info.get('parents', [parent_folder_id])
-            remove_parents_str = ",".join(current_parents)
-
-            service.files().update(
-                fileId=file_id,
-                addParents=PROCESSED_FOLDER_ID,
-                removeParents=remove_parents_str,
-                body={'name': new_filename},
-                supportsAllDrives=True
-            ).execute()
+                service.files().update(
+                    fileId=file_id,
+                    addParents=PROCESSED_FOLDER_ID,
+                    removeParents=remove_parents_str,
+                    body={'name': new_filename},
+                    supportsAllDrives=True
+                ).execute()
+            else:
+                # 이미 처리완료 폴더에 있던 과거 파일도 신규 포맷으로 이름 변경
+                if orig_name != new_filename:
+                    service.files().update(
+                        fileId=file_id,
+                        body={'name': new_filename},
+                        supportsAllDrives=True
+                    ).execute()
 
             processed_cnt += 1
         except Exception as e:
