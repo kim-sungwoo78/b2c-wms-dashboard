@@ -48,22 +48,30 @@ def run_sync():
         st.session_state['sync_msg_type'] = "error"
     return False
 
-def get_b2c_db_paths(selected_m_str):
-    """선택 월에 따른 분할 DB 파일 동적 매칭 (예: wms_b2c_202610.db)"""
+def get_b2c_db_paths(selected_m_list):
+    """선택된 월 목록(예: ['9월', '10월'])에 따른 분할 DB 파일 동적 매칭 및 병합 조회"""
     curr_year = datetime.now().strftime('%Y')
-    if selected_m_str == "누적":
+    if isinstance(selected_m_list, str):
+        selected_m_list = [selected_m_list]
+        
+    if "누적" in selected_m_list:
         db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
         return db_files if db_files else ["wms_b2c.db"]
-    else:
-        m_digit = selected_m_str.replace("월", "").zfill(2)
+    
+    target_dbs = []
+    for m_str in selected_m_list:
+        m_digit = m_str.replace("월", "").zfill(2)
         target_db = f"wms_b2c_{curr_year}{m_digit}.db"
         if os.path.exists(target_db):
-            return [target_db]
+            target_dbs.append(target_db)
+            
+    if not target_dbs and os.path.exists("wms_b2c.db"):
         return ["wms_b2c.db"]
+    return target_dbs
 
 @st.cache_data(ttl=5)
-def load_shipment_orders(selected_m_str):
-    db_paths = get_b2c_db_paths(selected_m_str)
+def load_shipment_orders(selected_m_list):
+    db_paths = get_b2c_db_paths(selected_m_list)
     all_dfs = []
     for db_p in db_paths:
         if os.path.exists(db_p):
@@ -80,8 +88,8 @@ def load_shipment_orders(selected_m_str):
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
 @st.cache_data(ttl=5)
-def load_b2c_sku_data(selected_m_str):
-    db_paths = get_b2c_db_paths(selected_m_str)
+def load_b2c_sku_data(selected_m_list):
+    db_paths = get_b2c_db_paths(selected_m_list)
     all_dfs = []
     for db_p in db_paths:
         if os.path.exists(db_p):
@@ -328,7 +336,7 @@ def smart_fold_pivot_columns(pivot_df, expanded_months):
             for d in m_dates: new_df[d] = pivot_df[d]
     return new_df
 
-def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 월 선택:", allow_nujak=False, multi_select=False):
+def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 월 선택:", allow_nujak=False, multi_select=True):
     st.markdown(f"<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>{title_label}</p>", unsafe_allow_html=True)
     adjusted_today = datetime.now() - timedelta(days=1)
     default_month_str = f"{adjusted_today.month}월"
@@ -342,15 +350,28 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
     cols = st.columns(len(months_list))
     for idx, m_name in enumerate(months_list):
         with cols[idx]:
-            is_selected = (m_name in st.session_state[session_key_selected]) if multi_select else (st.session_state[session_key_selected] == m_name)
+            if multi_select:
+                curr_sel = st.session_state[session_key_selected]
+                if not isinstance(curr_sel, list):
+                    curr_sel = [curr_sel]
+                is_selected = m_name in curr_sel
+            else:
+                is_selected = (st.session_state[session_key_selected] == m_name)
+
             btn_style = "primary" if is_selected else "secondary"
             if st.button(m_name, key=f"btn_{session_key_selected}_{m_name}", type=btn_style, use_container_width=True):
                 if multi_select:
-                    curr_list = list(st.session_state[session_key_selected])
-                    if m_name in curr_list: curr_list.remove(m_name)
-                    else: curr_list.append(m_name)
+                    curr_list = list(st.session_state[session_key_selected]) if isinstance(st.session_state[session_key_selected], list) else [st.session_state[session_key_selected]]
+                    if m_name in curr_list:
+                        curr_list.remove(m_name)
+                    else:
+                        curr_list.append(m_name)
                     st.session_state[session_key_selected] = curr_list
-                else: st.session_state[session_key_selected] = m_name
+                else:
+                    if st.session_state[session_key_selected] == m_name:
+                        st.session_state[session_key_selected] = ""
+                    else:
+                        st.session_state[session_key_selected] = m_name
                 st.rerun()
 
     return st.session_state[session_key_selected]
@@ -438,8 +459,8 @@ elif main_mode == "🚚 B2C 출고 현황":
         st.header("센터 & 고객사별 출고현황 (06시 영업마감 기준)")
         expanded_months_tab1 = render_month_button_bar(session_key_selected="tab1_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=False, multi_select=True)
         
-        sel_m_str = expanded_months_tab1[0] if isinstance(expanded_months_tab1, list) and expanded_months_tab1 else "10월"
-        df_b2c_orders = load_shipment_orders(sel_m_str)
+        sel_m_list = expanded_months_tab1 if isinstance(expanded_months_tab1, list) else ([expanded_months_tab1] if expanded_months_tab1 else [])
+        df_b2c_orders = load_shipment_orders(sel_m_list) if sel_m_list else pd.DataFrame()
 
         if not df_b2c_orders.empty:
             raw_centers = sorted(list(df_b2c_orders['센터'].dropna().unique()))
@@ -470,17 +491,17 @@ elif main_mode == "🚚 B2C 출고 현황":
             if not filtered_df.empty:
                 pivot_raw = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_raw['총 출고건수'] = pivot_raw.sum(axis=1)
-                pivot_df = smart_fold_pivot_columns(pivot_raw, expanded_months_tab1)
+                pivot_df = smart_fold_pivot_columns(pivot_raw, sel_m_list)
 
                 render_sticky_pivot(pivot_df, group_cols, key_suffix="tab1")
         else:
-            st.info("B2C 출고 데이터가 업로드되지 않았습니다. 좌측 상단 [🔄 드라이브 & 구글시트 동기화]를 눌러주세요.")
+            st.info("선택된 월의 B2C 출고 데이터가 없거나 모든 월 선택이 해제되었습니다.")
 
     with tab2:
         st.header("배송 속성 및 판매처별 출고현황")
         expanded_months_tab2 = render_month_button_bar(session_key_selected="tab2_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=False, multi_select=True)
-        sel_m_str2 = expanded_months_tab2[0] if isinstance(expanded_months_tab2, list) and expanded_months_tab2 else "10월"
-        df_b2c_orders2 = load_shipment_orders(sel_m_str2)
+        sel_m_list2 = expanded_months_tab2 if isinstance(expanded_months_tab2, list) else ([expanded_months_tab2] if expanded_months_tab2 else [])
+        df_b2c_orders2 = load_shipment_orders(sel_m_list2) if sel_m_list2 else pd.DataFrame()
 
         if not df_b2c_orders2.empty:
             raw_centers_tab2 = sorted(list(df_b2c_orders2['센터'].dropna().unique()))
@@ -499,29 +520,34 @@ elif main_mode == "🚚 B2C 출고 현황":
             if not df_tab2.empty:
                 pivot_raw2 = pd.pivot_table(df_tab2, index=group_cols_tab2, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_raw2['총 출고건수'] = pivot_raw2.sum(axis=1)
-                pivot_df2 = smart_fold_pivot_columns(pivot_raw2, expanded_months_tab2)
+                pivot_df2 = smart_fold_pivot_columns(pivot_raw2, sel_m_list2)
                 render_sticky_pivot(pivot_df2, group_cols_tab2, key_suffix="tab2")
 
     with tab3:
         st.header("출고박스 규격별 사용 현황")
         expanded_months_tab3 = render_month_button_bar(session_key_selected="tab3_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=False, multi_select=True)
-        sel_m_str3 = expanded_months_tab3[0] if isinstance(expanded_months_tab3, list) and expanded_months_tab3 else "10월"
-        df_b2c_orders3 = load_shipment_orders(sel_m_str3)
+        sel_m_list3 = expanded_months_tab3 if isinstance(expanded_months_tab3, list) else ([expanded_months_tab3] if expanded_months_tab3 else [])
+        df_b2c_orders3 = load_shipment_orders(sel_m_list3) if sel_m_list3 else pd.DataFrame()
 
         if not df_b2c_orders3.empty:
             df_tab3 = df_b2c_orders3[~df_b2c_orders3['출고박스종류'].astype(str).str.upper().isin(['N', 'Y', '미지정', 'NAN'])]
             if not df_tab3.empty:
                 pivot_raw3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_raw3['총 출고건수'] = pivot_raw3.sum(axis=1)
-                pivot_df3 = smart_fold_pivot_columns(pivot_raw3, expanded_months_tab3)
+                pivot_df3 = smart_fold_pivot_columns(pivot_raw3, sel_m_list3)
                 render_sticky_pivot(pivot_df3, ["출고박스 규격"], key_suffix="tab3")
 
     with tab4:
-        df_b2c_sku = load_b2c_sku_data("10월")
+        st.header("🔍 SKU별 출고량")
+        expanded_months_tab4 = render_month_button_bar(session_key_selected="tab4_exp_months", title_label="🗓️ 조회 월 선택:", allow_nujak=False, multi_select=True)
+        sel_m_list4 = expanded_months_tab4 if isinstance(expanded_months_tab4, list) else ([expanded_months_tab4] if expanded_months_tab4 else [])
+        df_b2c_sku = load_b2c_sku_data(sel_m_list4) if sel_m_list4 else pd.DataFrame()
         if not df_b2c_sku.empty:
             sku_summary = df_b2c_sku.groupby(['고객사', '바코드', 'SKU명'])[['출고건수', '총출고수량']].sum().reset_index()
             sku_summary = sku_summary.sort_values(by='총출고수량', ascending=False).reset_index(drop=True)
             st.dataframe(sku_summary.style.format({'출고건수': '{:,}', '총출고수량': '{:,}'}), use_container_width=True, hide_index=True)
+        else:
+            st.info("선택된 월의 SKU 출고 데이터가 없습니다.")
 
     with tab5:
         st.header("📥 B2C 로우파일 추출 및 다운로드")
