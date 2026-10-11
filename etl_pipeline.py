@@ -9,16 +9,14 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import openpyxl
 
-# 구글 드라이브 폴더 ID 설정
+# 구글 드라이브 폴더 ID
 TOP_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'       # 대시보드 업로드
 B2C_FOLDER_ID = '1ArGfyeVpZDJYUrdlGNSCrhj734JrqGW9'        # B2C 폴더
 INBOUND_FOLDER_ID = '1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp'    # 입고 폴더
 PROCESSED_FOLDER_ID = '1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ'  # 처리완료 폴더
 DB_FOLDER_ID = '1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9'         # DB 전용 폴더
 
-# IB 구글 시트 ID
 DEFAULT_IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
-
 DB_INBOUND_PATH = 'wms_inbound.db'
 
 def get_drive_service(creds_dict):
@@ -287,7 +285,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             is_inbound = (category == 'INBOUND') or any(k in "".join(df_cols_no_space) for k in ['입고번호', '총검수완료수량', '입고방법']) or ('입고요청서' in file_name)
 
             if is_inbound:
-                # 입고 파싱 로직
                 col_map_inbound = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -346,7 +343,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 conn_ib.commit()
                 inbound_updated = True
 
-                # 입고 로우 파일 이동
                 latest_date_str = df_in['영업마감일자'].max()
                 target_month_str = latest_date_str[:7] if pd.notnull(latest_date_str) and len(str(latest_date_str)) >= 7 else datetime.now().strftime('%Y-%m')
                 target_folder_id = get_or_create_subfolder(service, PROCESSED_FOLDER_ID, target_month_str)
@@ -357,7 +353,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 ).execute()
 
             else:
-                # B2C 출고 로우 파싱 및 월별 DB 분할 할당
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -420,14 +415,13 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 df_b2c_valid = df_b2c_f[valid_mask]
 
                 if df_b2c_valid.empty:
-                    # 중복/유효 데이터 없음 -> '처리완료/중복파일' 폴더로 이동
                     service.files().update(
                         fileId=file_id, addParents=duplicate_folder_id, removeParents=src_folder,
                         supportsAllDrives=True, fields='id, parents'
                     ).execute()
                     continue
 
-                # 행 단위 월별 분할 저장 (YYYYMM 기반 DB 파티셔닝)
+                # 월별 DB 파티셔닝 저장 (wms_b2c_YYYYMM.db)
                 df_b2c_valid['month_key'] = df_b2c_valid['영업마감일자'].str.slice(0, 7).str.replace('-', '')
                 grouped_months = df_b2c_valid.groupby('month_key')
 
@@ -498,7 +492,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     conn_m.close()
                     b2c_updated_months.add(month_db_name)
 
-                # 파일 이동 기준: 파일 내 '가장 최신(마지막) 마감일자의 연월(YYYY-MM)' 폴더
+                # 파일 내 최신 마감일자의 연월 폴더로 이동 (처리완료/YYYY-MM)
                 latest_date_str = df_b2c_valid['영업마감일자'].max()
                 target_month_str = latest_date_str[:7] if pd.notnull(latest_date_str) and len(str(latest_date_str)) >= 7 else datetime.now().strftime('%Y-%m')
                 target_folder_id = get_or_create_subfolder(service, PROCESSED_FOLDER_ID, target_month_str)
@@ -512,7 +506,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
             print(f"File process error ({file_name}): {file_e}")
             continue
 
-    # IB 구글 시트 매칭
     matched_count, err_msg = 0, ""
     try:
         matched_count, err_msg = update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib)
@@ -521,7 +514,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn_ib.close()
 
-    # 분할 갱신된 월별 DB 파일들 구글 드라이브 업로드
     for month_db_name in b2c_updated_months:
         upload_db_to_drive(service, month_db_name)
 
