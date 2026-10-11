@@ -52,7 +52,7 @@ def get_b2c_db_paths(selected_m_list):
     """선택된 월 목록(예: ['9월', '10월'])에 따른 분할 DB 파일 동적 매칭 및 병합 조회"""
     curr_year = datetime.now().strftime('%Y')
     if isinstance(selected_m_list, str):
-        selected_m_list = [selected_m_list]
+        selected_m_list = [selected_m_list] if selected_m_list else []
         
     if "누적" in selected_m_list:
         db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
@@ -353,7 +353,7 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
             if multi_select:
                 curr_sel = st.session_state[session_key_selected]
                 if not isinstance(curr_sel, list):
-                    curr_sel = [curr_sel]
+                    curr_sel = [curr_sel] if curr_sel else []
                 is_selected = m_name in curr_sel
             else:
                 is_selected = (st.session_state[session_key_selected] == m_name)
@@ -361,7 +361,7 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
             btn_style = "primary" if is_selected else "secondary"
             if st.button(m_name, key=f"btn_{session_key_selected}_{m_name}", type=btn_style, use_container_width=True):
                 if multi_select:
-                    curr_list = list(st.session_state[session_key_selected]) if isinstance(st.session_state[session_key_selected], list) else [st.session_state[session_key_selected]]
+                    curr_list = list(st.session_state[session_key_selected]) if isinstance(st.session_state[session_key_selected], list) else ([st.session_state[session_key_selected]] if st.session_state[session_key_selected] else [])
                     if m_name in curr_list:
                         curr_list.remove(m_name)
                     else:
@@ -379,9 +379,10 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
 # 메인 종합 현황 모드
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
-    selected_m = render_month_button_bar(session_key_selected="main_selected_month", title_label="🗓️ 기준 월 선택:", allow_nujak=True, multi_select=False)
+    selected_m = render_month_button_bar(session_key_selected="main_selected_month", title_label="🗓️ 기준 월 선택:", allow_nujak=True, multi_select=True)
 
-    df_b2c_orders = load_shipment_orders(selected_m)
+    sel_m_list_main = selected_m if isinstance(selected_m, list) else ([selected_m] if selected_m else [])
+    df_b2c_orders = load_shipment_orders(sel_m_list_main) if sel_m_list_main else pd.DataFrame()
     df_inbound_distinct = load_inbound_distinct_counts()
 
     raw_centers = set()
@@ -585,7 +586,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.download_button(
                         label="💾 로우 데이터 엑셀 파일 다운로드",
                         data=buffer.getvalue(),
-                        file_name=file_name_out,
+                        file_name_out=file_name_out,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="btn_download_b2c_raw_excel"
                     )
