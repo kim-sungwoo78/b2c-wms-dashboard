@@ -88,17 +88,39 @@ def load_shipment_orders(selected_m_list):
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
 @st.cache_data(ttl=5)
-def load_b2c_sku_data(selected_m_list):
-    db_paths = get_b2c_db_paths(selected_m_list)
+def load_b2c_sku_data_by_range(start_date, end_date, selected_centers, selected_clients=None):
+    """기간 및 센터, 고객사 조건으로 daily_summary SKU 데이터 조회"""
+    all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
+    if not all_db_files and os.path.exists("wms_b2c.db"):
+        all_db_files = ["wms_b2c.db"]
+    
+    start_str = start_date.strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d')
+    
     all_dfs = []
-    for db_p in db_paths:
+    for db_p in all_db_files:
         if os.path.exists(db_p):
             try:
                 conn = sqlite3.connect(db_p, timeout=10)
-                df = pd.read_sql("SELECT * FROM daily_summary", conn)
+                query = "SELECT * FROM daily_summary WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?"
+                params = [start_str, end_str]
+                
+                if selected_centers:
+                    placeholders = ','.join(['?'] * len(selected_centers))
+                    query += f" AND 센터 IN ({placeholders})"
+                    params.extend(selected_centers)
+
+                if selected_clients:
+                    placeholders_c = ','.join(['?'] * len(selected_clients))
+                    query += f" AND 고객사 IN ({placeholders_c})"
+                    params.extend(selected_clients)
+                
+                df_res = pd.read_sql(query, conn, params=params)
                 conn.close()
-                if not df.empty: all_dfs.append(df)
-            except Exception: pass
+                if not df_res.empty:
+                    all_dfs.append(df_res)
+            except Exception:
+                pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
 @st.cache_data(ttl=5)
@@ -133,17 +155,34 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
 @st.cache_data(ttl=5)
-def load_inbound_data():
+def load_inbound_data_by_range(start_date, end_date, selected_centers):
+    """기간 및 센터 조건으로 입고 데이터 조회"""
     if not os.path.exists(DB_INBOUND_PATH): return pd.DataFrame()
     try:
+        start_str = start_date.strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d')
+        
         conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
-        df = pd.read_sql("""
-            WITH order_qty AS (
+        
+        where_clause = "WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?"
+        params = [start_str, end_str]
+        
+        if selected_centers:
+            placeholders = ','.join(['?'] * len(selected_centers))
+            where_clause += f" AND 센터 IN ({placeholders})"
+            params.extend(selected_centers)
+
+        query = f"""
+            WITH filtered_ib AS (
+                SELECT * FROM inbound_summary
+                {where_clause}
+            ),
+            order_qty AS (
                 SELECT 영업마감일자, 센터, 고객사, 상태, 입고번호,
                        MAX(총검수완료수량) AS 고유검수완료수량,
                        MAX(PLT수) AS 고유PLT,
                        MAX(BOX수) AS 고유BOX
-                FROM inbound_summary
+                FROM filtered_ib
                 GROUP BY 영업마감일자, 센터, 고객사, 상태, 입고번호
             ),
             sku_cnt AS (
@@ -151,7 +190,7 @@ def load_inbound_data():
                        COUNT(DISTINCT 입고번호) AS 입고건수,
                        COUNT(DISTINCT 바코드) AS 바코드수,
                        COUNT(DISTINCT SKU명) AS SKU개수
-                FROM inbound_summary
+                FROM filtered_ib
                 GROUP BY 영업마감일자, 센터, 고객사, 상태
             )
             SELECT s.영업마감일자, s.센터, s.고객사, s.상태,
@@ -166,7 +205,8 @@ def load_inbound_data():
                   AND s.고객사 = q.고객사 
                   AND s.상태 = q.상태
             GROUP BY s.영업마감일자, s.센터, s.고객사, s.상태
-        """, conn)
+        """
+        df = pd.read_sql(query, conn, params=params)
         conn.close()
         return df
     except Exception: return pd.DataFrame()
@@ -530,8 +570,17 @@ elif main_mode == "🚚 B2C 출고 현황":
         sel_m_list3 = expanded_months_tab3 if isinstance(expanded_months_tab3, list) else ([expanded_months_tab3] if expanded_months_tab3 else [])
         df_b2c_orders3 = load_shipment_orders(sel_m_list3) if sel_m_list3 else pd.DataFrame()
 
+        df_centers_sample3 = load_shipment_orders("누적")
+        avail_centers3 = sorted(list(df_centers_sample3['센터'].dropna().unique())) if not df_centers_sample3.empty and '센터' in df_centers_sample3.columns else []
+        
+        selected_center_tab3_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers3, key="tab3_centers")
+        expanded_centers_tab3 = expand_selected_centers(selected_center_tab3_input, avail_centers3) if selected_center_tab3_input else []
+
         if not df_b2c_orders3.empty:
             df_tab3 = df_b2c_orders3[~df_b2c_orders3['출고박스종류'].astype(str).str.upper().isin(['N', 'Y', '미지정', 'NAN'])]
+            if expanded_centers_tab3:
+                df_tab3 = df_tab3[df_tab3['센터'].isin(expanded_centers_tab3)]
+                
             if not df_tab3.empty:
                 pivot_raw3 = pd.pivot_table(df_tab3, index=['출고박스종류'], columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_raw3['총 출고건수'] = pivot_raw3.sum(axis=1)
@@ -540,15 +589,43 @@ elif main_mode == "🚚 B2C 출고 현황":
 
     with tab4:
         st.header("🔍 SKU별 출고량")
-        expanded_months_tab4 = render_month_button_bar(session_key_selected="tab4_exp_months", title_label="🗓️ 조회 월 선택:", allow_nujak=False, multi_select=True)
-        sel_m_list4 = expanded_months_tab4 if isinstance(expanded_months_tab4, list) else ([expanded_months_tab4] if expanded_months_tab4 else [])
-        df_b2c_sku = load_b2c_sku_data(sel_m_list4) if sel_m_list4 else pd.DataFrame()
-        if not df_b2c_sku.empty:
-            sku_summary = df_b2c_sku.groupby(['고객사', '바코드', 'SKU명'])[['출고건수', '총출고수량']].sum().reset_index()
-            sku_summary = sku_summary.sort_values(by='총출고수량', ascending=False).reset_index(drop=True)
-            st.dataframe(sku_summary.style.format({'출고건수': '{:,}', '총출고수량': '{:,}'}), use_container_width=True, hide_index=True)
-        else:
-            st.info("선택된 월의 SKU 출고 데이터가 없습니다.")
+        
+        c_sku1, c_sku2, c_sku3 = st.columns([3, 2, 2])
+        
+        df_centers_sample4 = load_shipment_orders("누적")
+        avail_centers4 = sorted(list(df_centers_sample4['센터'].dropna().unique())) if not df_centers_sample4.empty and '센터' in df_centers_sample4.columns else []
+
+        with c_sku1:
+            today4 = date.today()
+            first_day4 = today4.replace(day=1)
+            date_range4 = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day4, today4), key="tab4_date_range")
+            
+        with c_sku2:
+            selected_center_tab4_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers4, key="tab4_centers")
+            expanded_centers_tab4 = expand_selected_centers(selected_center_tab4_input, avail_centers4) if selected_center_tab4_input else []
+
+        with c_sku3:
+            show_client4 = st.radio("고객사 구분 표시", ["숨김 (전체 요약)", "보이기 (고객사 상세)"], key="tab4_show_client")
+            clients4 = []
+            if "보이기" in show_client4:
+                df_all_clients = load_b2c_sku_data("누적")
+                available_clients4 = sorted(list(df_all_clients['고객사'].dropna().unique())) if not df_all_clients.empty and '고객사' in df_all_clients.columns else []
+                clients4 = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients4, key="tab4_clients")
+
+        if isinstance(date_range4, tuple) and len(date_range4) == 2:
+            start_d4, end_d4 = date_range4
+            df_b2c_sku = load_b2c_sku_data_by_range(start_d4, end_d4, expanded_centers_tab4, clients4)
+            
+            if not df_b2c_sku.empty:
+                group_cols4 = ['바코드', 'SKU명']
+                if "보이기" in show_client4:
+                    group_cols4 = ['고객사', '바코드', 'SKU명']
+                    
+                sku_summary = df_b2c_sku.groupby(group_cols4)[['출고건수', '총출고수량']].sum().reset_index()
+                sku_summary = sku_summary.sort_values(by='총출고수량', ascending=False).reset_index(drop=True)
+                st.dataframe(sku_summary.style.format({'출고건수': '{:,}', '총출고수량': '{:,}'}), use_container_width=True, hide_index=True)
+            else:
+                st.info("선택된 기간 및 조건의 SKU 출고 데이터가 없습니다.")
 
     with tab5:
         st.header("📥 B2C 로우파일 추출 및 다운로드")
@@ -586,7 +663,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.download_button(
                         label="💾 로우 데이터 엑셀 파일 다운로드",
                         data=buffer.getvalue(),
-                        file_name_out=file_name_out,
+                        file_name=file_name_out,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="btn_download_b2c_raw_excel"
                     )
@@ -594,11 +671,28 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.warning("⚠️ 선택하신 기간 및 센터 조건에 해당하는 로우 데이터가 없습니다.")
 
 elif main_mode == "📦 입고 현황":
-    df_inbound = load_inbound_data()
     st.header("📦 입고 현황 모니터링")
-    if not df_inbound.empty:
-        pivot_raw_ib = pd.pivot_table(df_inbound, index=['센터', '고객사', '상태'], columns='영업마감일자', values='입고완료수량', aggfunc='sum', fill_value=0)
-        pivot_raw_ib['총 입고완료수량'] = pivot_raw_ib.sum(axis=1)
-        render_sticky_pivot(pivot_raw_ib, ['센터', '고객사', '상태'], key_suffix="inbound_main")
-    else:
-        st.info("입고 데이터가 존재하지 않습니다.")
+    
+    col_ib1, col_ib2 = st.columns(2)
+    with col_ib1:
+        today_ib = date.today()
+        first_day_ib = today_ib.replace(day=1)
+        date_range_ib = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day_ib, today_ib), key="ib_date_range")
+        
+    df_centers_sample_ib = load_shipment_orders("누적")
+    avail_centers_ib = sorted(list(df_centers_sample_ib['센터'].dropna().unique())) if not df_centers_sample_ib.empty and '센터' in df_centers_sample_ib.columns else []
+
+    with col_ib2:
+        selected_centers_ib = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers_ib, key="ib_centers")
+        expanded_centers_ib = expand_selected_centers(selected_centers_ib, avail_centers_ib) if selected_centers_ib else []
+
+    if isinstance(date_range_ib, tuple) and len(date_range_ib) == 2:
+        start_d_ib, end_d_ib = date_range_ib
+        df_inbound = load_inbound_data_by_range(start_d_ib, end_d_ib, expanded_centers_ib)
+        
+        if not df_inbound.empty:
+            pivot_raw_ib = pd.pivot_table(df_inbound, index=['센터', '고객사', '상태'], columns='영업마감일자', values='입고완료수량', aggfunc='sum', fill_value=0)
+            pivot_raw_ib['총 입고완료수량'] = pivot_raw_ib.sum(axis=1)
+            render_sticky_pivot(pivot_raw_ib, ['센터', '고객사', '상태'], key_suffix="inbound_main")
+        else:
+            st.info("선택한 기간 및 조건에 해당하는 입고 데이터가 존재하지 않습니다.")
