@@ -11,7 +11,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, date
 
-st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="통합 물류 운영 대시보드",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 DB_INBOUND_PATH = "wms_inbound.db"
 LAST_SYNC_FILE = "last_sync.txt"
@@ -24,7 +28,6 @@ if 'is_syncing' not in st.session_state:
 if st.session_state['is_syncing']:
     st.markdown("""
         <style>
-            /* 동기화 중 전체 화면 투명 가림막 및 클릭 금지 커서 */
             .sync-overlay {
                 position: fixed;
                 top: 0; left: 0;
@@ -95,11 +98,19 @@ def run_sync():
             status_text = st.sidebar.empty()
 
             def update_progress(current, total, filename, eta):
-                status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`\n\n*(⚠️ 동기화 중에는 메뉴 선택이 차단됩니다)*")
+                status_text.markdown(
+                    f"⏳ **동기화 진행 중 ({current}/{total})**\n\n"
+                    f"📄 `{filename}`\n\n"
+                    f"*(⚠️ 동기화 중에는 메뉴 선택이 차단됩니다)*"
+                )
 
             st.cache_data.clear()
 
-            matched_cnt, err_msg = etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
+            matched_cnt, err_msg = etl_pipeline.process_and_update(
+                service, 
+                sheets_service=sheets_service, 
+                progress_callback=update_progress
+            )
             
             status_text.empty()
             st.cache_data.clear()
@@ -142,7 +153,11 @@ def get_available_data_months():
     if os.path.exists(DB_INBOUND_PATH):
         try:
             conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
-            df_ib = pd.read_sql("SELECT DISTINCT strftime('%m', 영업마감일자) as m FROM inbound_summary WHERE 영업마감일자 IS NOT NULL", conn)
+            df_ib = pd.read_sql(
+                "SELECT DISTINCT strftime('%m', 영업마감일자) as m "
+                "FROM inbound_summary WHERE 영업마감일자 IS NOT NULL", 
+                conn
+            )
             conn.close()
             for m_val in df_ib['m'].dropna():
                 if m_val:
@@ -427,7 +442,7 @@ if latest_sync and latest_sync > my_loaded_sync:
             st.session_state['loaded_sync_time'] = latest_sync
             st.rerun()
 
-# 사이드바 동기화 제어 버튼 (동기화 중 비활성화)
+# 사이드바 동기화 제어 버튼
 if st.sidebar.button("🔄 드라이브 & 구글시트 동기화", disabled=st.session_state['is_syncing']):
     if run_sync():
         st.rerun()
@@ -443,7 +458,6 @@ if 'main_mode_selection' not in st.session_state:
 
 btn_col1, btn_col2, btn_col3 = st.columns(3)
 
-# 동기화 중 상단 메뉴 이동 버튼 비활성화 (disabled=st.session_state['is_syncing'])
 with btn_col1:
     btn_type = "primary" if (st.session_state['main_mode_selection'] == "🏢 메인 : 센터 종합 현황") else "secondary"
     if st.button("🏢 메인 : 센터 종합 현황", type=btn_type, use_container_width=True, disabled=st.session_state['is_syncing']):
@@ -610,7 +624,7 @@ def append_subtotals_to_pivot(pivot_df, group_cols):
 
     return pd.concat([total_df, body_df])
 
-# --- 월 선택 버튼 바 (동기화 중 비활성화 연동) ---
+# --- 월 선택 버튼 바 ---
 def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 월 선택:", allow_nujak=True, multi_select=True):
     st.markdown(f"<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>{title_label}</p>", unsafe_allow_html=True)
     
@@ -714,7 +728,13 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         render_sticky_pivot(final_main_df, ["센터"], key_suffix="main_summary")
 
 elif main_mode == "🚚 B2C 출고 현황":
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 센터/고객사별 출고현황", "🚚 배송속성 / 판매처별 현황", "📦 출고박스별 현황", "🔍 SKU별 출고량", "📥 B2C 로우파일 다운로드"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 센터/고객사별 출고현황", 
+        "🚚 배송속성 / 판매처별 현황", 
+        "📦 출고박스별 현황", 
+        "🔍 SKU별 출고량", 
+        "📥 B2C 로우파일 다운로드"
+    ])
 
     with tab1:
         st.header("센터 & 고객사별 출고현황 (06시 영업마감 기준)")
@@ -778,7 +798,6 @@ elif main_mode == "🚚 B2C 출고 현황":
             df_tab2 = df_b2c_orders2.copy()
             if expanded_centers_tab2: df_tab2 = df_tab2[df_tab2['센터'].isin(expanded_centers_tab2)]
 
-            # --- 📊 [상단 배치] 단일 Pie 트레이스로 도넛 조각 분할 및 막대 차트 연동 ---
             chart_df = df_tab2.groupby(target_col)['출고건수'].sum().reset_index()
             chart_df = chart_df.sort_values(by='출고건수', ascending=False)
             
@@ -838,7 +857,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 st.plotly_chart(fig, use_container_width=True)
                 st.markdown("---")
 
-            # --- 📋 [하단 배치] 상세 피벗 데이터 테이블 ---
             group_cols_tab2 = ['센터', target_col]
             if not df_tab2.empty:
                 pivot_raw2 = pd.pivot_table(df_tab2, index=group_cols_tab2, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
@@ -913,6 +931,7 @@ elif main_mode == "🚚 B2C 출고 현황":
             else:
                 st.info("선택된 기간 및 조건의 SKU 출고 데이터가 없습니다.")
 
+    # ⭐ [수정된 탭 5 영역] B2C 로우파일 추출 및 다운로드
     with tab5:
         st.header("📥 B2C 로우파일 추출 및 다운로드")
         st.caption("원하는 기간과 센터 조건을 지정하여 B2C 출고 로우 원장(shipment_raw)을 엑셀 파일로 다운로드할 수 있습니다.")
@@ -937,27 +956,38 @@ elif main_mode == "🚚 B2C 출고 현황":
                 with st.spinner("데이터베이스에서 로우 데이터를 추출 중입니다..."):
                     expanded_centers_dl = expand_selected_centers(selected_centers_dl, list(raw_centers_dl)) if selected_centers_dl else []
                     df_raw_dl = load_b2c_raw_by_range(start_d, end_d, expanded_centers_dl)
+                    
+                    # 검색 결과 세션 저장 (다운로드 시 상태 유지)
+                    st.session_state['searched_raw_df'] = df_raw_dl
+                    st.session_state['searched_raw_dates'] = (start_d, end_d)
 
-                if not df_raw_dl.empty:
-                    st.success(f"✅ 총 **{len(df_raw_dl):,}** 건의 로우 데이터가 조회되었습니다.")
-                    st.dataframe(df_raw_dl.head(100), use_container_width=True)
-                    st.caption("※ 화면상에는 상위 100건만 미리보기로 표시됩니다.")
+            # 검색 결과가 세션에 존재할 때 화면 표시 및 다운로드 버튼 활성화
+            if 'searched_raw_df' in st.session_state and not st.session_state['searched_raw_df'].empty:
+                df_raw_dl = st.session_state['searched_raw_df']
+                start_d_s, end_d_s = st.session_state['searched_raw_dates']
+                
+                st.success(f"✅ 총 **{len(df_raw_dl):,}** 건의 로우 데이터가 조회되었습니다.")
+                
+                # 엑셀 버퍼 생성 및 다운로드 버튼 (파라미터명 file_name으로 정정)
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_raw_dl.to_excel(writer, index=False, sheet_name='B2C_RawData')
 
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                        df_raw_dl.to_excel(writer, index=False, sheet_name='B2C_RawData')
-
-                    file_name_out = f"B2C_RawData_{start_d.strftime('%Y%m%d')}_{end_d.strftime('%Y%m%d')}.xlsx"
-                    st.download_button(
-                        label="💾 로우 데이터 엑셀 파일 다운로드",
-                        data=buffer.getvalue(),
-                        file_name_out=file_name_out,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="btn_download_b2c_raw_excel",
-                        disabled=st.session_state['is_syncing']
-                    )
-                else:
-                    st.warning("⚠️ 선택하신 기간 및 센터 조건에 해당하는 로우 데이터가 없습니다.")
+                out_filename = f"B2C_RawData_{start_d_s.strftime('%Y%m%d')}_{end_d_s.strftime('%Y%m%d')}.xlsx"
+                
+                st.download_button(
+                    label="💾 로우 데이터 엑셀 파일 다운로드",
+                    data=buffer.getvalue(),
+                    file_name=out_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="btn_download_b2c_raw_excel",
+                    type="primary",
+                    disabled=st.session_state['is_syncing']
+                )
+                
+                st.markdown("---")
+                st.dataframe(df_raw_dl.head(100), use_container_width=True)
+                st.caption("※ 화면상에는 상위 100건만 미리보기로 표시되며, [💾 로우 데이터 엑셀 파일 다운로드] 클릭 시 전체 데이터가 다운로드됩니다.")
 
 elif main_mode == "📦 입고 현황":
     st.header("📦 입고 현황 모니터링")
