@@ -224,7 +224,9 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
     return matched_count, err_msg
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    download_db_from_drive(service, DB_INBOUND_PATH)
+    # 입고 DB가 로컬에 없을 때만 초기 다운로드
+    if not os.path.exists(DB_INBOUND_PATH):
+        download_db_from_drive(service, DB_INBOUND_PATH)
 
     conn_ib = sqlite3.connect(DB_INBOUND_PATH, timeout=30)
     conn_ib.execute("""
@@ -328,7 +330,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
                 for _, row_in in df_in.iterrows():
                     conn_ib.execute("""
-                    INSERT OR IGNORE INTO inbound_summary
+                    INSERT OR REPLACE INTO inbound_summary
                     (영업마감일자, 센터, 고객사, 상태, 입고번호, 입고방법, SKU명, 바코드, 소비기한, 로트,
                      기본로케이션, 예정수량, 요청SKU수량, 총예정수량, 총검수완료수량, PLT수, BOX수, 파적BOX수, 등록일시, 변경자,
                      최종변경일시, 입고완료일시)
@@ -427,22 +429,25 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
                 for month_key, group_df in grouped_months:
                     month_db_name = f"wms_b2c_{month_key}.db"
-                    download_db_from_drive(service, month_db_name)
+                    
+                    # ⭐ [핵심 수정 위치]
+                    # 로컬에 DB 파일이 아직 존재하지 않을 때만 최초 1회 구글 드라이브에서 다운로드하도록 변경
+                    # (반복문 처리 시 이전 파일의 수정 내역이 재다운로드로 인해 덮어씌워지는 버그 완벽 방지)
+                    if not os.path.exists(month_db_name):
+                        download_db_from_drive(service, month_db_name)
+                        
                     conn_m = sqlite3.connect(month_db_name, timeout=30)
 
-                    # 1. shipment_raw 테이블 생성 (Primary Key에 SKU명 및 바코드 포함)
                     conn_m.execute("""
                     CREATE TABLE IF NOT EXISTS shipment_raw (
                         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
-                        출고박스종류 TEXT, 송장번호 TEXT, SKU명 TEXT, 바코드 TEXT, 마감일시 TEXT, 마감자 TEXT, 주문일시 TEXT,
+                        출고박스종류 TEXT, 송장번호 TEXT, 마감일시 TEXT, 마감자 TEXT, 주문일시 TEXT,
                         결제일시 TEXT, 등록일시 TEXT, 할당일시 TEXT, 출력일시 TEXT, 브랜드 TEXT,
                         배송계약태그 TEXT, 주문번호 TEXT, 개별주문번호 TEXT, 피킹지시서번호 TEXT,
                         품고추적번호 TEXT, CS TEXT,
-                        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호, SKU명, 바코드)
+                        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호)
                     )
                     """)
-                    
-                    # 2. daily_summary 테이블 생성
                     conn_m.execute("""
                     CREATE TABLE IF NOT EXISTS daily_summary (
                         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -452,29 +457,27 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     """)
 
                     shipment_distinct = group_df[
-                        ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호', 'SKU명', '바코드',
+                        ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호',
                          '마감일시', '마감자', '주문일시', '결제일시', '등록일시', '할당일시', '출력일시',
                          '브랜드', '배송계약태그', '주문번호', '개별주문번호', '피킹지시서번호', '품고추적번호', 'CS']
-                    ].drop_duplicates(subset=['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호', 'SKU명', '바코드'])
+                    ].drop_duplicates(subset=['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호'])
 
-                    # 3. INSERT OR IGNORE 기반으로 중복건 무시 및 10,000건 초과 신규건 모두 안전 추가
                     for _, row_s in shipment_distinct.iterrows():
                         conn_m.execute("""
-                        INSERT OR IGNORE INTO shipment_raw
-                        (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호, SKU명, 바코드,
+                        INSERT OR REPLACE INTO shipment_raw
+                        (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호,
                          마감일시, 마감자, 주문일시, 결제일시, 등록일시, 할당일시, 출력일시,
                          브랜드, 배송계약태그, 주문번호, 개별주문번호, 피킹지시서번호, 품고추적번호, CS)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, (
                             row_s['영업마감일자'], row_s['센터'], row_s['고객사'], row_s['배송속성'],
-                            row_s['판매처'], row_s['출고박스종류'], row_s['송장번호'], str(row_s['SKU명']), str(row_s['바코드']),
-                            str(row_s['마감일시']), str(row_s['마감자']), str(row_s['주문일시']), str(row_s['결제일시']),
+                            row_s['판매처'], row_s['출고박스종류'], row_s['송장번호'], str(row_s['마감일시']),
+                            str(row_s['마감자']), str(row_s['주문일시']), str(row_s['결제일시']),
                             str(row_s['등록일시']), str(row_s['할당일시']), str(row_s['출력일시']),
                             str(row_s['브랜드']), str(row_s['배송계약태그']), str(row_s['주문번호']),
                             str(row_s['개별주문번호']), str(row_s['피킹지시서번호']), str(row_s['품고추적번호']), str(row_s['CS'])
                         ))
 
-                    # 4. daily_summary 집계 및 수량 누적 (ON CONFLICT DO UPDATE)
                     b2c_sum = group_df.groupby(
                         ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', 'SKU명', '바코드']
                     ).agg(
@@ -484,13 +487,9 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
                     for _, row_b2c in b2c_sum.iterrows():
                         conn_m.execute("""
-                        INSERT INTO daily_summary
+                        INSERT OR REPLACE INTO daily_summary
                         (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드, 출고건수, 총출고수량)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, SKU명, 바코드)
-                        DO UPDATE SET 
-                            출고건수 = 출고건수 + excluded.출고건수,
-                            총출고수량 = 총출고수량 + excluded.총출고수량
                         """, (
                             row_b2c['영업마감일자'], row_b2c['센터'], row_b2c['고객사'], row_b2c['배송속성'], row_b2c['판매처'],
                             row_b2c['출고박스종류'], row_b2c['SKU명'], row_b2c['바코드'],
@@ -523,6 +522,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn_ib.close()
 
+    # 동기화 최종 단계에서 갱신된 DB를 구글 드라이브로 단 1회 일괄 업로드
     for month_db_name in b2c_updated_months:
         upload_db_to_drive(service, month_db_name)
 
