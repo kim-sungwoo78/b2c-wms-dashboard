@@ -3,8 +3,6 @@ import io
 import math
 import calendar
 import sqlite3
-import threading
-import time
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -13,17 +11,6 @@ from datetime import datetime, timedelta, date
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
 
 DB_INBOUND_PATH = "wms_inbound.db"
-
-# --- 백그라운드 동기화 상태 공유 전역 객체 ---
-class SyncProgressState:
-    def __init__(self):
-        self.is_running = False
-        self.status_text = ""
-        self.result_msg = ""
-        self.result_type = "info"
-
-if 'global_sync_state' not in globals():
-    global_sync_state = SyncProgressState()
 
 # --- 앱 실행 시 구글 드라이브에서 DB 자동 다운로드 초기화 ---
 def init_db_from_drive():
@@ -45,43 +32,41 @@ def init_db_from_drive():
 
 init_db_from_drive()
 
-def safe_bg_sync_task(secrets_dict):
-    global global_sync_state
-    try:
-        import etl_pipeline
-        creds_dict = dict(secrets_dict["gcp_service_account"])
-        service = etl_pipeline.get_drive_service(creds_dict)
-        sheets_service = etl_pipeline.get_sheets_service(creds_dict)
+def run_sync():
+    if "gcp_service_account" in st.secrets:
+        try:
+            import etl_pipeline
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            service = etl_pipeline.get_drive_service(creds_dict)
+            sheets_service = etl_pipeline.get_sheets_service(creds_dict)
+            
+            status_text = st.sidebar.empty()
 
-        def update_progress(current, total, filename, eta):
-            global_sync_state.status_text = f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`"
+            def update_progress(current, total, filename, eta):
+                status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`\n\n*(⚠️ 완료될 때까지 메뉴를 이동하지 마세요)*")
 
-        matched_cnt, err_msg = etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
-        
-        if matched_cnt > 0:
-            global_sync_state.result_msg = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)"
-            global_sync_state.result_type = "success"
-        else:
-            global_sync_state.result_msg = "✅ 동기화 완료! (최신 DB 갱신 완료)"
-            global_sync_state.result_type = "info"
-    except Exception as e:
-        global_sync_state.result_msg = f"❌ 동기화 에러: {e}"
-        global_sync_state.result_type = "error"
-    finally:
-        global_sync_state.is_running = False
-        global_sync_state.status_text = ""
+            st.cache_data.clear()
 
-def start_bg_sync():
-    global global_sync_state
-    if "gcp_service_account" in st.secrets and not global_sync_state.is_running:
-        global_sync_state.is_running = True
-        global_sync_state.status_text = "⏳ **동기화 파일 스캔 및 준비 중...**"
-        global_sync_state.result_msg = ""
-        st.cache_data.clear()
-        
-        thread = threading.Thread(target=safe_bg_sync_task, args=(st.secrets,))
-        thread.daemon = True
-        thread.start()
+            matched_cnt, err_msg = etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
+            
+            status_text.empty()
+            st.cache_data.clear()
+
+            if matched_cnt > 0:
+                st.session_state['sync_msg'] = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)"
+                st.session_state['sync_msg_type'] = "success"
+            else:
+                st.session_state['sync_msg'] = "✅ 동기화 완료! (최신 DB 갱신 완료)"
+                st.session_state['sync_msg_type'] = "info"
+            return True
+        except Exception as e:
+            st.session_state['sync_msg'] = f"❌ 동기화 에러: {e}"
+            st.session_state['sync_msg_type'] = "error"
+            return False
+    else:
+        st.session_state['sync_msg'] = "❌ gcp_service_account 시크릿 설정이 없습니다."
+        st.session_state['sync_msg_type'] = "error"
+    return False
 
 def get_b2c_db_paths(selected_m_list):
     curr_year = datetime.now().strftime('%Y')
@@ -304,20 +289,16 @@ st.markdown("""
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
-# 사이드바 동기화 제어 및 실시간 상태 표시
-if st.sidebar.button("🔄 드라이브 & 구글시트 동기화", disabled=global_sync_state.is_running):
-    start_bg_sync()
-    st.rerun()
+# 사이드바 동기화 제어
+if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
+    if run_sync():
+        st.rerun()
 
-sidebar_status = st.sidebar.empty()
-
-if global_sync_state.is_running:
-    sidebar_status.info(global_sync_state.status_text)
-elif global_sync_state.result_msg:
-    m_type = global_sync_state.result_type
-    if m_type == "success": sidebar_status.success(global_sync_state.result_msg)
-    elif m_type == "error": sidebar_status.error(global_sync_state.result_msg)
-    else: sidebar_status.info(global_sync_state.result_msg)
+if 'sync_msg' in st.session_state and st.session_state['sync_msg']:
+    m_type = st.session_state.get('sync_msg_type', 'info')
+    if m_type == "success": st.sidebar.success(st.session_state['sync_msg'])
+    elif m_type == "error": st.sidebar.error(st.session_state['sync_msg'])
+    else: st.sidebar.info(st.session_state['sync_msg'])
 
 if 'main_mode_selection' not in st.session_state:
     st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
@@ -710,7 +691,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.download_button(
                         label="💾 로우 데이터 엑셀 파일 다운로드",
                         data=buffer.getvalue(),
-                        file_name_out=file_name_out,
+                        file_name=file_name_out,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="btn_download_b2c_raw_excel"
                     )
