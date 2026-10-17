@@ -12,6 +12,28 @@ st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide"
 
 DB_INBOUND_PATH = "wms_inbound.db"
 
+# --- 앱 실행 시 구글 드라이브에서 DB 자동 다운로드 초기화 ---
+def init_db_from_drive():
+    if "gcp_service_account" in st.secrets:
+        try:
+            import etl_pipeline
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            service = etl_pipeline.get_drive_service(creds_dict)
+            
+            # 입고 DB 자동 다운로드
+            if not os.path.exists(DB_INBOUND_PATH):
+                etl_pipeline.download_db_from_drive(service, DB_INBOUND_PATH)
+                
+            # 당월 B2C DB 자동 다운로드
+            curr_ym = datetime.now().strftime('%Y%m')
+            target_b2c_db = f"wms_b2c_{curr_ym}.db"
+            if not os.path.exists(target_b2c_db):
+                etl_pipeline.download_db_from_drive(service, target_b2c_db)
+        except Exception:
+            pass
+
+init_db_from_drive()
+
 def run_sync():
     if "gcp_service_account" in st.secrets:
         try:
@@ -62,6 +84,17 @@ def get_b2c_db_paths(selected_m_list):
     for m_str in selected_m_list:
         m_digit = m_str.replace("월", "").zfill(2)
         target_db = f"wms_b2c_{curr_year}{m_digit}.db"
+        
+        # 파일이 로컬에 없으면 드라이브에서 즉시 다운로드 시도
+        if not os.path.exists(target_db) and "gcp_service_account" in st.secrets:
+            try:
+                import etl_pipeline
+                creds_dict = dict(st.secrets["gcp_service_account"])
+                service = etl_pipeline.get_drive_service(creds_dict)
+                etl_pipeline.download_db_from_drive(service, target_db)
+            except Exception:
+                pass
+
         if os.path.exists(target_db):
             target_dbs.append(target_db)
             
@@ -84,6 +117,21 @@ def load_shipment_orders(selected_m_list):
                 """, conn)
                 conn.close()
                 if not df_raw.empty: all_dfs.append(df_raw)
+            except Exception: pass
+    return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+
+@st.cache_data(ttl=5)
+def load_b2c_sku_data(selected_m_str):
+    """누적 또는 특정 월의 daily_summary 로딩 함수 (누락 복원)"""
+    db_paths = get_b2c_db_paths(selected_m_str)
+    all_dfs = []
+    for db_p in db_paths:
+        if os.path.exists(db_p):
+            try:
+                conn = sqlite3.connect(db_p, timeout=10)
+                df = pd.read_sql("SELECT * FROM daily_summary", conn)
+                conn.close()
+                if not df.empty: all_dfs.append(df)
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
