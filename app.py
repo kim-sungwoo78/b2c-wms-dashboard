@@ -283,7 +283,15 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
         if os.path.exists(db_p):
             try:
                 conn = sqlite3.connect(db_p, timeout=10)
-                query = "SELECT * FROM shipment_raw WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?"
+                # ⭐ 명시적 컬럼 추출 (SKU명, 바코드, 총출고수량 포함)
+                query = """
+                    SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호,
+                           마감일시, 마감자, 주문일시, 결제일시, 등록일시, 할당일시, 출력일시,
+                           브랜드, 배송계약태그, 주문번호, 개별주문번호, 피킹지시서번호, 품고추적번호, CS,
+                           SKU명, 바코드, 총출고수량
+                    FROM shipment_raw 
+                    WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?
+                """
                 params = [start_str, end_str]
                 
                 if selected_centers:
