@@ -482,6 +482,17 @@ def render_sticky_pivot(df, index_names, key_suffix=""):
         key=f"dl_table_{key_suffix}"
     )
 
+# --- 공통 센터 목록 생성 도우미 함수 (소계 항목 포함) ---
+def get_formatted_center_options(raw_centers):
+    sorted_centers = sorted(list(raw_centers))
+    options = []
+    if any('1층' in str(c) or '375 1' in str(c) for c in sorted_centers):
+        options.append("375 소계")
+    if any('XFC' in str(c).upper() for c in sorted_centers):
+        options.append("XFC 소계")
+    options.extend(sorted_centers)
+    return options
+
 def expand_selected_centers(selected_list, all_centers):
     expanded = set()
     c_375_all = [c for c in all_centers if '1층' in str(c) or '375 1' in str(c)]
@@ -634,15 +645,11 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     raw_centers = set()
     if not df_b2c_orders.empty and '센터' in df_b2c_orders.columns: raw_centers.update(df_b2c_orders['센터'].dropna().unique())
     if not df_inbound_distinct.empty and '센터' in df_inbound_distinct.columns: raw_centers.update(df_inbound_distinct['센터'].dropna().unique())
-    sorted_centers = sorted(list(raw_centers))
     
-    center_options_main = []
-    if any('1층' in str(c) or '375 1' in str(c) for c in sorted_centers): center_options_main.append("375 소계")
-    if any('XFC' in str(c).upper() for c in sorted_centers): center_options_main.append("XFC 소계")
-    center_options_main.extend(sorted_centers)
+    center_options_main = get_formatted_center_options(raw_centers)
 
     selected_centers_filter = st.multiselect("🏢 센터 선택 (미선택 시 전체):", center_options_main, default=[], key="main_center_filter")
-    expanded_main_centers = expand_selected_centers(selected_centers_filter, sorted_centers) if selected_centers_filter else []
+    expanded_main_centers = expand_selected_centers(selected_centers_filter, list(raw_centers)) if selected_centers_filter else []
 
     filtered_b2c = df_b2c_orders.copy() if not df_b2c_orders.empty else pd.DataFrame()
     filtered_inbound = df_inbound_distinct.copy() if not df_inbound_distinct.empty else pd.DataFrame()
@@ -663,7 +670,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     st.subheader("📋 센터별 운영 항목 종합 비교표")
     
     summary_rows = []
-    centers_to_loop = expanded_main_centers if expanded_main_centers else sorted_centers
+    centers_to_loop = expanded_main_centers if expanded_main_centers else sorted(list(raw_centers))
         
     for center_name in centers_to_loop:
         b2c_c = filtered_b2c[filtered_b2c['센터'] == center_name]['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
@@ -687,16 +694,13 @@ elif main_mode == "🚚 B2C 출고 현황":
         df_b2c_orders = load_shipment_orders(sel_m_list) if sel_m_list else pd.DataFrame()
 
         if not df_b2c_orders.empty:
-            raw_centers = sorted(list(df_b2c_orders['센터'].dropna().unique()))
-            center_options = []
-            if any('1층' in str(c) or '375 1' in str(c) for c in raw_centers): center_options.append("375 소계")
-            if any('XFC' in str(c).upper() for c in raw_centers): center_options.append("XFC 소계")
-            center_options.extend(raw_centers)
+            raw_centers = df_b2c_orders['센터'].dropna().unique()
+            center_options = get_formatted_center_options(raw_centers)
 
             col1, col2, col3 = st.columns([3, 2, 2])
             with col1:
                 selected_center_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options, key="tab1_centers")
-                expanded_centers = expand_selected_centers(selected_center_input, raw_centers) if selected_center_input else []
+                expanded_centers = expand_selected_centers(selected_center_input, list(raw_centers)) if selected_center_input else []
             with col2: show_client = st.radio("고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"], key="tab1_show_client")
             with col3:
                 if "보이기" in show_client:
@@ -730,11 +734,13 @@ elif main_mode == "🚚 B2C 출고 현황":
         df_b2c_orders2 = load_shipment_orders(sel_m_list2) if sel_m_list2 else pd.DataFrame()
 
         if not df_b2c_orders2.empty:
-            raw_centers_tab2 = sorted(list(df_b2c_orders2['센터'].dropna().unique()))
+            raw_centers_tab2 = df_b2c_orders2['센터'].dropna().unique()
+            center_options_tab2 = get_formatted_center_options(raw_centers_tab2)
+
             col_t2_1, col_t2_2 = st.columns([3, 2])
             with col_t2_1:
-                selected_center_tab2_input = st.multiselect("센터 선택 (미선택 시 전체)", raw_centers_tab2, key="tab2_centers")
-                expanded_centers_tab2 = expand_selected_centers(selected_center_tab2_input, raw_centers_tab2) if selected_center_tab2_input else []
+                selected_center_tab2_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options_tab2, key="tab2_centers")
+                expanded_centers_tab2 = expand_selected_centers(selected_center_tab2_input, list(raw_centers_tab2)) if selected_center_tab2_input else []
             with col_t2_2:
                 analysis_type = st.radio("분석 기준 선택", ["배송 속성별", "판매처별"], horizontal=True, key="tab2_analysis_radio")
 
@@ -759,7 +765,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     subplot_titles=(f"<b>[{analysis_type}] 점유율 비율 (%)</b>", f"<b>[{analysis_type}] 총 출고건수 비교</b>")
                 )
 
-                # 1. 좌측 도넛 차트 (단일 go.Pie 객체로 조각별 정상 분할)
+                # 1. 좌측 도넛 차트
                 fig.add_trace(
                     go.Pie(
                         labels=chart_df[target_col],
@@ -774,7 +780,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     row=1, col=1
                 )
 
-                # 2. 우측 막대 차트 (도넛과 1:1 대응하는 동일 색상 순서 적용)
+                # 2. 우측 막대 차트
                 fig.add_trace(
                     go.Bar(
                         x=chart_df[target_col],
@@ -787,7 +793,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                     row=1, col=2
                 )
 
-                # 범례를 도넛 차트 좌측(맨 앞)에 깔끔하게 배치
                 fig.update_layout(
                     template="plotly_dark",
                     margin=dict(t=50, b=20, l=100, r=20),
@@ -822,10 +827,11 @@ elif main_mode == "🚚 B2C 출고 현황":
         df_b2c_orders3 = load_shipment_orders(sel_m_list3) if sel_m_list3 else pd.DataFrame()
 
         df_centers_sample3 = load_shipment_orders("전체")
-        avail_centers3 = sorted(list(df_centers_sample3['센터'].dropna().unique())) if not df_centers_sample3.empty and '센터' in df_centers_sample3.columns else []
+        raw_centers3 = df_centers_sample3['센터'].dropna().unique() if not df_centers_sample3.empty and '센터' in df_centers_sample3.columns else []
+        avail_centers3 = get_formatted_center_options(raw_centers3)
         
         selected_center_tab3_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers3, key="tab3_centers")
-        expanded_centers_tab3 = expand_selected_centers(selected_center_tab3_input, avail_centers3) if selected_center_tab3_input else []
+        expanded_centers_tab3 = expand_selected_centers(selected_center_tab3_input, list(raw_centers3)) if selected_center_tab3_input else []
 
         if not df_b2c_orders3.empty:
             df_tab3 = df_b2c_orders3[~df_b2c_orders3['출고박스종류'].astype(str).str.upper().isin(['N', 'Y', '미지정', 'NAN'])]
@@ -844,7 +850,8 @@ elif main_mode == "🚚 B2C 출고 현황":
         c_sku1, c_sku2, c_sku3 = st.columns([3, 2, 2])
         
         df_centers_sample4 = load_shipment_orders("전체")
-        avail_centers4 = sorted(list(df_centers_sample4['센터'].dropna().unique())) if not df_centers_sample4.empty and '센터' in df_centers_sample4.columns else []
+        raw_centers4 = df_centers_sample4['센터'].dropna().unique() if not df_centers_sample4.empty and '센터' in df_centers_sample4.columns else []
+        avail_centers4 = get_formatted_center_options(raw_centers4)
 
         with c_sku1:
             today4 = date.today()
@@ -853,7 +860,7 @@ elif main_mode == "🚚 B2C 출고 현황":
             
         with c_sku2:
             selected_center_tab4_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers4, key="tab4_centers")
-            expanded_centers_tab4 = expand_selected_centers(selected_center_tab4_input, avail_centers4) if selected_center_tab4_input else []
+            expanded_centers_tab4 = expand_selected_centers(selected_center_tab4_input, list(raw_centers4)) if selected_center_tab4_input else []
 
         with c_sku3:
             show_client4 = st.radio("고객사 구분 표시", ["숨김 (전체 요약)", "보이기 (고객사 상세)"], key="tab4_show_client")
@@ -889,7 +896,8 @@ elif main_mode == "🚚 B2C 출고 현황":
             date_range = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day, today), key="raw_dl_date_range")
         
         df_centers_sample = load_shipment_orders("전체")
-        avail_centers = sorted(list(df_centers_sample['센터'].dropna().unique())) if not df_centers_sample.empty and '센터' in df_centers_sample.columns else []
+        raw_centers_dl = df_centers_sample['센터'].dropna().unique() if not df_centers_sample.empty and '센터' in df_centers_sample.columns else []
+        avail_centers = get_formatted_center_options(raw_centers_dl)
 
         with c2:
             selected_centers_dl = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers, key="raw_dl_centers")
@@ -899,7 +907,8 @@ elif main_mode == "🚚 B2C 출고 현황":
             
             if st.button("🔍 로우 데이터 검색 및 엑셀 생성", type="primary"):
                 with st.spinner("데이터베이스에서 로우 데이터를 추출 중입니다..."):
-                    df_raw_dl = load_b2c_raw_by_range(start_d, end_d, selected_centers_dl)
+                    expanded_centers_dl = expand_selected_centers(selected_centers_dl, list(raw_centers_dl)) if selected_centers_dl else []
+                    df_raw_dl = load_b2c_raw_by_range(start_d, end_d, expanded_centers_dl)
 
                 if not df_raw_dl.empty:
                     st.success(f"✅ 총 **{len(df_raw_dl):,}** 건의 로우 데이터가 조회되었습니다.")
@@ -931,11 +940,12 @@ elif main_mode == "📦 입고 현황":
         date_range_ib = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day_ib, today_ib), key="ib_date_range")
         
     df_centers_sample_ib = load_shipment_orders("전체")
-    avail_centers_ib = sorted(list(df_centers_sample_ib['센터'].dropna().unique())) if not df_centers_sample_ib.empty and '센터' in df_centers_sample_ib.columns else []
+    raw_centers_ib = df_centers_sample_ib['센터'].dropna().unique() if not df_centers_sample_ib.empty and '센터' in df_centers_sample_ib.columns else []
+    avail_centers_ib = get_formatted_center_options(raw_centers_ib)
 
     with col_ib2:
         selected_centers_ib = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers_ib, key="ib_centers")
-        expanded_centers_ib = expand_selected_centers(selected_centers_ib, avail_centers_ib) if selected_centers_ib else []
+        expanded_centers_ib = expand_selected_centers(selected_centers_ib, list(raw_centers_ib)) if selected_centers_ib else []
 
     if isinstance(date_range_ib, tuple) and len(date_range_ib) == 2:
         start_d_ib, end_d_ib = date_range_ib
