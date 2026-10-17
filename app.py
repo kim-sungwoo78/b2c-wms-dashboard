@@ -6,6 +6,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+import plotly.express as px
 from datetime import datetime, timedelta, date
 
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
@@ -739,6 +740,29 @@ elif main_mode == "🚚 B2C 출고 현황":
             df_tab2 = df_b2c_orders2.copy()
             if expanded_centers_tab2: df_tab2 = df_tab2[df_tab2['센터'].isin(expanded_centers_tab2)]
 
+            # --- 📊 [상단 배치] 배송속성 / 판매처별 점유율 비율 차트 ---
+            chart_df = df_tab2.groupby(target_col)['출고건수'].sum().reset_index()
+            chart_df = chart_df.sort_values(by='출고건수', ascending=False)
+            
+            if not chart_df.empty:
+                st.subheader(f"📊 {analysis_type} 점유율 및 출고 비중 분석 (상단 시각화)")
+                c1, c2 = st.columns(2)
+                with c1:
+                    fig_pie = px.pie(chart_df, names=target_col, values='출고건수', hole=0.4,
+                                     title=f"<b>[{analysis_type}] 점유율 비율 (%)</b>")
+                    fig_pie.update_traces(textinfo='percent+label', textposition='inside')
+                    fig_pie.update_layout(template="plotly_dark", showlegend=True, margin=dict(t=50, b=20, l=20, r=20))
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                    
+                with c2:
+                    fig_bar = px.bar(chart_df, x=target_col, y='출고건수', text='출고건수',
+                                     title=f"<b>[{analysis_type}] 총 출고건수 비교</b>", color=target_col)
+                    fig_bar.update_traces(texttemplate='%{text:,}건', textposition='outside')
+                    fig_bar.update_layout(template="plotly_dark", showlegend=False, xaxis_title="", yaxis_title="출고건수", margin=dict(t=50, b=20, l=20, r=20))
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                st.markdown("---")
+
+            # --- 📋 [하단 배치] 상세 피벗 데이터 테이블 ---
             group_cols_tab2 = ['센터', target_col]
             if not df_tab2.empty:
                 pivot_raw2 = pd.pivot_table(df_tab2, index=group_cols_tab2, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
