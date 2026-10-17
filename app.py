@@ -7,6 +7,8 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, date
 
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
@@ -740,38 +742,66 @@ elif main_mode == "🚚 B2C 출고 현황":
             df_tab2 = df_b2c_orders2.copy()
             if expanded_centers_tab2: df_tab2 = df_tab2[df_tab2['센터'].isin(expanded_centers_tab2)]
 
-            # --- 📊 [상단 배치] Plotly 점유율 도넛 차트 & 막대 차트 (색상 고정 매핑 연동) ---
+            # --- 📊 [상단 배치] 단일 Subplot으로 도넛과 막대 차트 범례/상태 완전 동기화 ---
             chart_df = df_tab2.groupby(target_col)['출고건수'].sum().reset_index()
             chart_df = chart_df.sort_values(by='출고건수', ascending=False)
             
             if not chart_df.empty:
                 st.subheader(f"📊 {analysis_type} 점유율 및 출고 비중 분석 (상단 시각화)")
                 
-                # 속성 항목별 일관된 색상 부여를 위한 고정 색상 시퀀스
+                # 고정 팔레트 색상 정의
                 color_palette = px.colors.qualitative.Plotly
-                
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig_pie = px.pie(
-                        chart_df, names=target_col, values='출고건수', hole=0.4,
-                        title=f"<b>[{analysis_type}] 점유율 비율 (%)</b>",
-                        color=target_col,
-                        color_discrete_sequence=color_palette
+                categories = chart_df[target_col].tolist()
+                color_map = {cat: color_palette[i % len(color_palette)] for i, cat in enumerate(categories)}
+
+                # 1행 2열 서브플롯 생성
+                fig = make_subplots(
+                    rows=1, cols=2,
+                    specs=[[{"type": "domain"}, {"type": "xy"}]],
+                    subplot_titles=(f"<b>[{analysis_type}] 점유율 비율 (%)</b>", f"<b>[{analysis_type}] 총 출고건수 비교</b>")
+                )
+
+                # 1. 좌측 도넛 차트
+                fig.add_trace(
+                    go.Pie(
+                        labels=chart_df[target_col],
+                        values=chart_df['출고건수'],
+                        hole=0.4,
+                        textinfo='percent+label',
+                        textposition='inside',
+                        marker=dict(colors=[color_map[cat] for cat in categories]),
+                        legendgroup="grp",
+                        showlegend=True
+                    ),
+                    row=1, col=1
+                )
+
+                # 2. 우측 막대 차트
+                for cat in categories:
+                    val = chart_df[chart_df[target_col] == cat]['출고건수'].values[0]
+                    fig.add_trace(
+                        go.Bar(
+                            x=[cat],
+                            y=[val],
+                            text=[f"{val:,}건"],
+                            textposition='outside',
+                            marker_color=color_map[cat],
+                            name=str(cat),
+                            legendgroup="grp",
+                            showlegend=False
+                        ),
+                        row=1, col=2
                     )
-                    fig_pie.update_traces(textinfo='percent+label', textposition='inside')
-                    fig_pie.update_layout(template="plotly_dark", showlegend=True, margin=dict(t=50, b=20, l=20, r=20))
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                    
-                with c2:
-                    fig_bar = px.bar(
-                        chart_df, x=target_col, y='출고건수', text='출고건수',
-                        title=f"<b>[{analysis_type}] 총 출고건수 비교</b>",
-                        color=target_col,
-                        color_discrete_sequence=color_palette
-                    )
-                    fig_bar.update_traces(texttemplate='%{text:,}건', textposition='outside')
-                    fig_bar.update_layout(template="plotly_dark", showlegend=False, xaxis_title="", yaxis_title="출고건수", margin=dict(t=50, b=20, l=20, r=20))
-                    st.plotly_chart(fig_bar, use_container_width=True)
+
+                fig.update_layout(
+                    template="plotly_dark",
+                    margin=dict(t=50, b=20, l=20, r=20),
+                    showlegend=True,
+                    legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02)
+                )
+                fig.update_yaxes(title_text="출고건수", row=1, col=2)
+
+                st.plotly_chart(fig, use_container_width=True)
                 st.markdown("---")
 
             # --- 📋 [하단 배치] 상세 피벗 데이터 테이블 ---
