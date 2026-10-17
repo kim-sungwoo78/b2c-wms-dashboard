@@ -742,7 +742,7 @@ elif main_mode == "🚚 B2C 출고 현황":
             df_tab2 = df_b2c_orders2.copy()
             if expanded_centers_tab2: df_tab2 = df_tab2[df_tab2['센터'].isin(expanded_centers_tab2)]
 
-            # --- 📊 [상단 배치] legendgroup 기반 도넛/막대 범례 동기화 및 범례 좌측 배치 ---
+            # --- 📊 [상단 배치] 단일 Pie 트레이스로 도넛 조각 분할 및 막대 차트 연동 ---
             chart_df = df_tab2.groupby(target_col)['출고건수'].sum().reset_index()
             chart_df = chart_df.sort_values(by='출고건수', ascending=False)
             
@@ -751,7 +751,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 
                 color_palette = px.colors.qualitative.Plotly
                 categories = chart_df[target_col].tolist()
-                color_map = {cat: color_palette[i % len(color_palette)] for i, cat in enumerate(categories)}
+                colors_list = [color_palette[i % len(color_palette)] for i in range(len(categories))]
 
                 fig = make_subplots(
                     rows=1, cols=2,
@@ -759,41 +759,35 @@ elif main_mode == "🚚 B2C 출고 현황":
                     subplot_titles=(f"<b>[{analysis_type}] 점유율 비율 (%)</b>", f"<b>[{analysis_type}] 총 출고건수 비교</b>")
                 )
 
-                # 각 범주별로 Pie와 Bar 트레이스를 동일 legendgroup으로 짝지어 생성
-                for cat in categories:
-                    val = chart_df[chart_df[target_col] == cat]['출고건수'].values[0]
-                    cat_str = str(cat)
-                    
-                    # 도넛 슬라이스 트레이스
-                    fig.add_trace(
-                        go.Pie(
-                            labels=[cat_str],
-                            values=[val],
-                            hole=0.4,
-                            name=cat_str,
-                            marker=dict(colors=[color_map[cat]]),
-                            legendgroup=cat_str,
-                            showlegend=True,
-                            hoverinfo="label+value+percent"
-                        ),
-                        row=1, col=1
-                    )
-                    
-                    # 막대 트레이스 (같은 legendgroup 바인딩)
-                    fig.add_trace(
-                        go.Bar(
-                            x=[cat_str],
-                            y=[val],
-                            text=[f"{val:,}건"],
-                            textposition='outside',
-                            marker_color=color_map[cat],
-                            name=cat_str,
-                            legendgroup=cat_str,
-                            showlegend=False
-                        ),
-                        row=1, col=2
-                    )
+                # 1. 좌측 도넛 차트 (단일 go.Pie 객체로 조각별 정상 분할)
+                fig.add_trace(
+                    go.Pie(
+                        labels=chart_df[target_col],
+                        values=chart_df['출고건수'],
+                        hole=0.4,
+                        textinfo='percent+label',
+                        textposition='inside',
+                        marker=dict(colors=colors_list),
+                        hoverinfo="label+value+percent",
+                        showlegend=True
+                    ),
+                    row=1, col=1
+                )
 
+                # 2. 우측 막대 차트 (도넛과 1:1 대응하는 동일 색상 순서 적용)
+                fig.add_trace(
+                    go.Bar(
+                        x=chart_df[target_col],
+                        y=chart_df['출고건수'],
+                        text=[f"{v:,}건" for v in chart_df['출고건수']],
+                        textposition='outside',
+                        marker_color=colors_list,
+                        showlegend=False
+                    ),
+                    row=1, col=2
+                )
+
+                # 범례를 도넛 차트 좌측(맨 앞)에 깔끔하게 배치
                 fig.update_layout(
                     template="plotly_dark",
                     margin=dict(t=50, b=20, l=100, r=20),
@@ -803,7 +797,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         yanchor="middle",
                         y=0.5,
                         xanchor="right",
-                        x=-0.05
+                        x=-0.1
                     )
                 )
                 fig.update_yaxes(title_text="출고건수", row=1, col=2)
