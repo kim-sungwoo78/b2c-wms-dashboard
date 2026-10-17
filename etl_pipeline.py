@@ -224,7 +224,6 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
     return matched_count, err_msg
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
-    # 입고 DB가 로컬에 없을 때만 초기 다운로드
     if not os.path.exists(DB_INBOUND_PATH):
         download_db_from_drive(service, DB_INBOUND_PATH)
 
@@ -355,18 +354,21 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 ).execute()
 
             else:
+                # ⭐ [정밀 매핑 수정] 특정 중복 가능 키워드 매핑 순서 및 조건 명확화
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
-                    if '상세' in clean_c or '이형' in clean_c: continue
-                    if '센터' in clean_c: col_map_b2c[orig_c] = '센터'
+                    if '상세' in clean_c or '이형' in clean_c or '해외' in clean_c: continue
+                    
+                    if clean_c == '송장번호' or clean_c == '송장' or clean_c == '운송장번호': col_map_b2c[orig_c] = '송장번호'
+                    elif clean_c == '출고수량' or clean_c == '수량' or clean_c == '출고수': col_map_b2c[orig_c] = '총출고수량'
+                    elif '센터' in clean_c: col_map_b2c[orig_c] = '센터'
                     elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
                     elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
                     elif '판매플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매처'
                     elif clean_c == '출고박스' or clean_c == '박스' or (('출고박스' in clean_c or '박스' in clean_c) and '바코드' not in clean_c and '사용' not in clean_c): col_map_b2c[orig_c] = '출고박스종류'
                     elif 'SKU' in clean_c or '상품명' in clean_c: col_map_b2c[orig_c] = 'SKU명'
-                    elif '바코드' in clean_c: col_map_b2c[orig_c] = '바코드'
-                    elif '송장번호' in clean_c or '운송장' in clean_c: col_map_b2c[orig_c] = '송장번호'
+                    elif clean_c == '바코드': col_map_b2c[orig_c] = '바코드'
                     elif '마감일시' in clean_c or '마감일' in clean_c: col_map_b2c[orig_c] = '마감일시'
                     elif '마감자' == clean_c: col_map_b2c[orig_c] = '마감자'
                     elif '주문일시' in clean_c or '주문일' in clean_c: col_map_b2c[orig_c] = '주문일시'
@@ -377,11 +379,10 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     elif '브랜드' in clean_c: col_map_b2c[orig_c] = '브랜드'
                     elif '배송계약' in clean_c or '태그' in clean_c: col_map_b2c[orig_c] = '배송계약태그'
                     elif '개별주문' in clean_c or '개별주문번호' in clean_c: col_map_b2c[orig_c] = '개별주문번호'
-                    elif '주문번호' in clean_c: col_map_b2c[orig_c] = '주문번호'
-                    elif '피킹지시서' in clean_c: col_map_b2c[orig_c] = '피킹지시서번호'
+                    elif clean_c == '주문번호': col_map_b2c[orig_c] = '주문번호'
+                    elif '피킹지시서' in clean_c and '총량' not in clean_c: col_map_b2c[orig_c] = '피킹지시서번호'
                     elif '품고추적' in clean_c or '품고' in clean_c: col_map_b2c[orig_c] = '품고추적번호'
-                    elif 'CS' in clean_c or 'cs' in clean_c: col_map_b2c[orig_c] = 'CS'
-                    elif '출고수량' in clean_c or '수량' in clean_c or '수' in clean_c: col_map_b2c[orig_c] = '총출고수량'
+                    elif clean_c == 'CS' or clean_c == 'cs': col_map_b2c[orig_c] = 'CS'
 
                 df_b2c_f = df.rename(columns=col_map_b2c)
                 df_b2c_f = df_b2c_f.loc[:, ~df_b2c_f.columns.duplicated()].ffill()
@@ -430,9 +431,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 for month_key, group_df in grouped_months:
                     month_db_name = f"wms_b2c_{month_key}.db"
                     
-                    # ⭐ [핵심 수정 위치]
-                    # 로컬에 DB 파일이 아직 존재하지 않을 때만 최초 1회 구글 드라이브에서 다운로드하도록 변경
-                    # (반복문 처리 시 이전 파일의 수정 내역이 재다운로드로 인해 덮어씌워지는 버그 완벽 방지)
                     if not os.path.exists(month_db_name):
                         download_db_from_drive(service, month_db_name)
                         
@@ -522,7 +520,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     conn_ib.close()
 
-    # 동기화 최종 단계에서 갱신된 DB를 구글 드라이브로 단 1회 일괄 업로드
     for month_db_name in b2c_updated_months:
         upload_db_to_drive(service, month_db_name)
 
