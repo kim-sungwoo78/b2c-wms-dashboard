@@ -11,31 +11,8 @@ from datetime import datetime, timedelta, date
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
 
 DB_INBOUND_PATH = "wms_inbound.db"
-LAST_SYNC_FILE = "last_sync.txt"
 
-# --- 동기화 타임스탬프 기록 및 조회 ---
-def save_last_sync_time():
-    try:
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        with open(LAST_SYNC_FILE, "w", encoding="utf-8") as f:
-            f.write(now_str)
-        st.session_state['loaded_sync_time'] = now_str
-    except Exception:
-        pass
-
-def get_last_sync_time():
-    if os.path.exists(LAST_SYNC_FILE):
-        try:
-            with open(LAST_SYNC_FILE, "r", encoding="utf-8") as f:
-                return f.read().strip()
-        except Exception:
-            return ""
-    return ""
-
-if 'loaded_sync_time' not in st.session_state:
-    st.session_state['loaded_sync_time'] = get_last_sync_time()
-
-# --- 앱 실행 시 DB 자동 다운로드 ---
+# --- 앱 실행 시 구글 드라이브에서 DB 자동 다운로드 초기화 ---
 def init_db_from_drive():
     if "gcp_service_account" in st.secrets:
         try:
@@ -43,9 +20,11 @@ def init_db_from_drive():
             creds_dict = dict(st.secrets["gcp_service_account"])
             service = etl_pipeline.get_drive_service(creds_dict)
             
+            # 입고 DB 자동 다운로드
             if not os.path.exists(DB_INBOUND_PATH):
                 etl_pipeline.download_db_from_drive(service, DB_INBOUND_PATH)
                 
+            # 당월 B2C DB 자동 다운로드
             curr_ym = datetime.now().strftime('%Y%m')
             target_b2c_db = f"wms_b2c_{curr_ym}.db"
             if not os.path.exists(target_b2c_db):
@@ -66,7 +45,7 @@ def run_sync():
             status_text = st.sidebar.empty()
 
             def update_progress(current, total, filename, eta):
-                status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`\n\n*(⚠️ 완료될 때까지 메뉴를 이동하지 마세요)*")
+                status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`")
 
             st.cache_data.clear()
 
@@ -74,8 +53,6 @@ def run_sync():
             
             status_text.empty()
             st.cache_data.clear()
-
-            save_last_sync_time()
 
             if matched_cnt > 0:
                 st.session_state['sync_msg'] = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)"
@@ -94,6 +71,7 @@ def run_sync():
     return False
 
 def get_b2c_db_paths(selected_m_list):
+    """선택된 월 목록(예: ['9월', '10월'])에 따른 분할 DB 파일 동적 매칭 및 병합 조회"""
     curr_year = datetime.now().strftime('%Y')
     if isinstance(selected_m_list, str):
         selected_m_list = [selected_m_list] if selected_m_list else []
@@ -107,6 +85,7 @@ def get_b2c_db_paths(selected_m_list):
         m_digit = m_str.replace("월", "").zfill(2)
         target_db = f"wms_b2c_{curr_year}{m_digit}.db"
         
+        # 파일이 로컬에 없으면 드라이브에서 즉시 다운로드 시도
         if not os.path.exists(target_db) and "gcp_service_account" in st.secrets:
             try:
                 import etl_pipeline
@@ -143,6 +122,7 @@ def load_shipment_orders(selected_m_list):
 
 @st.cache_data(ttl=5)
 def load_b2c_sku_data_by_range(start_date, end_date, selected_centers, selected_clients=None):
+    """기간 및 센터, 고객사 조건으로 daily_summary SKU 데이터 조회"""
     all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
     if not all_db_files and os.path.exists("wms_b2c.db"):
         all_db_files = ["wms_b2c.db"]
@@ -178,6 +158,7 @@ def load_b2c_sku_data_by_range(start_date, end_date, selected_centers, selected_
 
 @st.cache_data(ttl=5)
 def load_b2c_raw_by_range(start_date, end_date, selected_centers):
+    """기간 및 센터 조건으로 B2C shipment_raw 조회"""
     all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
     if not all_db_files and os.path.exists("wms_b2c.db"):
         all_db_files = ["wms_b2c.db"]
@@ -208,6 +189,7 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
 
 @st.cache_data(ttl=5)
 def load_inbound_data_by_range(start_date, end_date, selected_centers):
+    """기간 및 센터 조건으로 입고 데이터 조회"""
     if not os.path.exists(DB_INBOUND_PATH): return pd.DataFrame()
     try:
         start_str = start_date.strftime('%Y-%m-%d')
@@ -314,24 +296,8 @@ st.markdown("""
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
-# --- B 사용자 알림 배너 ---
-latest_sync = get_last_sync_time()
-my_loaded_sync = st.session_state.get('loaded_sync_time', '')
-
-if latest_sync and latest_sync > my_loaded_sync:
-    col_msg, col_btn = st.columns([4, 1])
-    with col_msg:
-        st.info(f"🔔 **새로운 데이터 업데이트 감지!** (최종 동기화: `{latest_sync}`)")
-    with col_btn:
-        if st.button("🔄 최신 데이터 불러오기", type="primary", use_container_width=True):
-            st.cache_data.clear()
-            st.session_state['loaded_sync_time'] = latest_sync
-            st.rerun()
-
-# 사이드바 동기화 제어
 if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
-    if run_sync():
-        st.rerun()
+    if run_sync(): st.rerun()
 
 if 'sync_msg' in st.session_state and st.session_state['sync_msg']:
     m_type = st.session_state.get('sync_msg_type', 'info')
@@ -675,7 +641,7 @@ elif main_mode == "🚚 B2C 출고 현황":
             show_client4 = st.radio("고객사 구분 표시", ["숨김 (전체 요약)", "보이기 (고객사 상세)"], key="tab4_show_client")
             clients4 = []
             if "보이기" in show_client4:
-                df_all_clients = load_b2c_sku_data_by_range(first_day4, today4, [])
+                df_all_clients = load_b2c_sku_data("누적")
                 available_clients4 = sorted(list(df_all_clients['고객사'].dropna().unique())) if not df_all_clients.empty and '고객사' in df_all_clients.columns else []
                 clients4 = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients4, key="tab4_clients")
 
