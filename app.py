@@ -34,13 +34,25 @@ def init_db_from_drive():
 
 init_db_from_drive()
 
-# --- 백그라운드 동기화 스레드 관리 로직 ---
+# --- 백그라운드 동기화 안전 상태 세션 관리 ---
 if 'sync_running' not in st.session_state:
     st.session_state['sync_running'] = False
-if 'sync_status_text' not in st.session_state:
-    st.session_state['sync_status_text'] = ""
+if 'sync_info' not in st.session_state:
+    st.session_state['sync_info'] = {'status': 'idle', 'text': '', 'msg': '', 'type': 'info'}
 
-def bg_sync_task(secrets_dict):
+# 글로벌 스레드 상태 공유 객체
+class SyncProgressState:
+    def __init__(self):
+        self.is_running = False
+        self.status_text = ""
+        self.result_msg = ""
+        self.result_type = "info"
+
+if 'global_sync_state' not in globals():
+    global_sync_state = SyncProgressState()
+
+def safe_bg_sync_task(secrets_dict):
+    global global_sync_state
     try:
         import etl_pipeline
         creds_dict = dict(secrets_dict["gcp_service_account"])
@@ -48,31 +60,31 @@ def bg_sync_task(secrets_dict):
         sheets_service = etl_pipeline.get_sheets_service(creds_dict)
 
         def update_progress(current, total, filename, eta):
-            st.session_state['sync_status_text'] = f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`"
+            global_sync_state.status_text = f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`"
 
         matched_cnt, err_msg = etl_pipeline.process_and_update(service, sheets_service=sheets_service, progress_callback=update_progress)
         
         if matched_cnt > 0:
-            st.session_state['sync_msg'] = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)"
-            st.session_state['sync_msg_type'] = "success"
+            global_sync_state.result_msg = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)"
+            global_sync_state.result_type = "success"
         else:
-            st.session_state['sync_msg'] = "✅ 동기화 완료! (최신 DB 갱신 완료)"
-            st.session_state['sync_msg_type'] = "info"
+            global_sync_state.result_msg = "✅ 동기화 완료! (최신 DB 갱신 완료)"
+            global_sync_state.result_type = "info"
     except Exception as e:
-        st.session_state['sync_msg'] = f"❌ 동기화 에러: {e}"
-        st.session_state['sync_msg_type'] = "error"
+        global_sync_state.result_msg = f"❌ 동기화 에러: {e}"
+        global_sync_state.result_type = "error"
     finally:
-        st.session_state['sync_running'] = False
-        st.session_state['sync_status_text'] = ""
+        global_sync_state.is_running = False
 
 def start_bg_sync():
-    if "gcp_service_account" in st.secrets and not st.session_state['sync_running']:
-        st.session_state['sync_running'] = True
-        st.session_state['sync_status_text'] = "⏳ **동기화 준비 중...**"
-        st.session_state['sync_msg'] = ""
+    global global_sync_state
+    if "gcp_service_account" in st.secrets and not global_sync_state.is_running:
+        global_sync_state.is_running = True
+        global_sync_state.status_text = "⏳ **동기화 준비 완료 및 스캔 중...**"
+        global_sync_state.result_msg = ""
         st.cache_data.clear()
         
-        thread = threading.Thread(target=bg_sync_task, args=(st.secrets,))
+        thread = threading.Thread(target=safe_bg_sync_task, args=(st.secrets,))
         thread.daemon = True
         thread.start()
 
@@ -298,18 +310,18 @@ st.markdown("""
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
-# 좌측 사이드바 동기화 버튼 및 상태 관리
-if st.sidebar.button("🔄 드라이브 & 구글시트 동기화", disabled=st.session_state['sync_running']):
+# 좌측 사이드바 동기화 버튼 및 상태 UI 출력
+if st.sidebar.button("🔄 드라이브 & 구글시트 동기화", disabled=global_sync_state.is_running):
     start_bg_sync()
     st.rerun()
 
-if st.session_state['sync_running']:
-    st.sidebar.info(st.session_state['sync_status_text'])
-elif 'sync_msg' in st.session_state and st.session_state['sync_msg']:
-    m_type = st.session_state.get('sync_msg_type', 'info')
-    if m_type == "success": st.sidebar.success(st.session_state['sync_msg'])
-    elif m_type == "error": st.sidebar.error(st.session_state['sync_msg'])
-    else: st.sidebar.info(st.session_state['sync_msg'])
+if global_sync_state.is_running:
+    st.sidebar.info(global_sync_state.status_text)
+elif global_sync_state.result_msg:
+    m_type = global_sync_state.result_type
+    if m_type == "success": st.sidebar.success(global_sync_state.result_msg)
+    elif m_type == "error": st.sidebar.error(global_sync_state.result_msg)
+    else: st.sidebar.info(global_sync_state.result_msg)
 
 if 'main_mode_selection' not in st.session_state:
     st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
