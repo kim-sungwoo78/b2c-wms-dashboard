@@ -11,8 +11,31 @@ from datetime import datetime, timedelta, date
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
 
 DB_INBOUND_PATH = "wms_inbound.db"
+LAST_SYNC_FILE = "last_sync.txt"
 
-# --- 앱 실행 시 구글 드라이브에서 DB 자동 다운로드 초기화 ---
+# --- 동기화 타임스탬프 기록 및 조회 ---
+def save_last_sync_time():
+    try:
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open(LAST_SYNC_FILE, "w", encoding="utf-8") as f:
+            f.write(now_str)
+        st.session_state['loaded_sync_time'] = now_str
+    except Exception:
+        pass
+
+def get_last_sync_time():
+    if os.path.exists(LAST_SYNC_FILE):
+        try:
+            with open(LAST_SYNC_FILE, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            return ""
+    return ""
+
+if 'loaded_sync_time' not in st.session_state:
+    st.session_state['loaded_sync_time'] = get_last_sync_time()
+
+# --- 앱 실행 시 DB 자동 다운로드 ---
 def init_db_from_drive():
     if "gcp_service_account" in st.secrets:
         try:
@@ -20,11 +43,9 @@ def init_db_from_drive():
             creds_dict = dict(st.secrets["gcp_service_account"])
             service = etl_pipeline.get_drive_service(creds_dict)
             
-            # 입고 DB 자동 다운로드
             if not os.path.exists(DB_INBOUND_PATH):
                 etl_pipeline.download_db_from_drive(service, DB_INBOUND_PATH)
                 
-            # 당월 B2C DB 자동 다운로드
             curr_ym = datetime.now().strftime('%Y%m')
             target_b2c_db = f"wms_b2c_{curr_ym}.db"
             if not os.path.exists(target_b2c_db):
@@ -45,7 +66,7 @@ def run_sync():
             status_text = st.sidebar.empty()
 
             def update_progress(current, total, filename, eta):
-                status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`")
+                status_text.markdown(f"⏳ **동기화 진행 중 ({current}/{total})**\n\n📄 `{filename}`\n\n*(⚠️ 완료될 때까지 메뉴를 이동하지 마세요)*")
 
             st.cache_data.clear()
 
@@ -53,6 +74,8 @@ def run_sync():
             
             status_text.empty()
             st.cache_data.clear()
+
+            save_last_sync_time()
 
             if matched_cnt > 0:
                 st.session_state['sync_msg'] = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)"
@@ -71,7 +94,6 @@ def run_sync():
     return False
 
 def get_b2c_db_paths(selected_m_list):
-    """선택된 월 목록(예: ['9월', '10월'])에 따른 분할 DB 파일 동적 매칭 및 병합 조회"""
     curr_year = datetime.now().strftime('%Y')
     if isinstance(selected_m_list, str):
         selected_m_list = [selected_m_list] if selected_m_list else []
@@ -85,7 +107,6 @@ def get_b2c_db_paths(selected_m_list):
         m_digit = m_str.replace("월", "").zfill(2)
         target_db = f"wms_b2c_{curr_year}{m_digit}.db"
         
-        # 파일이 로컬에 없으면 드라이브에서 즉시 다운로드 시도
         if not os.path.exists(target_db) and "gcp_service_account" in st.secrets:
             try:
                 import etl_pipeline
@@ -122,7 +143,6 @@ def load_shipment_orders(selected_m_list):
 
 @st.cache_data(ttl=5)
 def load_b2c_sku_data(selected_m_str):
-    """누적 또는 특정 월의 daily_summary 로딩 함수 (누락 복원)"""
     db_paths = get_b2c_db_paths(selected_m_str)
     all_dfs = []
     for db_p in db_paths:
@@ -137,7 +157,6 @@ def load_b2c_sku_data(selected_m_str):
 
 @st.cache_data(ttl=5)
 def load_b2c_sku_data_by_range(start_date, end_date, selected_centers, selected_clients=None):
-    """기간 및 센터, 고객사 조건으로 daily_summary SKU 데이터 조회"""
     all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
     if not all_db_files and os.path.exists("wms_b2c.db"):
         all_db_files = ["wms_b2c.db"]
@@ -173,7 +192,6 @@ def load_b2c_sku_data_by_range(start_date, end_date, selected_centers, selected_
 
 @st.cache_data(ttl=5)
 def load_b2c_raw_by_range(start_date, end_date, selected_centers):
-    """기간 및 센터 조건으로 B2C shipment_raw 조회"""
     all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
     if not all_db_files and os.path.exists("wms_b2c.db"):
         all_db_files = ["wms_b2c.db"]
@@ -204,7 +222,6 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
 
 @st.cache_data(ttl=5)
 def load_inbound_data_by_range(start_date, end_date, selected_centers):
-    """기간 및 센터 조건으로 입고 데이터 조회"""
     if not os.path.exists(DB_INBOUND_PATH): return pd.DataFrame()
     try:
         start_str = start_date.strftime('%Y-%m-%d')
@@ -260,16 +277,38 @@ def load_inbound_data_by_range(start_date, end_date, selected_centers):
     except Exception: return pd.DataFrame()
 
 @st.cache_data(ttl=5)
-def load_inbound_distinct_counts():
+def load_inbound_distinct_counts(selected_m_list):
+    """선택 월에 맞춰 입고 건수 집계"""
     if not os.path.exists(DB_INBOUND_PATH): return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
-        df = pd.read_sql("""
+        curr_year = datetime.now().strftime('%Y')
+        
+        where_conditions = ["(상태 LIKE '%입고완료%' OR 상태 LIKE '%입고 완료%' OR 상태 LIKE '%승인대기%' OR 상태 LIKE '%승인 대기%')"]
+        params = []
+        
+        if isinstance(selected_m_list, str):
+            selected_m_list = [selected_m_list]
+            
+        if selected_m_list and "누적" not in selected_m_list:
+            m_patterns = []
+            for m_str in selected_m_list:
+                m_digit = m_str.replace("월", "").zfill(2)
+                m_patterns.append(f"{curr_year}-{m_digit}-%")
+            
+            placeholders = " OR ".join(["영업마감일자 LIKE ?"] * len(m_patterns))
+            where_conditions.append(f"({placeholders})")
+            params.extend(m_patterns)
+
+        where_clause = "WHERE " + " AND ".join(where_conditions)
+        
+        query = f"""
             SELECT 영업마감일자, 센터, 고객사, COUNT(DISTINCT 입고번호) AS 입고건수
             FROM inbound_summary
-            WHERE 상태 LIKE '%입고완료%' OR 상태 LIKE '%입고 완료%' OR 상태 LIKE '%승인대기%' OR 상태 LIKE '%승인 대기%'
+            {where_clause}
             GROUP BY 영업마감일자, 센터, 고객사
-        """, conn)
+        """
+        df = pd.read_sql(query, conn, params=params)
         conn.close()
         return df
     except Exception: return pd.DataFrame()
@@ -311,8 +350,24 @@ st.markdown("""
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
+# --- B 사용자 알림 배너 ---
+latest_sync = get_last_sync_time()
+my_loaded_sync = st.session_state.get('loaded_sync_time', '')
+
+if latest_sync and latest_sync > my_loaded_sync:
+    col_msg, col_btn = st.columns([4, 1])
+    with col_msg:
+        st.info(f"🔔 **새로운 데이터 업데이트 감지!** (최종 동기화: `{latest_sync}`)")
+    with col_btn:
+        if st.button("🔄 최신 데이터 불러오기", type="primary", use_container_width=True):
+            st.cache_data.clear()
+            st.session_state['loaded_sync_time'] = latest_sync
+            st.rerun()
+
+# 사이드바 동기화 제어
 if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
-    if run_sync(): st.rerun()
+    if run_sync():
+        st.rerun()
 
 if 'sync_msg' in st.session_state and st.session_state['sync_msg']:
     m_type = st.session_state.get('sync_msg_type', 'info')
@@ -421,7 +476,7 @@ def smart_fold_pivot_columns(pivot_df, expanded_months):
         m_dates = info['dates']
         new_df[m_sum_col_name] = pivot_df[m_dates].sum(axis=1)
         if m_label in expanded_months or f"{int(m_key[5:7]):02d}월" in expanded_months or m_key in expanded_months:
-            for d in m_dates: new_df[d] = pivot_df[d]
+            for d in m_dates: new_df[d] = pivot_d[d]
     return new_df
 
 def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 월 선택:", allow_nujak=False, multi_select=True):
@@ -429,7 +484,7 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
     adjusted_today = datetime.now() - timedelta(days=1)
     default_month_str = f"{adjusted_today.month}월"
 
-    if session_key_selected not in st.session_state:
+    if session_key_selected not in st.session_state or not st.session_state[session_key_selected]:
         st.session_state[session_key_selected] = [default_month_str] if multi_select else default_month_str
 
     months_list = [f"{i}월" for i in range(1, 13)]
@@ -454,10 +509,14 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
                         curr_list.remove(m_name)
                     else:
                         curr_list.append(m_name)
+                    
+                    # 방안 1 적용: 해제 후 리스트가 비어 있으면 당월(오늘 - 1일)로 복귀
+                    if not curr_list:
+                        curr_list = [default_month_str]
                     st.session_state[session_key_selected] = curr_list
                 else:
                     if st.session_state[session_key_selected] == m_name:
-                        st.session_state[session_key_selected] = ""
+                        st.session_state[session_key_selected] = default_month_str
                     else:
                         st.session_state[session_key_selected] = m_name
                 st.rerun()
@@ -471,7 +530,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
 
     sel_m_list_main = selected_m if isinstance(selected_m, list) else ([selected_m] if selected_m else [])
     df_b2c_orders = load_shipment_orders(sel_m_list_main) if sel_m_list_main else pd.DataFrame()
-    df_inbound_distinct = load_inbound_distinct_counts()
+    df_inbound_distinct = load_inbound_distinct_counts(sel_m_list_main)
 
     raw_centers = set()
     if not df_b2c_orders.empty and '센터' in df_b2c_orders.columns: raw_centers.update(df_b2c_orders['센터'].dropna().unique())
@@ -711,7 +770,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.download_button(
                         label="💾 로우 데이터 엑셀 파일 다운로드",
                         data=buffer.getvalue(),
-                        file_name=file_name_out,
+                        file_name_out=file_name_out,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="btn_download_b2c_raw_excel"
                     )
