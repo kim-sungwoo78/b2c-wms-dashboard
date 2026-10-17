@@ -93,13 +93,12 @@ def run_sync():
         st.session_state['sync_msg_type'] = "error"
     return False
 
-# --- 데이터가 존재하는 월 목록 자동 파악 함수 ---
+# --- 데이터가 존재하는 월 목록 자동 파악 ---
 @st.cache_data(ttl=5)
 def get_available_data_months():
     avail_months = set()
     curr_year = datetime.now().strftime('%Y')
     
-    # 1. B2C DB 파일들 검사
     db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
     for db_f in db_files:
         ym = db_f.replace('wms_b2c_', '').replace('.db', '')
@@ -107,7 +106,6 @@ def get_available_data_months():
             m_num = int(ym[4:6])
             avail_months.add(f"{m_num}월")
             
-    # 2. 입고 DB 검사
     if os.path.exists(DB_INBOUND_PATH):
         try:
             conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
@@ -119,7 +117,6 @@ def get_available_data_months():
         except Exception:
             pass
             
-    # 데이터가 아예 없을 때는 기본적으로 당월을 포함
     if not avail_months:
         adjusted_today = datetime.now() - timedelta(days=1)
         avail_months.add(f"{adjusted_today.month}월")
@@ -312,7 +309,6 @@ def load_inbound_data_by_range(start_date, end_date, selected_centers):
 
 @st.cache_data(ttl=5)
 def load_inbound_distinct_counts(selected_m_list):
-    """선택 월에 맞춰 입고 건수 집계"""
     if not os.path.exists(DB_INBOUND_PATH): return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
@@ -513,7 +509,70 @@ def smart_fold_pivot_columns(pivot_df, expanded_months):
             for d in m_dates: new_df[d] = pivot_df[d]
     return new_df
 
-# --- 지능형 월 선택 버튼 바 (누적 연동 및 비활성화 적용) ---
+# --- 피벗 데이터프레임에 375소계 / XFC소계 / ★전체합계 행 주입 도우미 함수 ---
+def append_subtotals_to_pivot(pivot_df, group_cols):
+    if pivot_df.empty: return pivot_df
+
+    # 센터가 인덱스의 첫 번째 레벨에 위치함
+    if isinstance(pivot_df.index, pd.MultiIndex):
+        centers = pivot_df.index.get_level_values('센터').unique()
+    else:
+        centers = pivot_df.index.unique()
+
+    c_375 = [c for c in centers if '1층' in str(c) or '375 1' in str(c)]
+    c_xfc = [c for c in centers if 'XFC' in str(c).upper()]
+    c_other = [c for c in centers if c not in c_375 and c not in c_xfc]
+
+    subtotal_dfs = []
+
+    def get_slice_and_sum(center_list, subtotal_name):
+        if not center_list: return None
+        if isinstance(pivot_df.index, pd.MultiIndex):
+            slice_df = pivot_df.loc[pivot_df.index.get_level_values('센터').isin(center_list)]
+            if slice_df.empty: return None
+            sum_vals = slice_df.sum(axis=0).values
+            # 멀티인덱스의 빈 공간 채우기
+            idx_tuple = (subtotal_name,) + ('',) * (len(group_cols) - 1)
+            sum_df = pd.DataFrame([sum_vals], columns=pivot_df.columns, index=pd.MultiIndex.from_tuples([idx_tuple], names=group_cols))
+        else:
+            slice_df = pivot_df.loc[pivot_df.index.isin(center_list)]
+            if slice_df.empty: return None
+            sum_vals = slice_df.sum(axis=0).values
+            sum_df = pd.DataFrame([sum_vals], columns=pivot_df.columns, index=pd.Index([subtotal_name], name='센터'))
+        return slice_df, sum_df
+
+    # 375 센터 그룹
+    res_375 = get_slice_and_sum(c_375, "375 소계")
+    if res_375:
+        subtotal_dfs.append(res_375[0])
+        subtotal_dfs.append(res_375[1])
+
+    # XFC 센터 그룹
+    res_xfc = get_slice_and_sum(c_xfc, "XFC 소계")
+    if res_xfc:
+        subtotal_dfs.append(res_xfc[0])
+        subtotal_dfs.append(res_xfc[1])
+
+    # 기타 센터 그룹
+    if c_other:
+        if isinstance(pivot_df.index, pd.MultiIndex):
+            subtotal_dfs.append(pivot_df.loc[pivot_df.index.get_level_values('센터').isin(c_other)])
+        else:
+            subtotal_dfs.append(pivot_df.loc[pivot_df.index.isin(c_other)])
+
+    body_df = pd.concat(subtotal_dfs) if subtotal_dfs else pivot_df
+    
+    # ★ 전체 합계 행
+    total_vals = pivot_df.sum(axis=0).values
+    if isinstance(pivot_df.index, pd.MultiIndex):
+        total_idx = ("★ 전체 합계",) + ('',) * (len(group_cols) - 1)
+        total_df = pd.DataFrame([total_vals], columns=pivot_df.columns, index=pd.MultiIndex.from_tuples([total_idx], names=group_cols))
+    else:
+        total_df = pd.DataFrame([total_vals], columns=pivot_df.columns, index=pd.Index(["★ 전체 합계"], name='센터'))
+
+    return pd.concat([total_df, body_df])
+
+# --- 지능형 월 선택 버튼 바 ---
 def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 월 선택:", allow_nujak=False, multi_select=True):
     st.markdown(f"<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>{title_label}</p>", unsafe_allow_html=True)
     
@@ -521,15 +580,11 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
     default_month_str = f"{adjusted_today.month}월"
     available_months = get_available_data_months()
 
-    # 초기 세션 설정
     if session_key_selected not in st.session_state or not st.session_state[session_key_selected]:
         st.session_state[session_key_selected] = [default_month_str] if multi_select else default_month_str
 
     curr_sel = st.session_state[session_key_selected]
-    if isinstance(curr_sel, str):
-        curr_sel_list = [curr_sel] if curr_sel else []
-    else:
-        curr_sel_list = list(curr_sel)
+    curr_sel_list = [curr_sel] if isinstance(curr_sel, str) else list(curr_sel)
 
     months_list = [f"{i}월" for i in range(1, 13)]
     if allow_nujak: months_list.append("누적")
@@ -538,37 +593,30 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
     
     for idx, m_name in enumerate(months_list):
         with cols[idx]:
-            # 데이터 보유 여부에 따른 버튼 비활성화 (disabled) 설정
             is_disabled = (m_name != "누적") and (m_name not in available_months)
             is_selected = m_name in curr_sel_list
             btn_style = "primary" if is_selected else "secondary"
 
             if st.button(m_name, key=f"btn_{session_key_selected}_{m_name}", type=btn_style, use_container_width=True, disabled=is_disabled):
                 if m_name == "누적":
-                    # 누적 클릭 시: 모든 데이터 보유 월 + 누적 토글 선택
                     if "누적" in curr_sel_list:
-                        # 누적 해제 ➔ 당월로 복귀
                         st.session_state[session_key_selected] = [default_month_str]
                     else:
-                        # 누적 선택 ➔ 전체 데이터 월 + 누적 동시 선택
                         new_list = list(available_months)
                         new_list.append("누적")
                         st.session_state[session_key_selected] = new_list
                 else:
-                    # 일반 월 버튼 클릭 시
                     if m_name in curr_sel_list:
                         curr_sel_list.remove(m_name)
                     else:
                         curr_sel_list.append(m_name)
 
-                    # 누적 연동 체크: 모든 데이터 보유 월이 선택되어 있으면 누적 자동 활성화
                     all_avail_selected = all(m in curr_sel_list for m in available_months)
                     if all_avail_selected:
                         if "누적" not in curr_sel_list: curr_sel_list.append("누적")
                     else:
                         if "누적" in curr_sel_list: curr_sel_list.remove("누적")
 
-                    # 해제하여 빈 값일 경우 ➔ 당월로 복귀
                     if not [m for m in curr_sel_list if m != "누적"]:
                         curr_sel_list = [default_month_str]
 
@@ -628,30 +676,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     if summary_rows:
         df_summary = pd.DataFrame(summary_rows)
         pivot_main = df_summary.set_index('센터')
-        
-        subtotal_dfs = []
-        c_375 = [c for c in pivot_main.index if '1층' in str(c) or '375 1' in str(c)]
-        if c_375:
-            df_375 = pivot_main.loc[pivot_main.index.isin(c_375)]
-            subtotal_dfs.append(df_375)
-            sum_375 = df_375.sum(axis=0)
-            subtotal_dfs.append(pd.DataFrame([sum_375.values], columns=pivot_main.columns, index=pd.Index(["375 소계"], name="센터")))
-
-        c_xfc = [c for c in pivot_main.index if 'XFC' in str(c).upper()]
-        if c_xfc:
-            df_xfc = pivot_main.loc[pivot_main.index.isin(c_xfc)]
-            subtotal_dfs.append(df_xfc)
-            sum_xfc = df_xfc.sum(axis=0)
-            subtotal_dfs.append(pd.DataFrame([sum_xfc.values], columns=pivot_main.columns, index=pd.Index(["XFC 소계"], name="센터")))
-
-        c_other = [c for c in pivot_main.index if c not in c_375 and c not in c_xfc]
-        if c_other: subtotal_dfs.append(pivot_main.loc[pivot_main.index.isin(c_other)])
-
-        body_df = pd.concat(subtotal_dfs) if subtotal_dfs else pivot_main
-        total_series = pivot_main.sum(axis=0)
-        total_df = pd.DataFrame([total_series.values], columns=pivot_main.columns, index=pd.Index(["★ 전체 합계"], name="센터"))
-
-        final_main_df = pd.concat([total_df, body_df])
+        final_main_df = append_subtotals_to_pivot(pivot_main, ["센터"])
         render_sticky_pivot(final_main_df, ["센터"], key_suffix="main_summary")
 
 elif main_mode == "🚚 B2C 출고 현황":
@@ -693,7 +718,10 @@ elif main_mode == "🚚 B2C 출고 현황":
             if not filtered_df.empty:
                 pivot_raw = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_raw['총 출고건수'] = pivot_raw.sum(axis=1)
-                pivot_df = smart_fold_pivot_columns(pivot_raw, sel_m_list)
+                
+                # 375소계 / XFC소계 / ★전체합계 행 주입 적용
+                pivot_with_sub = append_subtotals_to_pivot(pivot_raw, group_cols)
+                pivot_df = smart_fold_pivot_columns(pivot_with_sub, sel_m_list)
 
                 render_sticky_pivot(pivot_df, group_cols, key_suffix="tab1")
         else:
@@ -722,7 +750,9 @@ elif main_mode == "🚚 B2C 출고 현황":
             if not df_tab2.empty:
                 pivot_raw2 = pd.pivot_table(df_tab2, index=group_cols_tab2, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_raw2['총 출고건수'] = pivot_raw2.sum(axis=1)
-                pivot_df2 = smart_fold_pivot_columns(pivot_raw2, sel_m_list2)
+                
+                pivot_with_sub2 = append_subtotals_to_pivot(pivot_raw2, group_cols_tab2)
+                pivot_df2 = smart_fold_pivot_columns(pivot_with_sub2, sel_m_list2)
                 render_sticky_pivot(pivot_df2, group_cols_tab2, key_suffix="tab2")
 
     with tab3:
