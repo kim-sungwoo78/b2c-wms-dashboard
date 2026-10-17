@@ -740,7 +740,7 @@ elif main_mode == "🚚 B2C 출고 현황":
             df_tab2 = df_b2c_orders2.copy()
             if expanded_centers_tab2: df_tab2 = df_tab2[df_tab2['센터'].isin(expanded_centers_tab2)]
 
-            # --- 📊 [상단 배치] 배송속성 / 판매처별 점유율 비율 차트 ---
+            # --- 📊 [상단 배치] Plotly 점유율 도넛 차트 & 막대 차트 ---
             chart_df = df_tab2.groupby(target_col)['출고건수'].sum().reset_index()
             chart_df = chart_df.sort_values(by='출고건수', ascending=False)
             
