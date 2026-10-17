@@ -931,7 +931,6 @@ elif main_mode == "🚚 B2C 출고 현황":
             else:
                 st.info("선택된 기간 및 조건의 SKU 출고 데이터가 없습니다.")
 
-    # ⭐ [수정된 탭 5 영역] B2C 로우파일 추출 및 다운로드
     with tab5:
         st.header("📥 B2C 로우파일 추출 및 다운로드")
         st.caption("원하는 기간과 센터 조건을 지정하여 B2C 출고 로우 원장(shipment_raw)을 엑셀 파일로 다운로드할 수 있습니다.")
@@ -957,18 +956,16 @@ elif main_mode == "🚚 B2C 출고 현황":
                     expanded_centers_dl = expand_selected_centers(selected_centers_dl, list(raw_centers_dl)) if selected_centers_dl else []
                     df_raw_dl = load_b2c_raw_by_range(start_d, end_d, expanded_centers_dl)
                     
-                    # 검색 결과 세션 저장 (다운로드 시 상태 유지)
                     st.session_state['searched_raw_df'] = df_raw_dl
                     st.session_state['searched_raw_dates'] = (start_d, end_d)
 
-            # 검색 결과가 세션에 존재할 때 화면 표시 및 다운로드 버튼 활성화
             if 'searched_raw_df' in st.session_state and not st.session_state['searched_raw_df'].empty:
                 df_raw_dl = st.session_state['searched_raw_df']
                 start_d_s, end_d_s = st.session_state['searched_raw_dates']
                 
                 st.success(f"✅ 총 **{len(df_raw_dl):,}** 건의 로우 데이터가 조회되었습니다.")
                 
-                # 엑셀 버퍼 생성 및 다운로드 버튼 (파라미터명 file_name으로 정정)
+                # 다운로드 엑셀 생성
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     df_raw_dl.to_excel(writer, index=False, sheet_name='B2C_RawData')
@@ -987,7 +984,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 
                 st.markdown("---")
                 st.dataframe(df_raw_dl.head(100), use_container_width=True)
-                st.caption("※ 화면상에는 상위 100건만 미리보기로 표시되며, [💾 로우 데이터 엑셀 파일 다운로드] 클릭 시 전체 데이터가 다운로드됩니다.")
+                st.caption("※ 화면상에는 상위 100건만 미리보기로 표시되며, [💾 로우 데이터 엑셀 파일 다운로드] 클릭 시 SKU명, 바코드, 총출고수량이 포함된 전체 로우 데이터가 다운로드됩니다.")
 
 elif main_mode == "📦 입고 현황":
     st.header("📦 입고 현황 모니터링")
