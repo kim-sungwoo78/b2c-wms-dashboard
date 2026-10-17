@@ -354,7 +354,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                 ).execute()
 
             else:
-                # ⭐ [정밀 매핑 수정] 특정 중복 가능 키워드 매핑 순서 및 조건 명확화
                 col_map_b2c = {}
                 for orig_c in df.columns:
                     clean_c = str(orig_c).replace(" ", "").strip()
@@ -362,13 +361,13 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     
                     if clean_c == '송장번호' or clean_c == '송장' or clean_c == '운송장번호': col_map_b2c[orig_c] = '송장번호'
                     elif clean_c == '출고수량' or clean_c == '수량' or clean_c == '출고수': col_map_b2c[orig_c] = '총출고수량'
+                    elif 'SKU' in clean_c or '상품명' in clean_c: col_map_b2c[orig_c] = 'SKU명'
+                    elif clean_c == '바코드': col_map_b2c[orig_c] = '바코드'
                     elif '센터' in clean_c: col_map_b2c[orig_c] = '센터'
                     elif '고객사' in clean_c: col_map_b2c[orig_c] = '고객사'
                     elif '배송속성' in clean_c or '배송유형' in clean_c: col_map_b2c[orig_c] = '배송속성'
                     elif '판매플랫폼' in clean_c or '판매처' in clean_c: col_map_b2c[orig_c] = '판매처'
                     elif clean_c == '출고박스' or clean_c == '박스' or (('출고박스' in clean_c or '박스' in clean_c) and '바코드' not in clean_c and '사용' not in clean_c): col_map_b2c[orig_c] = '출고박스종류'
-                    elif 'SKU' in clean_c or '상품명' in clean_c: col_map_b2c[orig_c] = 'SKU명'
-                    elif clean_c == '바코드': col_map_b2c[orig_c] = '바코드'
                     elif '마감일시' in clean_c or '마감일' in clean_c: col_map_b2c[orig_c] = '마감일시'
                     elif '마감자' == clean_c: col_map_b2c[orig_c] = '마감자'
                     elif '주문일시' in clean_c or '주문일' in clean_c: col_map_b2c[orig_c] = '주문일시'
@@ -436,16 +435,30 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         
                     conn_m = sqlite3.connect(month_db_name, timeout=30)
 
+                    # ⭐ [기존 DB 구조 자동 컬럼 확장 동적 지원]
                     conn_m.execute("""
                     CREATE TABLE IF NOT EXISTS shipment_raw (
                         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
                         출고박스종류 TEXT, 송장번호 TEXT, 마감일시 TEXT, 마감자 TEXT, 주문일시 TEXT,
                         결제일시 TEXT, 등록일시 TEXT, 할당일시 TEXT, 출력일시 TEXT, 브랜드 TEXT,
                         배송계약태그 TEXT, 주문번호 TEXT, 개별주문번호 TEXT, 피킹지시서번호 TEXT,
-                        품고추적번호 TEXT, CS TEXT,
-                        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호)
+                        품고추적번호 TEXT, CS TEXT, SKU명 TEXT, 바코드 TEXT, 총출고수량 INTEGER,
+                        PRIMARY KEY (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호, SKU명, 바코드)
                     )
                     """)
+                    
+                    # 기존 DB에 신규 컬럼 3개가 없을 경우 자동으로 ALTER TABLE 추가
+                    cursor = conn_m.cursor()
+                    cursor.execute("PRAGMA table_info(shipment_raw)")
+                    existing_cols = [col[1] for col in cursor.fetchall()]
+                    
+                    for add_c, col_type in [('SKU명', 'TEXT'), ('바코드', 'TEXT'), ('총출고수량', 'INTEGER')]:
+                        if add_c not in existing_cols:
+                            try:
+                                conn_m.execute(f"ALTER TABLE shipment_raw ADD COLUMN {add_c} {col_type}")
+                            except Exception:
+                                pass
+
                     conn_m.execute("""
                     CREATE TABLE IF NOT EXISTS daily_summary (
                         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -457,23 +470,26 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     shipment_distinct = group_df[
                         ['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호',
                          '마감일시', '마감자', '주문일시', '결제일시', '등록일시', '할당일시', '출력일시',
-                         '브랜드', '배송계약태그', '주문번호', '개별주문번호', '피킹지시서번호', '품고추적번호', 'CS']
-                    ].drop_duplicates(subset=['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호'])
+                         '브랜드', '배송계약태그', '주문번호', '개별주문번호', '피킹지시서번호', '품고추적번호', 'CS',
+                         'SKU명', '바코드', '총출고수량']
+                    ].drop_duplicates(subset=['영업마감일자', '센터', '고객사', '배송속성', '판매처', '출고박스종류', '송장번호', 'SKU명', '바코드'])
 
                     for _, row_s in shipment_distinct.iterrows():
                         conn_m.execute("""
                         INSERT OR REPLACE INTO shipment_raw
                         (영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호,
                          마감일시, 마감자, 주문일시, 결제일시, 등록일시, 할당일시, 출력일시,
-                         브랜드, 배송계약태그, 주문번호, 개별주문번호, 피킹지시서번호, 품고추적번호, CS)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         브랜드, 배송계약태그, 주문번호, 개별주문번호, 피킹지시서번호, 품고추적번호, CS,
+                         SKU명, 바코드, 총출고수량)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, (
                             row_s['영업마감일자'], row_s['센터'], row_s['고객사'], row_s['배송속성'],
                             row_s['판매처'], row_s['출고박스종류'], row_s['송장번호'], str(row_s['마감일시']),
                             str(row_s['마감자']), str(row_s['주문일시']), str(row_s['결제일시']),
                             str(row_s['등록일시']), str(row_s['할당일시']), str(row_s['출력일시']),
                             str(row_s['브랜드']), str(row_s['배송계약태그']), str(row_s['주문번호']),
-                            str(row_s['개별주문번호']), str(row_s['피킹지시서번호']), str(row_s['품고추적번호']), str(row_s['CS'])
+                            str(row_s['개별주문번호']), str(row_s['피킹지시서번호']), str(row_s['품고추적번호']), str(row_s['CS']),
+                            str(row_s['SKU명']), str(row_s['바코드']), int(row_s['총출고수량'])
                         ))
 
                     b2c_sum = group_df.groupby(
