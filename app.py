@@ -11,8 +11,31 @@ from datetime import datetime, timedelta, date
 st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide", initial_sidebar_state="expanded")
 
 DB_INBOUND_PATH = "wms_inbound.db"
+LAST_SYNC_FILE = "last_sync.txt"
 
-# --- 앱 실행 시 구글 드라이브에서 DB 자동 다운로드 초기화 ---
+# --- 동기화 타임스탬프 기록 및 조회 ---
+def save_last_sync_time():
+    try:
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open(LAST_SYNC_FILE, "w", encoding="utf-8") as f:
+            f.write(now_str)
+        st.session_state['loaded_sync_time'] = now_str
+    except Exception:
+        pass
+
+def get_last_sync_time():
+    if os.path.exists(LAST_SYNC_FILE):
+        try:
+            with open(LAST_SYNC_FILE, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            return ""
+    return ""
+
+if 'loaded_sync_time' not in st.session_state:
+    st.session_state['loaded_sync_time'] = get_last_sync_time()
+
+# --- 앱 실행 시 DB 자동 다운로드 ---
 def init_db_from_drive():
     if "gcp_service_account" in st.secrets:
         try:
@@ -51,6 +74,8 @@ def run_sync():
             
             status_text.empty()
             st.cache_data.clear()
+
+            save_last_sync_time()
 
             if matched_cnt > 0:
                 st.session_state['sync_msg'] = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)"
@@ -288,6 +313,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
+
+# --- B 사용자 알림 배너 ---
+latest_sync = get_last_sync_time()
+my_loaded_sync = st.session_state.get('loaded_sync_time', '')
+
+if latest_sync and latest_sync > my_loaded_sync:
+    col_msg, col_btn = st.columns([4, 1])
+    with col_msg:
+        st.info(f"🔔 **새로운 데이터 업데이트 감지!** (최종 동기화: `{latest_sync}`)")
+    with col_btn:
+        if st.button("🔄 최신 데이터 불러오기", type="primary", use_container_width=True):
+            st.cache_data.clear()
+            st.session_state['loaded_sync_time'] = latest_sync
+            st.rerun()
 
 # 사이드바 동기화 제어
 if st.sidebar.button("🔄 드라이브 & 구글시트 동기화"):
@@ -691,7 +730,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.download_button(
                         label="💾 로우 데이터 엑셀 파일 다운로드",
                         data=buffer.getvalue(),
-                        file_name=file_name_out,
+                        file_name_out=file_name_out,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="btn_download_b2c_raw_excel"
                     )
