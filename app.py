@@ -93,6 +93,39 @@ def run_sync():
         st.session_state['sync_msg_type'] = "error"
     return False
 
+# --- 데이터가 존재하는 월 목록 자동 파악 함수 ---
+@st.cache_data(ttl=5)
+def get_available_data_months():
+    avail_months = set()
+    curr_year = datetime.now().strftime('%Y')
+    
+    # 1. B2C DB 파일들 검사
+    db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
+    for db_f in db_files:
+        ym = db_f.replace('wms_b2c_', '').replace('.db', '')
+        if len(ym) == 6 and ym.startswith(curr_year):
+            m_num = int(ym[4:6])
+            avail_months.add(f"{m_num}월")
+            
+    # 2. 입고 DB 검사
+    if os.path.exists(DB_INBOUND_PATH):
+        try:
+            conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
+            df_ib = pd.read_sql("SELECT DISTINCT strftime('%m', 영업마감일자) as m FROM inbound_summary WHERE 영업마감일자 IS NOT NULL", conn)
+            conn.close()
+            for m_val in df_ib['m'].dropna():
+                if m_val:
+                    avail_months.add(f"{int(m_val)}월")
+        except Exception:
+            pass
+            
+    # 데이터가 아예 없을 때는 기본적으로 당월을 포함
+    if not avail_months:
+        adjusted_today = datetime.now() - timedelta(days=1)
+        avail_months.add(f"{adjusted_today.month}월")
+        
+    return sorted(list(avail_months), key=lambda x: int(x.replace("월", "")))
+
 def get_b2c_db_paths(selected_m_list):
     curr_year = datetime.now().strftime('%Y')
     if isinstance(selected_m_list, str):
@@ -104,6 +137,7 @@ def get_b2c_db_paths(selected_m_list):
     
     target_dbs = []
     for m_str in selected_m_list:
+        if m_str == "누적": continue
         m_digit = m_str.replace("월", "").zfill(2)
         target_db = f"wms_b2c_{curr_year}{m_digit}.db"
         
@@ -476,49 +510,69 @@ def smart_fold_pivot_columns(pivot_df, expanded_months):
         m_dates = info['dates']
         new_df[m_sum_col_name] = pivot_df[m_dates].sum(axis=1)
         if m_label in expanded_months or f"{int(m_key[5:7]):02d}월" in expanded_months or m_key in expanded_months:
-            for d in m_dates: new_df[d] = pivot_d[d]
+            for d in m_dates: new_df[d] = pivot_df[d]
     return new_df
 
+# --- 지능형 월 선택 버튼 바 (누적 연동 및 비활성화 적용) ---
 def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 월 선택:", allow_nujak=False, multi_select=True):
     st.markdown(f"<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>{title_label}</p>", unsafe_allow_html=True)
+    
     adjusted_today = datetime.now() - timedelta(days=1)
     default_month_str = f"{adjusted_today.month}월"
+    available_months = get_available_data_months()
 
+    # 초기 세션 설정
     if session_key_selected not in st.session_state or not st.session_state[session_key_selected]:
         st.session_state[session_key_selected] = [default_month_str] if multi_select else default_month_str
+
+    curr_sel = st.session_state[session_key_selected]
+    if isinstance(curr_sel, str):
+        curr_sel_list = [curr_sel] if curr_sel else []
+    else:
+        curr_sel_list = list(curr_sel)
 
     months_list = [f"{i}월" for i in range(1, 13)]
     if allow_nujak: months_list.append("누적")
 
     cols = st.columns(len(months_list))
+    
     for idx, m_name in enumerate(months_list):
         with cols[idx]:
-            if multi_select:
-                curr_sel = st.session_state[session_key_selected]
-                if not isinstance(curr_sel, list):
-                    curr_sel = [curr_sel] if curr_sel else []
-                is_selected = m_name in curr_sel
-            else:
-                is_selected = (st.session_state[session_key_selected] == m_name)
-
+            # 데이터 보유 여부에 따른 버튼 비활성화 (disabled) 설정
+            is_disabled = (m_name != "누적") and (m_name not in available_months)
+            is_selected = m_name in curr_sel_list
             btn_style = "primary" if is_selected else "secondary"
-            if st.button(m_name, key=f"btn_{session_key_selected}_{m_name}", type=btn_style, use_container_width=True):
-                if multi_select:
-                    curr_list = list(st.session_state[session_key_selected]) if isinstance(st.session_state[session_key_selected], list) else ([st.session_state[session_key_selected]] if st.session_state[session_key_selected] else [])
-                    if m_name in curr_list:
-                        curr_list.remove(m_name)
+
+            if st.button(m_name, key=f"btn_{session_key_selected}_{m_name}", type=btn_style, use_container_width=True, disabled=is_disabled):
+                if m_name == "누적":
+                    # 누적 클릭 시: 모든 데이터 보유 월 + 누적 토글 선택
+                    if "누적" in curr_sel_list:
+                        # 누적 해제 ➔ 당월로 복귀
+                        st.session_state[session_key_selected] = [default_month_str]
                     else:
-                        curr_list.append(m_name)
-                    
-                    # 방안 1 적용: 해제 후 리스트가 비어 있으면 당월(오늘 - 1일)로 복귀
-                    if not curr_list:
-                        curr_list = [default_month_str]
-                    st.session_state[session_key_selected] = curr_list
+                        # 누적 선택 ➔ 전체 데이터 월 + 누적 동시 선택
+                        new_list = list(available_months)
+                        new_list.append("누적")
+                        st.session_state[session_key_selected] = new_list
                 else:
-                    if st.session_state[session_key_selected] == m_name:
-                        st.session_state[session_key_selected] = default_month_str
+                    # 일반 월 버튼 클릭 시
+                    if m_name in curr_sel_list:
+                        curr_sel_list.remove(m_name)
                     else:
-                        st.session_state[session_key_selected] = m_name
+                        curr_sel_list.append(m_name)
+
+                    # 누적 연동 체크: 모든 데이터 보유 월이 선택되어 있으면 누적 자동 활성화
+                    all_avail_selected = all(m in curr_sel_list for m in available_months)
+                    if all_avail_selected:
+                        if "누적" not in curr_sel_list: curr_sel_list.append("누적")
+                    else:
+                        if "누적" in curr_sel_list: curr_sel_list.remove("누적")
+
+                    # 해제하여 빈 값일 경우 ➔ 당월로 복귀
+                    if not [m for m in curr_sel_list if m != "누적"]:
+                        curr_sel_list = [default_month_str]
+
+                    st.session_state[session_key_selected] = curr_sel_list
                 st.rerun()
 
     return st.session_state[session_key_selected]
