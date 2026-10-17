@@ -14,6 +14,17 @@ st.set_page_config(page_title="통합 물류 운영 대시보드", layout="wide"
 
 DB_INBOUND_PATH = "wms_inbound.db"
 
+# --- 백그라운드 동기화 상태 공유 전역 객체 ---
+class SyncProgressState:
+    def __init__(self):
+        self.is_running = False
+        self.status_text = ""
+        self.result_msg = ""
+        self.result_type = "info"
+
+if 'global_sync_state' not in globals():
+    global_sync_state = SyncProgressState()
+
 # --- 앱 실행 시 구글 드라이브에서 DB 자동 다운로드 초기화 ---
 def init_db_from_drive():
     if "gcp_service_account" in st.secrets:
@@ -33,23 +44,6 @@ def init_db_from_drive():
             pass
 
 init_db_from_drive()
-
-# --- 백그라운드 동기화 안전 상태 세션 관리 ---
-if 'sync_running' not in st.session_state:
-    st.session_state['sync_running'] = False
-if 'sync_info' not in st.session_state:
-    st.session_state['sync_info'] = {'status': 'idle', 'text': '', 'msg': '', 'type': 'info'}
-
-# 글로벌 스레드 상태 공유 객체
-class SyncProgressState:
-    def __init__(self):
-        self.is_running = False
-        self.status_text = ""
-        self.result_msg = ""
-        self.result_type = "info"
-
-if 'global_sync_state' not in globals():
-    global_sync_state = SyncProgressState()
 
 def safe_bg_sync_task(secrets_dict):
     global global_sync_state
@@ -75,12 +69,13 @@ def safe_bg_sync_task(secrets_dict):
         global_sync_state.result_type = "error"
     finally:
         global_sync_state.is_running = False
+        global_sync_state.status_text = ""
 
 def start_bg_sync():
     global global_sync_state
     if "gcp_service_account" in st.secrets and not global_sync_state.is_running:
         global_sync_state.is_running = True
-        global_sync_state.status_text = "⏳ **동기화 준비 완료 및 스캔 중...**"
+        global_sync_state.status_text = "⏳ **동기화 파일 스캔 및 준비 중...**"
         global_sync_state.result_msg = ""
         st.cache_data.clear()
         
@@ -89,7 +84,6 @@ def start_bg_sync():
         thread.start()
 
 def get_b2c_db_paths(selected_m_list):
-    """선택된 월 목록(예: ['9월', '10월'])에 따른 분할 DB 파일 동적 매칭 및 병합 조회"""
     curr_year = datetime.now().strftime('%Y')
     if isinstance(selected_m_list, str):
         selected_m_list = [selected_m_list] if selected_m_list else []
@@ -310,18 +304,20 @@ st.markdown("""
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
-# 좌측 사이드바 동기화 버튼 및 상태 UI 출력
+# 사이드바 동기화 제어 및 실시간 상태 표시
 if st.sidebar.button("🔄 드라이브 & 구글시트 동기화", disabled=global_sync_state.is_running):
     start_bg_sync()
     st.rerun()
 
+sidebar_status = st.sidebar.empty()
+
 if global_sync_state.is_running:
-    st.sidebar.info(global_sync_state.status_text)
+    sidebar_status.info(global_sync_state.status_text)
 elif global_sync_state.result_msg:
     m_type = global_sync_state.result_type
-    if m_type == "success": st.sidebar.success(global_sync_state.result_msg)
-    elif m_type == "error": st.sidebar.error(global_sync_state.result_msg)
-    else: st.sidebar.info(global_sync_state.result_msg)
+    if m_type == "success": sidebar_status.success(global_sync_state.result_msg)
+    elif m_type == "error": sidebar_status.error(global_sync_state.result_msg)
+    else: sidebar_status.info(global_sync_state.result_msg)
 
 if 'main_mode_selection' not in st.session_state:
     st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
@@ -714,7 +710,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.download_button(
                         label="💾 로우 데이터 엑셀 파일 다운로드",
                         data=buffer.getvalue(),
-                        file_name=file_name_out,
+                        file_name_out=file_name_out,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="btn_download_b2c_raw_excel"
                     )
