@@ -128,13 +128,13 @@ def get_b2c_db_paths(selected_m_list):
     if isinstance(selected_m_list, str):
         selected_m_list = [selected_m_list] if selected_m_list else []
         
-    if "누적" in selected_m_list:
+    if "전체" in selected_m_list or "누적" in selected_m_list:
         db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
         return db_files if db_files else ["wms_b2c.db"]
     
     target_dbs = []
     for m_str in selected_m_list:
-        if m_str == "누적": continue
+        if m_str in ["전체", "누적"]: continue
         m_digit = m_str.replace("월", "").zfill(2)
         target_db = f"wms_b2c_{curr_year}{m_digit}.db"
         
@@ -320,7 +320,7 @@ def load_inbound_distinct_counts(selected_m_list):
         if isinstance(selected_m_list, str):
             selected_m_list = [selected_m_list]
             
-        if selected_m_list and "누적" not in selected_m_list:
+        if selected_m_list and "전체" not in selected_m_list and "누적" not in selected_m_list:
             m_patterns = []
             for m_str in selected_m_list:
                 m_digit = m_str.replace("월", "").zfill(2)
@@ -509,11 +509,10 @@ def smart_fold_pivot_columns(pivot_df, expanded_months):
             for d in m_dates: new_df[d] = pivot_df[d]
     return new_df
 
-# --- 피벗 데이터프레임에 375소계 / XFC소계 / ★전체합계 행 주입 도우미 함수 ---
+# --- 피벗 데이터프레임 소계 주입 도우미 함수 ---
 def append_subtotals_to_pivot(pivot_df, group_cols):
     if pivot_df.empty: return pivot_df
 
-    # 센터가 인덱스의 첫 번째 레벨에 위치함
     if isinstance(pivot_df.index, pd.MultiIndex):
         centers = pivot_df.index.get_level_values('센터').unique()
     else:
@@ -531,7 +530,6 @@ def append_subtotals_to_pivot(pivot_df, group_cols):
             slice_df = pivot_df.loc[pivot_df.index.get_level_values('센터').isin(center_list)]
             if slice_df.empty: return None
             sum_vals = slice_df.sum(axis=0).values
-            # 멀티인덱스의 빈 공간 채우기
             idx_tuple = (subtotal_name,) + ('',) * (len(group_cols) - 1)
             sum_df = pd.DataFrame([sum_vals], columns=pivot_df.columns, index=pd.MultiIndex.from_tuples([idx_tuple], names=group_cols))
         else:
@@ -541,19 +539,16 @@ def append_subtotals_to_pivot(pivot_df, group_cols):
             sum_df = pd.DataFrame([sum_vals], columns=pivot_df.columns, index=pd.Index([subtotal_name], name='센터'))
         return slice_df, sum_df
 
-    # 375 센터 그룹
     res_375 = get_slice_and_sum(c_375, "375 소계")
     if res_375:
         subtotal_dfs.append(res_375[0])
         subtotal_dfs.append(res_375[1])
 
-    # XFC 센터 그룹
     res_xfc = get_slice_and_sum(c_xfc, "XFC 소계")
     if res_xfc:
         subtotal_dfs.append(res_xfc[0])
         subtotal_dfs.append(res_xfc[1])
 
-    # 기타 센터 그룹
     if c_other:
         if isinstance(pivot_df.index, pd.MultiIndex):
             subtotal_dfs.append(pivot_df.loc[pivot_df.index.get_level_values('센터').isin(c_other)])
@@ -562,7 +557,6 @@ def append_subtotals_to_pivot(pivot_df, group_cols):
 
     body_df = pd.concat(subtotal_dfs) if subtotal_dfs else pivot_df
     
-    # ★ 전체 합계 행
     total_vals = pivot_df.sum(axis=0).values
     if isinstance(pivot_df.index, pd.MultiIndex):
         total_idx = ("★ 전체 합계",) + ('',) * (len(group_cols) - 1)
@@ -572,8 +566,8 @@ def append_subtotals_to_pivot(pivot_df, group_cols):
 
     return pd.concat([total_df, body_df])
 
-# --- 지능형 월 선택 버튼 바 ---
-def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 월 선택:", allow_nujak=False, multi_select=True):
+# --- 지능형 월 선택 버튼 바 (전체 명칭 연동) ---
+def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 월 선택:", allow_nujak=True, multi_select=True):
     st.markdown(f"<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>{title_label}</p>", unsafe_allow_html=True)
     
     adjusted_today = datetime.now() - timedelta(days=1)
@@ -587,23 +581,23 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
     curr_sel_list = [curr_sel] if isinstance(curr_sel, str) else list(curr_sel)
 
     months_list = [f"{i}월" for i in range(1, 13)]
-    if allow_nujak: months_list.append("누적")
+    if allow_nujak: months_list.append("전체")
 
     cols = st.columns(len(months_list))
     
     for idx, m_name in enumerate(months_list):
         with cols[idx]:
-            is_disabled = (m_name != "누적") and (m_name not in available_months)
+            is_disabled = (m_name != "전체") and (m_name not in available_months)
             is_selected = m_name in curr_sel_list
             btn_style = "primary" if is_selected else "secondary"
 
             if st.button(m_name, key=f"btn_{session_key_selected}_{m_name}", type=btn_style, use_container_width=True, disabled=is_disabled):
-                if m_name == "누적":
-                    if "누적" in curr_sel_list:
+                if m_name == "전체":
+                    if "전체" in curr_sel_list:
                         st.session_state[session_key_selected] = [default_month_str]
                     else:
                         new_list = list(available_months)
-                        new_list.append("누적")
+                        new_list.append("전체")
                         st.session_state[session_key_selected] = new_list
                 else:
                     if m_name in curr_sel_list:
@@ -613,11 +607,11 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
 
                     all_avail_selected = all(m in curr_sel_list for m in available_months)
                     if all_avail_selected:
-                        if "누적" not in curr_sel_list: curr_sel_list.append("누적")
+                        if "전체" not in curr_sel_list: curr_sel_list.append("전체")
                     else:
-                        if "누적" in curr_sel_list: curr_sel_list.remove("누적")
+                        if "전체" in curr_sel_list: curr_sel_list.remove("전체")
 
-                    if not [m for m in curr_sel_list if m != "누적"]:
+                    if not [m for m in curr_sel_list if m != "전체"]:
                         curr_sel_list = [default_month_str]
 
                     st.session_state[session_key_selected] = curr_sel_list
@@ -684,7 +678,7 @@ elif main_mode == "🚚 B2C 출고 현황":
 
     with tab1:
         st.header("센터 & 고객사별 출고현황 (06시 영업마감 기준)")
-        expanded_months_tab1 = render_month_button_bar(session_key_selected="tab1_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=False, multi_select=True)
+        expanded_months_tab1 = render_month_button_bar(session_key_selected="tab1_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=True, multi_select=True)
         
         sel_m_list = expanded_months_tab1 if isinstance(expanded_months_tab1, list) else ([expanded_months_tab1] if expanded_months_tab1 else [])
         df_b2c_orders = load_shipment_orders(sel_m_list) if sel_m_list else pd.DataFrame()
@@ -719,7 +713,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 pivot_raw = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_raw['총 출고건수'] = pivot_raw.sum(axis=1)
                 
-                # 375소계 / XFC소계 / ★전체합계 행 주입 적용
                 pivot_with_sub = append_subtotals_to_pivot(pivot_raw, group_cols)
                 pivot_df = smart_fold_pivot_columns(pivot_with_sub, sel_m_list)
 
@@ -729,7 +722,7 @@ elif main_mode == "🚚 B2C 출고 현황":
 
     with tab2:
         st.header("배송 속성 및 판매처별 출고현황")
-        expanded_months_tab2 = render_month_button_bar(session_key_selected="tab2_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=False, multi_select=True)
+        expanded_months_tab2 = render_month_button_bar(session_key_selected="tab2_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=True, multi_select=True)
         sel_m_list2 = expanded_months_tab2 if isinstance(expanded_months_tab2, list) else ([expanded_months_tab2] if expanded_months_tab2 else [])
         df_b2c_orders2 = load_shipment_orders(sel_m_list2) if sel_m_list2 else pd.DataFrame()
 
@@ -757,11 +750,11 @@ elif main_mode == "🚚 B2C 출고 현황":
 
     with tab3:
         st.header("출고박스 규격별 사용 현황")
-        expanded_months_tab3 = render_month_button_bar(session_key_selected="tab3_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=False, multi_select=True)
+        expanded_months_tab3 = render_month_button_bar(session_key_selected="tab3_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=True, multi_select=True)
         sel_m_list3 = expanded_months_tab3 if isinstance(expanded_months_tab3, list) else ([expanded_months_tab3] if expanded_months_tab3 else [])
         df_b2c_orders3 = load_shipment_orders(sel_m_list3) if sel_m_list3 else pd.DataFrame()
 
-        df_centers_sample3 = load_shipment_orders("누적")
+        df_centers_sample3 = load_shipment_orders("전체")
         avail_centers3 = sorted(list(df_centers_sample3['센터'].dropna().unique())) if not df_centers_sample3.empty and '센터' in df_centers_sample3.columns else []
         
         selected_center_tab3_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers3, key="tab3_centers")
@@ -783,7 +776,7 @@ elif main_mode == "🚚 B2C 출고 현황":
         
         c_sku1, c_sku2, c_sku3 = st.columns([3, 2, 2])
         
-        df_centers_sample4 = load_shipment_orders("누적")
+        df_centers_sample4 = load_shipment_orders("전체")
         avail_centers4 = sorted(list(df_centers_sample4['센터'].dropna().unique())) if not df_centers_sample4.empty and '센터' in df_centers_sample4.columns else []
 
         with c_sku1:
@@ -799,7 +792,7 @@ elif main_mode == "🚚 B2C 출고 현황":
             show_client4 = st.radio("고객사 구분 표시", ["숨김 (전체 요약)", "보이기 (고객사 상세)"], key="tab4_show_client")
             clients4 = []
             if "보이기" in show_client4:
-                df_all_clients = load_b2c_sku_data("누적")
+                df_all_clients = load_b2c_sku_data("전체")
                 available_clients4 = sorted(list(df_all_clients['고객사'].dropna().unique())) if not df_all_clients.empty and '고객사' in df_all_clients.columns else []
                 clients4 = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients4, key="tab4_clients")
 
@@ -828,7 +821,7 @@ elif main_mode == "🚚 B2C 출고 현황":
             first_day = today.replace(day=1)
             date_range = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day, today), key="raw_dl_date_range")
         
-        df_centers_sample = load_shipment_orders("누적")
+        df_centers_sample = load_shipment_orders("전체")
         avail_centers = sorted(list(df_centers_sample['센터'].dropna().unique())) if not df_centers_sample.empty and '센터' in df_centers_sample.columns else []
 
         with c2:
@@ -870,7 +863,7 @@ elif main_mode == "📦 입고 현황":
         first_day_ib = today_ib.replace(day=1)
         date_range_ib = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day_ib, today_ib), key="ib_date_range")
         
-    df_centers_sample_ib = load_shipment_orders("누적")
+    df_centers_sample_ib = load_shipment_orders("전체")
     avail_centers_ib = sorted(list(df_centers_sample_ib['센터'].dropna().unique())) if not df_centers_sample_ib.empty and '센터' in df_centers_sample_ib.columns else []
 
     with col_ib2:
