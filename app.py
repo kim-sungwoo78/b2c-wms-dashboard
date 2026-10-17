@@ -641,7 +641,7 @@ elif main_mode == "🚚 B2C 출고 현황":
             show_client4 = st.radio("고객사 구분 표시", ["숨김 (전체 요약)", "보이기 (고객사 상세)"], key="tab4_show_client")
             clients4 = []
             if "보이기" in show_client4:
-                df_all_clients = load_b2c_sku_data("누적")
+                df_all_clients = load_b2c_sku_data_by_range(first_day4, today4, [])
                 available_clients4 = sorted(list(df_all_clients['고객사'].dropna().unique())) if not df_all_clients.empty and '고객사' in df_all_clients.columns else []
                 clients4 = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients4, key="tab4_clients")
 
