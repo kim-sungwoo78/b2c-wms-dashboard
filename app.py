@@ -25,20 +25,22 @@ LAST_SYNC_FILE = "last_sync.txt"
 if 'is_syncing' not in st.session_state:
     st.session_state['is_syncing'] = False
 
-# --- 동기화 진행 중 전체 화면 클릭 강제 차단 CSS ---
+# ⭐ 동기화 진행 중 전체 화면 클릭 강제 차단 및 금지 커서 적용 강화 CSS
 if st.session_state['is_syncing']:
     st.markdown("""
         <style>
+            /* 동기화 중 최상단 전체 화면 금지 오버레이 */
             .sync-overlay {
                 position: fixed;
                 top: 0; left: 0;
                 width: 100vw; height: 100vh;
                 background-color: rgba(14, 17, 23, 0.4);
-                z-index: 99999;
+                z-index: 999999 !important;
                 cursor: not-allowed !important;
                 pointer-events: auto !important;
             }
-            button, input, select, div, a {
+            /* 모든 요소의 마우스 커서를 금지 표시로 강제 고정 */
+            *, body, button, input, select, div, a, span, label, [role="tab"], .stTabs [data-baseweb="tab"] {
                 cursor: not-allowed !important;
             }
         </style>
@@ -789,7 +791,7 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                 render_sticky_pivot(pivot_df, group_cols, key_suffix="tab1")
 
-                # ⭐ [수정된 요일별 일평균 분석 영역] 범례 축 제거, 단위 문자열 제외, 수평 높이 완전 정렬
+                # ⭐ [수정 반영] 요일별 일평균 분석 영역 (범례 제거, 단위문자 제외, 수평 높이 정렬)
                 st.markdown("---")
                 st.subheader("📅 요일별 일평균 출고 현황 분석")
                 
@@ -815,7 +817,7 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                     df_wk_plot = weekday_summary.reset_index()
 
-                    # 1.8 : 1 비율 컬럼 배치
+                    # 1.8 : 1 컬럼 배치
                     c_wk_left, c_wk_right = st.columns([1.8, 1])
 
                     with c_wk_left:
@@ -823,7 +825,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         fig_wk.add_trace(go.Bar(
                             x=df_wk_plot['요일'],
                             y=df_wk_plot['일평균출고량'],
-                            # ⭐ 단위 '/일', '건' 제거하고 소수점 1자리 수치만 깔끔하게 표시
+                            # ⭐ 단위문자 제거, 26,332.3 형태의 수치만 표출
                             text=[f"{v:,.1f}" for v in df_wk_plot['일평균출고량']],
                             textposition='outside',
                             marker_color='#facc15'
@@ -832,9 +834,9 @@ elif main_mode == "🚚 B2C 출고 현황":
                         fig_wk.update_layout(
                             title="<b>선택 기간 내 요일별 일평균 출고건수 비교</b>",
                             template="plotly_dark",
-                            height=380,
+                            height=360,
                             margin=dict(l=20, r=20, t=50, b=20),
-                            # ⭐ 가로, 세로 축 범례(라벨) 완전 제거
+                            # ⭐ 가로축, 세로축 범례 완전히 제거
                             xaxis_title="",
                             yaxis_title="",
                             showlegend=False
@@ -842,11 +844,9 @@ elif main_mode == "🚚 B2C 출고 현황":
                         st.plotly_chart(fig_wk, use_container_width=True)
 
                     with c_wk_right:
-                        # ⭐ 목록 위치를 그래프 상단 높이와 완전히 맞추기 위한 여백 조정
-                        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-                        st.markdown("<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>📋 요일별 일평균 요약 목록</p>", unsafe_allow_html=True)
+                        # ⭐ 그래프와 위아래 수평 높이 완전 동기화
+                        st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
                         
-                        # ⭐ 목록 표 데이터 가공 (단위 문자열 제거 후 순수 숫자로 표현)
                         display_wk_df = pd.DataFrame({
                             '요일': df_wk_plot['요일'],
                             '일평균 출고량': df_wk_plot['일평균출고량'].apply(lambda x: f"{x:,.1f}"),
