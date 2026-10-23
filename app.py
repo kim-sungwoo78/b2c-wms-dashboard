@@ -789,11 +789,10 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                 render_sticky_pivot(pivot_df, group_cols, key_suffix="tab1")
 
-                # ⭐ [신규 추가] 요일별 일평균 출고 현황 (좌측 그래프 + 우측 목록 표 Side-by-Side)
+                # ⭐ [수정된 요일별 일평균 분석 영역] 범례 축 제거, 단위 문자열 제외, 수평 높이 완전 정렬
                 st.markdown("---")
                 st.subheader("📅 요일별 일평균 출고 현황 분석")
                 
-                # 요일 한글 매핑 및 정렬 순서
                 weekday_kr_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
                 ordered_weekdays = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
 
@@ -804,7 +803,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 if not df_filtered_copy.empty:
                     df_filtered_copy['요일'] = df_filtered_copy['dt_temp'].dt.weekday.map(weekday_kr_map)
 
-                    # 요일별 총 출고량 및 실제 발생 일수(Unique Dates) 집계
                     weekday_summary = df_filtered_copy.groupby('요일').agg(
                         총출고량=('출고건수', 'sum'),
                         발생일수=('영업마감일자', 'nunique')
@@ -817,7 +815,7 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                     df_wk_plot = weekday_summary.reset_index()
 
-                    # Layout 2 컬럼 배치 (좌측 그래프, 우측 표)
+                    # 1.8 : 1 비율 컬럼 배치
                     c_wk_left, c_wk_right = st.columns([1.8, 1])
 
                     with c_wk_left:
@@ -825,7 +823,8 @@ elif main_mode == "🚚 B2C 출고 현황":
                         fig_wk.add_trace(go.Bar(
                             x=df_wk_plot['요일'],
                             y=df_wk_plot['일평균출고량'],
-                            text=[f"{v:,.1f}건/일" for v in df_wk_plot['일평균출고량']],
+                            # ⭐ 단위 '/일', '건' 제거하고 소수점 1자리 수치만 깔끔하게 표시
+                            text=[f"{v:,.1f}" for v in df_wk_plot['일평균출고량']],
                             textposition='outside',
                             marker_color='#facc15'
                         ))
@@ -833,34 +832,36 @@ elif main_mode == "🚚 B2C 출고 현황":
                         fig_wk.update_layout(
                             title="<b>선택 기간 내 요일별 일평균 출고건수 비교</b>",
                             template="plotly_dark",
-                            height=420,
-                            margin=dict(l=40, r=40, t=50, b=40),
-                            yaxis_title="일평균 건수 (건/일)",
-                            xaxis_title="요일",
+                            height=380,
+                            margin=dict(l=20, r=20, t=50, b=20),
+                            # ⭐ 가로, 세로 축 범례(라벨) 완전 제거
+                            xaxis_title="",
+                            yaxis_title="",
                             showlegend=False
                         )
                         st.plotly_chart(fig_wk, use_container_width=True)
 
                     with c_wk_right:
-                        st.markdown("<div style='margin-top: 25px;'></div>", unsafe_allow_html=True)
+                        # ⭐ 목록 위치를 그래프 상단 높이와 완전히 맞추기 위한 여백 조정
+                        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+                        st.markdown("<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>📋 요일별 일평균 요약 목록</p>", unsafe_allow_html=True)
                         
-                        # 우측 목록 표 데이터 가공
+                        # ⭐ 목록 표 데이터 가공 (단위 문자열 제거 후 순수 숫자로 표현)
                         display_wk_df = pd.DataFrame({
                             '요일': df_wk_plot['요일'],
-                            '일평균 출고량': df_wk_plot['일평균출고량'].apply(lambda x: f"{x:,.1f} 건/일"),
+                            '일평균 출고량': df_wk_plot['일평균출고량'].apply(lambda x: f"{x:,.1f}"),
                             '비중 (%)': df_wk_plot['비중(%)'].apply(lambda x: f"{x:.1f}%")
                         })
                         
-                        # 전체 평균 합계 행 추가
                         total_avg_val = round(df_wk_plot['일평균출고량'].mean(), 1)
                         total_row = pd.DataFrame([{
                             '요일': '★ 전체 평균',
-                            '일평균 출고량': f"{total_avg_val:,.1f} 건/일",
+                            '일평균 출고량': f"{total_avg_val:,.1f}",
                             '비중 (%)': '100.0%'
                         }])
                         
                         final_wk_table = pd.concat([display_wk_df, total_row], ignore_index=True)
-                        st.dataframe(final_wk_table, use_container_width=True, hide_index=True)
+                        st.dataframe(final_wk_table, use_container_width=True, hide_index=True, height=330)
         else:
             st.info("선택된 월의 B2C 출고 데이터가 없거나 모든 월 선택이 해제되었습니다.")
 
@@ -1110,7 +1111,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     name='주문 인입건수 (결제일시 기준)',
                     orientation='h',
                     marker_color='#81c784',
-                    text=[f"{v:,.1f}건" if num_days > 1 else f"{int(v):,}건" for v in df_chart['주문 인입건수']],
+                    text=[f"{v:,.1f}" for v in df_chart['주문 인입건수']],
                     textposition='outside'
                 ))
 
@@ -1120,7 +1121,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     name='송장 마감건수 (마감일시 기준)',
                     orientation='h',
                     marker_color='#64b5f6',
-                    text=[f"{v:,.1f}건" if num_days > 1 else f"{int(v):,}건" for v in df_chart['송장 마감건수']],
+                    text=[f"{v:,.1f}" for v in df_chart['송장 마감건수']],
                     textposition='outside'
                 ))
 
@@ -1131,7 +1132,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     height=1000,
                     margin=dict(l=100, r=60, t=60, b=40),
                     yaxis=dict(autorange="reversed"),
-                    xaxis_title="건수 (건)",
+                    xaxis_title="",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
 
