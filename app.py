@@ -66,7 +66,7 @@ def get_last_sync_time():
 if 'loaded_sync_time' not in st.session_state:
     st.session_state['loaded_sync_time'] = get_last_sync_time()
 
-# --- 앱 실행 시 DB 자동 다운로드 ---
+# --- 앱 실행/슬립 깨어남 시 드라이브의 모든 최신 DB 자동 다운로드 ---
 def init_db_from_drive():
     if "gcp_service_account" in st.secrets:
         try:
@@ -74,15 +74,20 @@ def init_db_from_drive():
             creds_dict = dict(st.secrets["gcp_service_account"])
             service = etl_pipeline.get_drive_service(creds_dict)
             
+            # 1. 입고 DB 다운로드
             if not os.path.exists(DB_INBOUND_PATH):
                 etl_pipeline.download_db_from_drive(service, DB_INBOUND_PATH)
                 
-            curr_ym = datetime.now().strftime('%Y%m')
-            target_b2c_db = f"wms_b2c_{curr_ym}.db"
-            if not os.path.exists(target_b2c_db):
-                etl_pipeline.download_db_from_drive(service, target_b2c_db)
-        except Exception:
-            pass
+            # 2. 구글 드라이브 DB 폴더에 존재하는 모든 B2C DB(wms_b2c_*.db) 자동 다운로드
+            query = f"'{etl_pipeline.DB_FOLDER_ID}' in parents and name like 'wms_b2c_%.db' and trashed = false"
+            db_files = etl_pipeline.safe_drive_list(service, query)
+            
+            for db_f in db_files:
+                f_name = db_f['name']
+                if not os.path.exists(f_name):
+                    etl_pipeline.download_db_from_drive(service, f_name)
+        except Exception as e:
+            print(f"DB Auto Init Warning: {e}")
 
 init_db_from_drive()
 
@@ -283,7 +288,7 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
         if os.path.exists(db_p):
             try:
                 conn = sqlite3.connect(db_p, timeout=10)
-                # ⭐ 명시적 컬럼 추출 (SKU명, 바코드, 총출고수량 포함)
+                # 명시적 컬럼 추출 (SKU명, 바코드, 총출고수량 포함)
                 query = """
                     SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호,
                            마감일시, 마감자, 주문일시, 결제일시, 등록일시, 할당일시, 출력일시,
@@ -973,7 +978,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 
                 st.success(f"✅ 총 **{len(df_raw_dl):,}** 건의 로우 데이터가 조회되었습니다.")
                 
-                # 다운로드 엑셀 생성
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     df_raw_dl.to_excel(writer, index=False, sheet_name='B2C_RawData')
