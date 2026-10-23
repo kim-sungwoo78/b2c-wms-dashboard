@@ -75,9 +75,11 @@ def init_db_from_drive():
             creds_dict = dict(st.secrets["gcp_service_account"])
             service = etl_pipeline.get_drive_service(creds_dict)
             
+            # 1. 입고 DB 다운로드
             if not os.path.exists(DB_INBOUND_PATH):
                 etl_pipeline.download_db_from_drive(service, DB_INBOUND_PATH)
                 
+            # 2. 구글 드라이브 DB 폴더에 존재하는 모든 B2C DB(wms_b2c_*.db) 자동 다운로드
             query = f"'{etl_pipeline.DB_FOLDER_ID}' in parents and name like 'wms_b2c_%.db' and trashed = false"
             db_files = etl_pipeline.safe_drive_list(service, query)
             
@@ -786,6 +788,79 @@ elif main_mode == "🚚 B2C 출고 현황":
                 pivot_df = smart_fold_pivot_columns(pivot_with_sub, sel_m_list)
 
                 render_sticky_pivot(pivot_df, group_cols, key_suffix="tab1")
+
+                # ⭐ [신규 추가] 요일별 일평균 출고 현황 (좌측 그래프 + 우측 목록 표 Side-by-Side)
+                st.markdown("---")
+                st.subheader("📅 요일별 일평균 출고 현황 분석")
+                
+                # 요일 한글 매핑 및 정렬 순서
+                weekday_kr_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
+                ordered_weekdays = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
+
+                df_filtered_copy = filtered_df.copy()
+                df_filtered_copy['dt_temp'] = pd.to_datetime(df_filtered_copy['영업마감일자'], errors='coerce')
+                df_filtered_copy = df_filtered_copy.dropna(subset=['dt_temp'])
+                
+                if not df_filtered_copy.empty:
+                    df_filtered_copy['요일'] = df_filtered_copy['dt_temp'].dt.weekday.map(weekday_kr_map)
+
+                    # 요일별 총 출고량 및 실제 발생 일수(Unique Dates) 집계
+                    weekday_summary = df_filtered_copy.groupby('요일').agg(
+                        총출고량=('출고건수', 'sum'),
+                        발생일수=('영업마감일자', 'nunique')
+                    ).reindex(ordered_weekdays).fillna(0)
+
+                    weekday_summary['일평균출고량'] = (weekday_summary['총출고량'] / weekday_summary['발생일수'].replace(0, 1)).round(1)
+                    
+                    tot_avg_sum = weekday_summary['일평균출고량'].sum()
+                    weekday_summary['비중(%)'] = (weekday_summary['일평균출고량'] / tot_avg_sum * 100).round(1) if tot_avg_sum > 0 else 0.0
+
+                    df_wk_plot = weekday_summary.reset_index()
+
+                    # Layout 2 컬럼 배치 (좌측 그래프, 우측 표)
+                    c_wk_left, c_wk_right = st.columns([1.8, 1])
+
+                    with c_wk_left:
+                        fig_wk = go.Figure()
+                        fig_wk.add_trace(go.Bar(
+                            x=df_wk_plot['요일'],
+                            y=df_wk_plot['일평균출고량'],
+                            text=[f"{v:,.1f}건/일" for v in df_wk_plot['일평균출고량']],
+                            textposition='outside',
+                            marker_color='#facc15'
+                        ))
+
+                        fig_wk.update_layout(
+                            title="<b>선택 기간 내 요일별 일평균 출고건수 비교</b>",
+                            template="plotly_dark",
+                            height=420,
+                            margin=dict(l=40, r=40, t=50, b=40),
+                            yaxis_title="일평균 건수 (건/일)",
+                            xaxis_title="요일",
+                            showlegend=False
+                        )
+                        st.plotly_chart(fig_wk, use_container_width=True)
+
+                    with c_wk_right:
+                        st.markdown("<div style='margin-top: 25px;'></div>", unsafe_allow_html=True)
+                        
+                        # 우측 목록 표 데이터 가공
+                        display_wk_df = pd.DataFrame({
+                            '요일': df_wk_plot['요일'],
+                            '일평균 출고량': df_wk_plot['일평균출고량'].apply(lambda x: f"{x:,.1f} 건/일"),
+                            '비중 (%)': df_wk_plot['비중(%)'].apply(lambda x: f"{x:.1f}%")
+                        })
+                        
+                        # 전체 평균 합계 행 추가
+                        total_avg_val = round(df_wk_plot['일평균출고량'].mean(), 1)
+                        total_row = pd.DataFrame([{
+                            '요일': '★ 전체 평균',
+                            '일평균 출고량': f"{total_avg_val:,.1f} 건/일",
+                            '비중 (%)': '100.0%'
+                        }])
+                        
+                        final_wk_table = pd.concat([display_wk_df, total_row], ignore_index=True)
+                        st.dataframe(final_wk_table, use_container_width=True, hide_index=True)
         else:
             st.info("선택된 월의 B2C 출고 데이터가 없거나 모든 월 선택이 해제되었습니다.")
 
@@ -943,7 +1018,7 @@ elif main_mode == "🚚 B2C 출고 현황":
             else:
                 st.info("선택된 기간 및 조건의 SKU 출고 데이터가 없습니다.")
 
-    # ⭐ 탭 5 : 시간대별 주문/마감 분석 (06시 영업마감 기준 - 동적 센터/고객사 필터 & 그래프 확대)
+    # 탭 5 : 시간대별 주문/마감 분석 (06시 영업마감 기준)
     with tab5:
         st.header("⏱️ 시간대별 주문 인입 vs 출고 마감 분석 (06시 영업마감 기준)")
         st.caption("결제일시 기준 시간대별 주문 인입량과 마감일시 기준 송장 마감량을 06시 영업 타임라인(06:00 ~ 익일 05:00)에 맞추어 비교합니다.")
@@ -962,7 +1037,6 @@ elif main_mode == "🚚 B2C 출고 현황":
             selected_center_h_input = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers_h, key="tab5_centers", disabled=st.session_state['is_syncing'])
             expanded_centers_h = expand_selected_centers(selected_center_h_input, list(raw_centers_h)) if selected_center_h_input else []
 
-        # 센터 선택 상태에 맞춰 해당 센터에 속한 고객사만 동적으로 필터링 추출
         if isinstance(date_range_h, tuple) and len(date_range_h) == 2:
             start_dh_tmp, end_dh_tmp = date_range_h
             df_center_filtered_sample = load_b2c_raw_by_range(start_dh_tmp, end_dh_tmp, expanded_centers_h)
@@ -1054,7 +1128,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     title=f"<b>[{title_prefix}] 06시 영업마감 기준 시간대별 주문 인입 vs 출고 마감 비교</b>",
                     template="plotly_dark",
                     barmode='group',
-                    height=1000, # ⭐ 그래프 높이를 1000px로 확대하여 시원하고 크게 표출
+                    height=1000,
                     margin=dict(l=100, r=60, t=60, b=40),
                     yaxis=dict(autorange="reversed"),
                     xaxis_title="건수 (건)",
