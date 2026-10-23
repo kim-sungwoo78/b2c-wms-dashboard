@@ -4,6 +4,7 @@ import math
 import calendar
 import sqlite3
 import pandas as pd
+import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 import plotly.express as px
@@ -288,7 +289,6 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
         if os.path.exists(db_p):
             try:
                 conn = sqlite3.connect(db_p, timeout=10)
-                # 명시적 컬럼 추출 (SKU명, 바코드, 총출고수량 포함)
                 query = """
                     SELECT 영업마감일자, 센터, 고객사, 배송속성, 판매처, 출고박스종류, 송장번호,
                            마감일시, 마감자, 주문일시, 결제일시, 등록일시, 할당일시, 출력일시,
@@ -741,11 +741,13 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         render_sticky_pivot(final_main_df, ["센터"], key_suffix="main_summary")
 
 elif main_mode == "🚚 B2C 출고 현황":
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    # ⭐ 탭 순서 변경: 5번째 신규 탭, 6번째 로우파일 다운로드
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 센터/고객사별 출고현황", 
         "🚚 배송속성 / 판매처별 현황", 
         "📦 출고박스별 현황", 
         "🔍 SKU별 출고량", 
+        "⏱️ 시간대별 주문/마감 분석",
         "📥 B2C 로우파일 다운로드"
     ])
 
@@ -944,7 +946,144 @@ elif main_mode == "🚚 B2C 출고 현황":
             else:
                 st.info("선택된 기간 및 조건의 SKU 출고 데이터가 없습니다.")
 
+    # ⭐ [신규 추가] 탭 5 : 시간대별 주문/마감 분석 (06시 영업마감 기준)
     with tab5:
+        st.header("⏱️ 시간대별 주문 인입 vs 출고 마감 분석 (06시 영업마감 기준)")
+        st.caption("결제일시 기준 시간대별 주문 인입량과 마감일시 기준 송장 마감량을 06시 영업 타임라인(06:00 ~ 익일 05:00)에 맞추어 비교합니다.")
+
+        c_h1, c_h2, c_h3 = st.columns([3, 2, 2])
+        
+        df_centers_sample_h = load_shipment_orders("전체")
+        raw_centers_h = df_centers_sample_h['센터'].dropna().unique() if not df_centers_sample_h.empty and '센터' in df_centers_sample_h.columns else []
+        avail_centers_h = get_formatted_center_options(raw_centers_h)
+
+        with c_h1:
+            yesterday_h = date.today() - timedelta(days=1)
+            date_range_h = st.date_input("🗓️ 마감일자 기간 선택 (기본: 오늘-1일):", value=(yesterday_h, yesterday_h), key="tab5_date_range", disabled=st.session_state['is_syncing'])
+            
+        with c_h2:
+            selected_center_h_input = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers_h, key="tab5_centers", disabled=st.session_state['is_syncing'])
+            expanded_centers_h = expand_selected_centers(selected_center_h_input, list(raw_centers_h)) if selected_center_h_input else []
+
+        with c_h3:
+            df_all_raw_sample = load_b2c_raw_by_range(yesterday_h, yesterday_h, [])
+            available_clients_h = sorted(list(df_all_raw_sample['고객사'].dropna().unique())) if not df_all_raw_sample.empty and '고객사' in df_all_raw_sample.columns else []
+            selected_clients_h = st.multiselect("🏢 고객사 선택 (미선택 시 전체):", available_clients_h, key="tab5_clients", disabled=st.session_state['is_syncing'])
+
+        if isinstance(date_range_h, tuple) and len(date_range_h) == 2:
+            start_dh, end_dh = date_range_h
+            num_days = (end_dh - start_dh).days + 1
+            
+            df_raw_h = load_b2c_raw_by_range(start_dh, end_dh, expanded_centers_h)
+            
+            if selected_clients_h and not df_raw_h.empty and '고객사' in df_raw_h.columns:
+                df_raw_h = df_raw_h[df_raw_h['고객사'].isin(selected_clients_h)]
+
+            if not df_raw_h.empty:
+                # 06시 영업마감 타임라인 리스트 (06:00 ~ 익일 05:00)
+                op_hours_order = [f"{h:02d}:00" for h in range(6, 24)] + [f"{h:02d}:00" for h in range(0, 6)]
+                
+                # 시간대 가공 함수 (06시 영업 타임라인 매핑)
+                def get_op_hour_label(dt_series):
+                    dt_parsed = pd.to_datetime(dt_series, errors='coerce')
+                    hour_int = dt_parsed.dt.hour
+                    
+                    labels = []
+                    for h in hour_int:
+                        if pd.isna(h):
+                            labels.append(None)
+                        else:
+                            h_int = int(h)
+                            if h_int >= 6:
+                                labels.append(f"{h_int:02d}:00 (D)")
+                            else:
+                                labels.append(f"{h_int:02d}:00 (D+1)")
+                    return labels
+
+                # 결제일시 & 마감일시 시간대 추출
+                df_raw_h['결제시간대'] = get_op_hour_label(df_raw_h['결제일시'])
+                df_raw_h['마감시간대'] = get_op_hour_label(df_raw_h['마감일시'])
+
+                # 시간대별 집계 (중복 송장 제거 기준)
+                inflow_cnt = df_raw_h.groupby('결제시간대')['송장번호'].nunique().to_dict()
+                shipment_cnt = df_raw_h.groupby('마감시간대')['송장번호'].nunique().to_dict()
+
+                chart_rows = []
+                for h_str in op_hours_order:
+                    h_int = int(h_str[:2])
+                    label_key = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
+                    
+                    tot_inflow = inflow_cnt.get(label_key, 0)
+                    tot_shipment = shipment_cnt.get(label_key, 0)
+                    
+                    avg_inflow = round(tot_inflow / num_days, 1)
+                    avg_shipment = round(tot_shipment / num_days, 1)
+                    
+                    chart_rows.append({
+                        '시간대': label_key,
+                        '주문 인입건수': avg_inflow,
+                        '송장 마감건수': avg_shipment
+                    })
+
+                df_chart = pd.DataFrame(chart_rows)
+
+                # Plotly 수평 막대 그래프 생성
+                title_prefix = f"일평균 ({num_days}일간 평균)" if num_days > 1 else f"당일 ({start_dh.strftime('%Y-%m-%d')})"
+                
+                fig_h = go.Figure()
+                
+                # 주문 인입건수 (녹색)
+                fig_h.add_trace(go.Bar(
+                    y=df_chart['시간대'],
+                    x=df_chart['주문 인입건수'],
+                    name='주문 인입건수 (결제일시 기준)',
+                    orientation='h',
+                    marker_color='#81c784',
+                    text=[f"{v:,.1f}건" if num_days > 1 else f"{int(v):,}건" for v in df_chart['주문 인입건수']],
+                    textposition='outside'
+                ))
+
+                # 송장 마감건수 (파란색)
+                fig_h.add_trace(go.Bar(
+                    y=df_chart['시간대'],
+                    x=df_chart['송장 마감건수'],
+                    name='송장 마감건수 (마감일시 기준)',
+                    orientation='h',
+                    marker_color='#64b5f6',
+                    text=[f"{v:,.1f}건" if num_days > 1 else f"{int(v):,}건" for v in df_chart['송장 마감건수']],
+                    textposition='outside'
+                ))
+
+                fig_h.update_layout(
+                    title=f"<b>[{title_prefix}] 06시 영업마감 기준 시간대별 주문 인입 vs 출고 마감 비교</b>",
+                    template="plotly_dark",
+                    barmode='group',
+                    height=750,
+                    margin=dict(l=100, r=50, t=60, b=40),
+                    yaxis=dict(autorange="reversed"), # 06:00 ~ 05:00 상단 배치
+                    xaxis_title="건수 (건)",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+
+                st.plotly_chart(fig_h, use_container_width=True)
+
+                st.markdown("---")
+                st.subheader("📋 시간대별 세부 수치 비교표")
+                
+                # 표 데이터 정리
+                tot_in = df_chart['주문 인입건수'].sum()
+                tot_out = df_chart['송장 마감건수'].sum()
+                
+                df_chart['인입 비중(%)'] = (df_chart['주문 인입건수'] / tot_in * 100).round(1).fillna(0).astype(str) + "%" if tot_in > 0 else "0.0%"
+                df_chart['마감 비중(%)'] = (df_chart['송장 마감건수'] / tot_out * 100).round(1).fillna(0).astype(str) + "%" if tot_out > 0 else "0.0%"
+
+                st.dataframe(df_chart, use_container_width=True, hide_index=True)
+
+            else:
+                st.info("선택된 기간 및 조건의 로우 데이터가 없습니다.")
+
+    # ⭐ [이동] 탭 6 : B2C 로우파일 추출 및 다운로드 (6번째 끝으로 배치)
+    with tab6:
         st.header("📥 B2C 로우파일 추출 및 다운로드")
         st.caption("원하는 기간과 센터 조건을 지정하여 B2C 출고 로우 원장(shipment_raw)을 엑셀 파일로 다운로드할 수 있습니다.")
 
