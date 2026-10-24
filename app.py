@@ -825,7 +825,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                         fig_wk.add_trace(go.Bar(
                             x=df_wk_plot['요일'],
                             y=df_wk_plot['일평균출고량'],
-                            # 단위문자 제거, 26,332.3 형태의 수치만 표출
                             text=[f"{v:,.1f}" for v in df_wk_plot['일평균출고량']],
                             textposition='outside',
                             marker_color='#facc15'
@@ -836,7 +835,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                             template="plotly_dark",
                             height=360,
                             margin=dict(l=20, r=20, t=50, b=20),
-                            # 가로축, 세로축 범례 완전히 제거
                             xaxis_title="",
                             yaxis_title="",
                             showlegend=False
@@ -844,7 +842,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                         st.plotly_chart(fig_wk, use_container_width=True)
 
                     with c_wk_right:
-                        # 그래프와 위아래 수평 높이 완전 동기화
                         st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
                         
                         display_wk_df = pd.DataFrame({
@@ -889,7 +886,6 @@ elif main_mode == "🚚 B2C 출고 현황":
             raw_grp = df_tab2.groupby(target_col)['출고건수'].sum().reset_index()
             raw_grp = raw_grp.sort_values(by='출고건수', ascending=False)
             
-            # --- 💡 [개선] 다중 항목에 대비해 Top 5(배송속성) 또는 Top 7(판매처) 이외의 항목 '기타'로 합산처리 ---
             top_limit = 5 if analysis_type == "배송 속성별" else 7
             if len(raw_grp) > top_limit:
                 top_grp = raw_grp.head(top_limit)
@@ -909,7 +905,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 c_vis_left, c_vis_right = st.columns([1.1, 1.8])
 
                 with c_vis_left:
-                    # Donut Chart - 범례를 아래 가로형으로 배치하여 차트가 밀리는 현상 제거
                     fig_pie = go.Figure()
                     fig_pie.add_trace(go.Pie(
                         labels=chart_df[target_col],
@@ -928,7 +923,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         legend=dict(
                             orientation="h",
                             yanchor="bottom",
-                            y=-0.35, # 범례를 차트 영역 완전히 하단으로 이동
+                            y=-0.35,
                             xanchor="center",
                             x=0.5
                         )
@@ -936,8 +931,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.plotly_chart(fig_pie, use_container_width=True)
 
                 with c_vis_right:
-                    # 가로형 막대그래프 (Horizontal Bar)로 변경하여 채널명이 깨지거나 꺾이지 않고 온전하게 읽히도록 개선
-                    # 시각적 내림차순(Y축이 위에서부터 내려가도록 오름차순 역정렬)
                     bar_df = chart_df.copy().iloc[::-1]
                     fig_bar = go.Figure()
                     fig_bar.add_trace(go.Bar(
@@ -952,7 +945,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         title=f"<b>[{analysis_type}] 주요 구분별 총 출고건수 비교</b>",
                         template="plotly_dark",
                         height=420,
-                        margin=dict(t=50, b=20, l=120, r=80), # 수치 폰트 짤림 방지용 우측 마진
+                        margin=dict(t=50, b=20, l=120, r=80),
                         xaxis_title="",
                         yaxis_title="",
                         showlegend=False
@@ -973,22 +966,20 @@ elif main_mode == "🚚 B2C 출고 현황":
             if not df_tab2_copy.empty:
                 df_tab2_copy['요일'] = df_tab2_copy['dt_temp'].dt.weekday.map(weekday_kr_map)
 
-                # 실제 발생 일수 계산
-                active_days = df_tab2_copy.groupby('요일')['영업마감일자'].nunique().reindex(ordered_weekdays).fillna(1)
+                # 실제 발생 일수 계산 (0일인 경우 나누기 에러 방지 위해 1로 치환)
+                active_days = df_tab2_copy.groupby('요일')['영업마감일자'].nunique().reindex(ordered_weekdays).fillna(0)
+                active_days_clean = active_days.apply(lambda x: x if x > 0 else 1)
 
                 # 데이터가 많은 경우, 상위 Top N 외에는 전부 '기타'로 합치기
                 top_targets = chart_df[target_col].tolist()
                 df_tab2_copy[target_col] = df_tab2_copy[target_col].apply(lambda x: x if x in top_targets else ('기타/일반' if analysis_type == "배송 속성별" else '기타 (외 다수)'))
 
                 # 요일별 x 속성별 총 출고량 집계
-                wk_attr_summary = df_tab2_copy.groupby(['요일', target_col])['출고건수'].sum().unstack(fill_value=0)
-                wk_attr_summary = wk_attr_summary.reindex(ordered_weekdays).fillna(0)
+                wk_attr_raw = df_tab2_copy.groupby(['요일', target_col])['출고건수'].sum().unstack(fill_value=0)
+                wk_attr_raw = wk_attr_raw.reindex(ordered_weekdays).fillna(0)
 
-                # 일평균 일수로 나누어 정규화
-                for day in ordered_weekdays:
-                    wk_attr_summary.loc[day] = wk_attr_summary.loc[day] / active_days[day]
-                
-                wk_attr_summary = wk_attr_summary.round(1)
+                # ⭐ [수정된 부분] float 형변환 후 행별 나눗셈을 안전하게 수행 (LossySetitemError 원천 방지)
+                wk_attr_summary = wk_attr_raw.astype(float).div(active_days_clean, axis=0).round(1)
 
                 # Layout 2 컬럼 배치 (좌측 누적 막대, 우측 표)
                 c_wk2_left, c_wk2_right = st.columns([1.8, 1.1])
@@ -1001,7 +992,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                             x=wk_attr_summary.index,
                             y=wk_attr_summary[attr],
                             name=attr,
-                            text=[f"{v:,.0f}" if v > 1000 else "" for v in wk_attr_summary[attr]], # 막대 내부 수치 표기 (값 클 때만)
+                            text=[f"{v:,.0f}" if v > 1000 else "" for v in wk_attr_summary[attr]],
                             textposition='inside'
                         ))
 
@@ -1037,7 +1028,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 with c_wk2_right:
                     # 우측 요일 및 속성 수치 매트릭스 표
                     st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-                    st.markdown(f"<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>📋 요요일별 {analysis_type} 세부 데이터</p>", unsafe_allow_html=True)
+                    st.markdown(f"<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>📋 요일별 {analysis_type} 세부 데이터</p>", unsafe_allow_html=True)
 
                     wk_attr_disp = wk_attr_summary.copy()
                     wk_attr_disp['합계'] = wk_attr_disp.sum(axis=1)
