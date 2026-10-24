@@ -306,7 +306,6 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
                 pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [신규] 시간대별 M/H 데이터 로드 함수
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
@@ -340,7 +339,6 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
         return combined
     return pd.DataFrame()
 
-# ⭐ [신규] 월별/누적 M/H 총합 로드 함수 (메인 대시보드 KPI 및 표 연동용)
 @st.cache_data(ttl=5)
 def load_mh_summary_by_months(selected_m_list):
     all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
@@ -450,11 +448,7 @@ def load_inbound_distinct_counts(selected_m_list):
             selected_m_list = [selected_m_list]
             
         if selected_m_list and "전체" not in selected_m_list and "누적" not in selected_m_list:
-            m_patterns = []
-            for m_str in selected_m_list:
-                m_digit = m_str.replace("월", "").zfill(2)
-                m_patterns.append(f"{curr_year}-{m_digit}-%")
-            
+            m_patterns = [f"{curr_year}-{m_str.replace('월', '').zfill(2)}-%" for m_str in selected_m_list]
             placeholders = " OR ".join(["영업마감일자 LIKE ?"] * len(m_patterns))
             where_conditions.append(f"({placeholders})")
             params.extend(m_patterns)
@@ -585,7 +579,6 @@ def render_sticky_pivot(df, index_names, key_suffix=""):
             is_total_col = ("총 " in str(c_name) or "합계" in str(c_name)) and "월" not in str(c_name)
             is_m_sum = ("월 합계" in str(c_name) or ("월" in str(c_name) and "-" not in str(c_name))) and not is_total_col
             
-            # 소수점 PPH나 M/H는 실수형태, 건수는 정수형태 표출
             if pd.notnull(val) and isinstance(val, float):
                 val_str = f"{val:,.1f}" if "PPH" in str(c_name) or "M/H" in str(c_name) else f"{int(val):,}"
             elif pd.notnull(val) and isinstance(val, (int, np.integer)):
@@ -764,7 +757,7 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
     return st.session_state[session_key_selected]
 
 # ==========================================
-# 🏢 메인 : 센터 종합 현황 (M/H 및 PPH 통합)
+# 🏢 메인 : 센터 종합 현황 (출고건수 옆에 PPH 배치)
 # ==========================================
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
@@ -798,7 +791,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     tot_mh_375 = df_mh_summary[df_mh_summary['센터그룹'] == '375']['MH'].sum() if not df_mh_summary.empty else 0.0
     tot_mh_xfc = df_mh_summary[df_mh_summary['센터그룹'] == 'XFC']['MH'].sum() if not df_mh_summary.empty else 0.0
 
-    # 선택된 센터에 따른 M/H 계산
+    # 선택 센터에 따른 M/H 매핑
     is_375_selected = any('1층' in str(c) or '375' in str(c) for c in (selected_centers_filter or ["전체"]))
     is_xfc_selected = any('XFC' in str(c).upper() for c in (selected_centers_filter or ["전체"]))
     
@@ -810,15 +803,15 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         elif is_xfc_selected and not is_375_selected: applicable_mh = tot_mh_xfc
         else: applicable_mh = tot_mh_375 + tot_mh_xfc
 
-    # 전체 PPH 계산 = 전체 출고건수 / 전체 M/H
+    # 전체 PPH 계산
     overall_pph = round(total_b2c_cnt / applicable_mh, 1) if applicable_mh > 0 else 0.0
 
-    # 4개 KPI 카드 배치 (B2C 출고건수, 입고건수, B2B 건수, 전체 PPH)
+    # ⭐ [요청 반영] 출고건수 바로 옆에 PPH 카드 배치
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     kpi1.metric("🚚 B2C 출고건수", f"{total_b2c_cnt:,} 건")
-    kpi2.metric("📦 입고건수 (입고완료/승인대기)", f"{total_inbound_cnt:,} 건")
-    kpi3.metric("🏭 B2B 건수 (연동 준비중)", "0 건")
-    kpi4.metric("⚡ 전체 PPH (시간당 처리량)", f"{overall_pph:,.1f}" if overall_pph > 0 else "-")
+    kpi2.metric("⚡ 전체 PPH (시간당 처리량)", f"{overall_pph:,.1f}" if overall_pph > 0 else "-")
+    kpi3.metric("📦 입고건수 (입고완료/승인대기)", f"{total_inbound_cnt:,} 건")
+    kpi4.metric("🏭 B2B 건수 (연동 준비중)", "0 건")
     
     st.markdown("---")
     st.subheader("📋 센터별 운영 항목 종합 비교표 (M/H 및 PPH 포함)")
@@ -841,20 +834,18 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
         summary_rows.append({
             '센터': center_name,
             'B2C 출고건수': b2c_c,
-            '입고건수': in_c,
-            'B2B 건수': 0,
+            'PPH': c_pph,
             '투입 M/H': round(c_mh, 1),
-            'PPH': c_pph
+            '입고건수': in_c,
+            'B2B 건수': 0
         })
         
     if summary_rows:
         df_summary = pd.DataFrame(summary_rows)
         pivot_main = df_summary.set_index('센터')
         
-        # 소계 및 전체합계 계산
         final_main_df = append_subtotals_to_pivot(pivot_main, ["센터"])
         
-        # 합계 및 소계 행의 PPH는 단순 합산이 아니라 (총 출고건수 / 총 M/H)로 재계산
         for idx in final_main_df.index:
             row_b2c = final_main_df.loc[idx, 'B2C 출고건수']
             row_mh = final_main_df.loc[idx, '투입 M/H']
@@ -1238,11 +1229,11 @@ elif main_mode == "🚚 B2C 출고 현황":
                 st.info("선택된 기간 및 조건의 SKU 출고 데이터가 없습니다.")
 
     # ==========================================
-    # ⏱️ 탭 5 : 시간대별 주문/마감 & PPH (세로형 타임라인 복원)
+    # ⏱️ 탭 5 : 시간대별 주문/마감 & PPH (세로형 타임라인)
     # ==========================================
     with tab5:
         st.header("⏱️ 시간대별 주문 인입 vs 마감 & PPH 효율 분석 (06시 영업 타임라인)")
-        st.caption("결제시간 기준 주문 인입량과 마감시간 기준 송장 마감량을 세로형 타임라인으로 비교하고, 구글 시트 투입공수(M/H)로 계산된 PPH를 우측 상단 축으로 함께 확인합니다.")
+        st.caption("결제시간 기준 주문 인입량과 마감시간 기준 송장 마감량을 세로형 타임라인으로 비교하고, 구글 시트 투입공수(M/H)로 계산된 실시간 PPH를 상단 축으로 함께 확인합니다.")
 
         c_h1, c_h2, c_h3 = st.columns([3, 2, 2])
         
@@ -1272,10 +1263,9 @@ elif main_mode == "🚚 B2C 출고 현황":
             start_dh, end_dh = date_range_h
             num_days = (end_dh - start_dh).days + 1
             
-            # 1. B2C 출고 원장 데이터 로드
             df_raw_h = load_b2c_raw_by_range(start_dh, end_dh, expanded_centers_h)
             
-            # 2. 센터 선택에 따른 M/H 그룹 판정
+            # 센터 그룹 판정 (375 센터 그룹 또는 XFC 센터 그룹)
             target_mh_group = None
             if selected_center_h_input:
                 is_375 = any('375' in str(c) or '1층' in str(c) for c in selected_center_h_input)
@@ -1309,7 +1299,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 inflow_cnt = df_raw_h.groupby('결제시간대')['송장번호'].nunique().to_dict()
                 shipment_cnt = df_raw_h.groupby('마감시간대')['송장번호'].nunique().to_dict()
 
-                # 시간대별 투입 M/H 합산 (일평균으로 나눔)
+                # 시간대별 M/H 합산 (선택일수 평균)
                 mh_map = {}
                 if not df_mh_h.empty:
                     mh_map = (df_mh_h.groupby('시간대')['MH'].sum() / num_days).to_dict()
@@ -1326,7 +1316,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     avg_shipment = round(tot_shipment / num_days, 1)
                     cur_mh = round(mh_map.get(label_key, 0.0), 1)
                     
-                    # ⭐ PPH = 대시보드 마감건수 / 구글시트 M/H
+                    # 실시간 PPH = 대시보드 마감건수 / 구글시트 M/H
                     cur_pph = round(avg_shipment / cur_mh, 1) if cur_mh > 0 else None
                     
                     chart_rows.append({
@@ -1340,7 +1330,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 df_chart = pd.DataFrame(chart_rows)
                 title_prefix = f"일평균 ({num_days}일간 평균)" if num_days > 1 else f"당일 ({start_dh.strftime('%Y-%m-%d')})"
                 
-                # ⭐ [세로형 타임라인 차트 생성] (Y축: 06:00 -> 05:00 시간대, X축: 건수, 상단보조 X축: PPH)
+                # ⭐ 세로형 타임라인 차트 (Y축: 시간대, X축: 건수, 상단보조 X축: PPH)
                 fig_v = make_subplots(specs=[[{"secondary_y": True}]])
                 
                 # 1. 주문 인입량 가로 막대 (초록)
@@ -1365,19 +1355,20 @@ elif main_mode == "🚚 B2C 출고 현황":
                     textposition='outside'
                 ), secondary_y=False)
 
-                # 3. PPH 세로 꺾은선 (주황색 보조축)
+                # 3. PPH 세로 꺾은선 (상단 보조 X축 연결)
                 valid_pph_df = df_chart[df_chart['PPH'].notnull()]
-                fig_v.add_trace(go.Scatter(
-                    y=valid_pph_df['시간대'],
-                    x=valid_pph_df['PPH'],
-                    name='실시간 PPH (마감건수 ÷ M/H)',
-                    mode='lines+markers+text',
-                    marker=dict(size=8, color='#f97316'),
-                    line=dict(color='#f97316', width=2.5),
-                    text=[f"PPH {v:,.1f}" for v in valid_pph_df['PPH']],
-                    textposition='middle right',
-                    xaxis='x2' # 상단 보조 X축에 연결
-                ), secondary_y=False)
+                if not valid_pph_df.empty:
+                    fig_v.add_trace(go.Scatter(
+                        y=valid_pph_df['시간대'],
+                        x=valid_pph_df['PPH'],
+                        name='실시간 PPH (마감건수 ÷ M/H)',
+                        mode='lines+markers+text',
+                        marker=dict(size=8, color='#f97316'),
+                        line=dict(color='#f97316', width=2.5),
+                        text=[f"PPH {v:,.1f}" for v in valid_pph_df['PPH']],
+                        textposition='middle right',
+                        xaxis='x2'
+                    ), secondary_y=False)
 
                 fig_v.update_layout(
                     title=f"<b>[{title_prefix}] 06시 영업 타임라인 시간대별 주문 인입 vs 마감 & PPH 추이 (세로형)</b>",
@@ -1385,7 +1376,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     barmode='group',
                     height=1000,
                     margin=dict(l=80, r=40, t=80, b=40),
-                    yaxis=dict(autorange="reversed"), # 06:00가 최상단에 오도록 역정렬
+                    yaxis=dict(autorange="reversed"),
                     xaxis=dict(title="건수 (건/일)"),
                     xaxis2=dict(
                         title="PPH (시간당 처리량)",
