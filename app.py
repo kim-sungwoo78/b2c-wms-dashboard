@@ -25,11 +25,9 @@ LAST_SYNC_FILE = "last_sync.txt"
 if 'is_syncing' not in st.session_state:
     st.session_state['is_syncing'] = False
 
-# 동기화 진행 중 전체 화면 클릭 강제 차단 및 금지 커서 적용 강화 CSS
 if st.session_state['is_syncing']:
     st.markdown("""
         <style>
-            /* 동기화 중 최상단 전체 화면 금지 오버레이 */
             .sync-overlay {
                 position: fixed;
                 top: 0; left: 0;
@@ -39,7 +37,6 @@ if st.session_state['is_syncing']:
                 cursor: not-allowed !important;
                 pointer-events: auto !important;
             }
-            /* 모든 요소의 마우스 커서를 금지 표시로 강제 고정 */
             *, body, button, input, select, div, a, span, label, [role="tab"], .stTabs [data-baseweb="tab"] {
                 cursor: not-allowed !important;
             }
@@ -47,7 +44,6 @@ if st.session_state['is_syncing']:
         <div class="sync-overlay"></div>
     """, unsafe_allow_html=True)
 
-# --- 동기화 타임스탬프 기록 및 조회 ---
 def save_last_sync_time():
     try:
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -69,7 +65,7 @@ def get_last_sync_time():
 if 'loaded_sync_time' not in st.session_state:
     st.session_state['loaded_sync_time'] = get_last_sync_time()
 
-# --- 앱 실행/슬립 깨어남 시 드라이브의 모든 최신 DB 자동 다운로드 ---
+# ⭐ [수정] 9월 DB(wms_b2c_202609.db)를 포함한 모든 월별 DB 자동 다운로드
 def init_db_from_drive():
     if "gcp_service_account" in st.secrets:
         try:
@@ -81,14 +77,15 @@ def init_db_from_drive():
             if not os.path.exists(DB_INBOUND_PATH):
                 etl_pipeline.download_db_from_drive(service, DB_INBOUND_PATH)
                 
-            # 2. 구글 드라이브 DB 폴더에 존재하는 모든 B2C DB(wms_b2c_*.db) 자동 다운로드
-            query = f"'{etl_pipeline.DB_FOLDER_ID}' in parents and name like 'wms_b2c_%.db' and trashed = false"
+            # 2. 구글 드라이브 DB 폴더 내 모든 파일 검색 후 wms_b2c_*.db 다운로드
+            query = f"'{etl_pipeline.DB_FOLDER_ID}' in parents and trashed = false"
             db_files = etl_pipeline.safe_drive_list(service, query)
             
             for db_f in db_files:
                 f_name = db_f['name']
-                if not os.path.exists(f_name):
-                    etl_pipeline.download_db_from_drive(service, f_name)
+                if f_name.startswith('wms_b2c_') and f_name.endswith('.db'):
+                    if not os.path.exists(f_name):
+                        etl_pipeline.download_db_from_drive(service, f_name)
         except Exception as e:
             print(f"DB Auto Init Warning: {e}")
 
@@ -126,10 +123,10 @@ def run_sync():
             save_last_sync_time()
 
             if matched_cnt > 0:
-                st.session_state['sync_msg'] = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭됨)"
+                st.session_state['sync_msg'] = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭 및 M/H 갱신 완료)"
                 st.session_state['sync_msg_type'] = "success"
             else:
-                st.session_state['sync_msg'] = "✅ 동기화 완료! (최신 DB 갱신 완료)"
+                st.session_state['sync_msg'] = "✅ 동기화 완료! (최신 DB 및 M/H 갱신 완료)"
                 st.session_state['sync_msg_type'] = "info"
             
             st.session_state['is_syncing'] = False
@@ -145,7 +142,6 @@ def run_sync():
         st.session_state['is_syncing'] = False
     return False
 
-# --- 데이터가 존재하는 월 목록 자동 파악 ---
 @st.cache_data(ttl=5)
 def get_available_data_months():
     avail_months = set()
@@ -314,15 +310,80 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
                 pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
+# ⭐ [M/H 데이터 로드 함수]
+@st.cache_data(ttl=5)
+def load_mh_data_by_range(start_date, end_date, center_group=None):
+    all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
+    if not all_db_files and os.path.exists("wms_b2c.db"):
+        all_db_files = ["wms_b2c.db"]
+        
+    start_str = start_date.strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d')
+    all_dfs = []
+    
+    for db_p in set(all_db_files):
+        if os.path.exists(db_p):
+            try:
+                conn = sqlite3.connect(db_p, timeout=10)
+                query = "SELECT 영업마감일자, 시간대, 센터그룹, MH FROM center_mh_hourly WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?"
+                params = [start_str, end_str]
+                if center_group:
+                    query += " AND 센터그룹 = ?"
+                    params.append(center_group)
+                df_mh = pd.read_sql(query, conn, params=params)
+                conn.close()
+                if not df_mh.empty: all_dfs.append(df_mh)
+            except Exception: pass
+                
+    if all_dfs:
+        combined = pd.concat(all_dfs, ignore_index=True).drop_duplicates()
+        return combined
+    return pd.DataFrame()
+
+@st.cache_data(ttl=5)
+def load_mh_summary_by_months(selected_m_list):
+    all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
+    if not all_db_files and os.path.exists("wms_b2c.db"):
+        all_db_files = ["wms_b2c.db"]
+        
+    curr_year = datetime.now().strftime('%Y')
+    where_conditions = []
+    params = []
+    
+    if isinstance(selected_m_list, str):
+        selected_m_list = [selected_m_list]
+        
+    if selected_m_list and "전체" not in selected_m_list and "누적" not in selected_m_list:
+        m_patterns = [f"{curr_year}-{m_str.replace('월', '').zfill(2)}-%" for m_str in selected_m_list]
+        placeholders = " OR ".join(["영업마감일자 LIKE ?"] * len(m_patterns))
+        where_conditions.append(f"({placeholders})")
+        params.extend(m_patterns)
+        
+    where_clause = ("WHERE " + " AND ".join(where_conditions)) if where_conditions else ""
+    all_dfs = []
+    
+    for db_p in set(all_db_files):
+        if os.path.exists(db_p):
+            try:
+                conn = sqlite3.connect(db_p, timeout=10)
+                query = f"SELECT 영업마감일자, 센터그룹, MH FROM center_mh_hourly {where_clause}"
+                df_mh = pd.read_sql(query, conn, params=params)
+                conn.close()
+                if not df_mh.empty: all_dfs.append(df_mh)
+            except Exception: pass
+                
+    if all_dfs:
+        combined = pd.concat(all_dfs, ignore_index=True).drop_duplicates()
+        return combined
+    return pd.DataFrame()
+
 @st.cache_data(ttl=5)
 def load_inbound_data_by_range(start_date, end_date, selected_centers):
     if not os.path.exists(DB_INBOUND_PATH): return pd.DataFrame()
     try:
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
-        
         conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
-        
         where_clause = "WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?"
         params = [start_str, end_str]
         
@@ -376,7 +437,6 @@ def load_inbound_distinct_counts(selected_m_list):
     try:
         conn = sqlite3.connect(DB_INBOUND_PATH, timeout=10)
         curr_year = datetime.now().strftime('%Y')
-        
         where_conditions = ["(상태 LIKE '%입고완료%' OR 상태 LIKE '%입고 완료%' OR 상태 LIKE '%승인대기%' OR 상태 LIKE '%승인 대기%')"]
         params = []
         
@@ -384,17 +444,12 @@ def load_inbound_distinct_counts(selected_m_list):
             selected_m_list = [selected_m_list]
             
         if selected_m_list and "전체" not in selected_m_list and "누적" not in selected_m_list:
-            m_patterns = []
-            for m_str in selected_m_list:
-                m_digit = m_str.replace("월", "").zfill(2)
-                m_patterns.append(f"{curr_year}-{m_digit}-%")
-            
+            m_patterns = [f"{curr_year}-{m_str.replace('월', '').zfill(2)}-%" for m_str in selected_m_list]
             placeholders = " OR ".join(["영업마감일자 LIKE ?"] * len(m_patterns))
             where_conditions.append(f"({placeholders})")
             params.extend(m_patterns)
 
         where_clause = "WHERE " + " AND ".join(where_conditions)
-        
         query = f"""
             SELECT 영업마감일자, 센터, 고객사, COUNT(DISTINCT 입고번호) AS 입고건수
             FROM inbound_summary
@@ -443,7 +498,6 @@ st.markdown("""
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
-# --- B 사용자 알림 배너 ---
 latest_sync = get_last_sync_time()
 my_loaded_sync = st.session_state.get('loaded_sync_time', '')
 
@@ -457,7 +511,6 @@ if latest_sync and latest_sync > my_loaded_sync:
             st.session_state['loaded_sync_time'] = latest_sync
             st.rerun()
 
-# 사이드바 동기화 제어 버튼
 if st.sidebar.button("🔄 드라이브 & 구글시트 동기화", disabled=st.session_state['is_syncing']):
     if run_sync():
         st.rerun()
@@ -520,7 +573,14 @@ def render_sticky_pivot(df, index_names, key_suffix=""):
         for c_name, val in zip(cols, row):
             is_total_col = ("총 " in str(c_name) or "합계" in str(c_name)) and "월" not in str(c_name)
             is_m_sum = ("월 합계" in str(c_name) or ("월" in str(c_name) and "-" not in str(c_name))) and not is_total_col
-            val_str = f"{int(val):,}" if pd.notnull(val) and isinstance(val, (int, float)) else str(val)
+            
+            if pd.notnull(val) and isinstance(val, float):
+                val_str = f"{val:,.1f}" if "PPH" in str(c_name) or "M/H" in str(c_name) else f"{int(val):,}"
+            elif pd.notnull(val) and isinstance(val, (int, np.integer)):
+                val_str = f"{val:,}"
+            else:
+                val_str = str(val) if pd.notnull(val) else "-"
+                
             if is_total_col:
                 freeze_cls = f' class="freeze-col-{num_indices + 1}"' if num_indices == 2 else ' class="freeze-col-2-total"'
                 html.append(f'<td{freeze_cls}>{val_str}</td>')
@@ -639,7 +699,6 @@ def append_subtotals_to_pivot(pivot_df, group_cols):
 
     return pd.concat([total_df, body_df])
 
-# --- 월 선택 버튼 바 ---
 def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 월 선택:", allow_nujak=True, multi_select=True):
     st.markdown(f"<p style='font-size:14px; font-weight:bold; margin-bottom:5px;'>{title_label}</p>", unsafe_allow_html=True)
     
@@ -692,7 +751,9 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
 
     return st.session_state[session_key_selected]
 
-# 메인 종합 현황 모드
+# ==========================================
+# 🏢 메인 : 센터 종합 현황 (PPH 카드 출고건수 옆 배치)
+# ==========================================
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
     selected_m = render_month_button_bar(session_key_selected="main_selected_month", title_label="🗓️ 기준 월 선택:", allow_nujak=True, multi_select=True)
@@ -700,6 +761,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     sel_m_list_main = selected_m if isinstance(selected_m, list) else ([selected_m] if selected_m else [])
     df_b2c_orders = load_shipment_orders(sel_m_list_main) if sel_m_list_main else pd.DataFrame()
     df_inbound_distinct = load_inbound_distinct_counts(sel_m_list_main)
+    df_mh_summary = load_mh_summary_by_months(sel_m_list_main)
 
     raw_centers = set()
     if not df_b2c_orders.empty and '센터' in df_b2c_orders.columns: raw_centers.update(df_b2c_orders['센터'].dropna().unique())
@@ -720,13 +782,31 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     total_b2c_cnt = filtered_b2c['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
     total_inbound_cnt = filtered_inbound['입고건수'].sum() if not filtered_inbound.empty and '입고건수' in filtered_inbound.columns else 0
 
-    kpi1, kpi2, kpi3 = st.columns(3)
+    tot_mh_375 = df_mh_summary[df_mh_summary['센터그룹'] == '375']['MH'].sum() if not df_mh_summary.empty else 0.0
+    tot_mh_xfc = df_mh_summary[df_mh_summary['센터그룹'] == 'XFC']['MH'].sum() if not df_mh_summary.empty else 0.0
+
+    is_375_selected = any('1층' in str(c) or '375' in str(c) for c in (selected_centers_filter or ["전체"]))
+    is_xfc_selected = any('XFC' in str(c).upper() for c in (selected_centers_filter or ["전체"]))
+    
+    applicable_mh = 0.0
+    if not selected_centers_filter or "전체" in selected_centers_filter:
+        applicable_mh = tot_mh_375 + tot_mh_xfc
+    else:
+        if is_375_selected and not is_xfc_selected: applicable_mh = tot_mh_375
+        elif is_xfc_selected and not is_375_selected: applicable_mh = tot_mh_xfc
+        else: applicable_mh = tot_mh_375 + tot_mh_xfc
+
+    overall_pph = round(total_b2c_cnt / applicable_mh, 1) if applicable_mh > 0 else 0.0
+
+    # ⭐ B2C 출고건수 바로 옆에 전체 PPH 배치
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     kpi1.metric("🚚 B2C 출고건수", f"{total_b2c_cnt:,} 건")
-    kpi2.metric("📦 입고건수 (입고완료/승인대기)", f"{total_inbound_cnt:,} 건")
-    kpi3.metric("🏭 B2B 건수 (연동 준비중)", "0 건")
+    kpi2.metric("⚡ 전체 PPH (시간당 처리량)", f"{overall_pph:,.1f}" if overall_pph > 0 else "-")
+    kpi3.metric("📦 입고건수 (입고완료/승인대기)", f"{total_inbound_cnt:,} 건")
+    kpi4.metric("🏭 B2B 건수 (연동 준비중)", "0 건")
     
     st.markdown("---")
-    st.subheader("📋 센터별 운영 항목 종합 비교표")
+    st.subheader("📋 센터별 운영 항목 종합 비교표 (M/H 및 PPH 포함)")
     
     summary_rows = []
     centers_to_loop = expanded_main_centers if expanded_main_centers else sorted(list(raw_centers))
@@ -734,12 +814,32 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     for center_name in centers_to_loop:
         b2c_c = filtered_b2c[filtered_b2c['센터'] == center_name]['출고건수'].sum() if not filtered_b2c.empty and '출고건수' in filtered_b2c.columns else 0
         in_c = filtered_inbound[filtered_inbound['센터'] == center_name]['입고건수'].sum() if not filtered_inbound.empty and '입고건수' in filtered_inbound.columns else 0
-        summary_rows.append({'센터': center_name, 'B2C 출고건수': b2c_c, '입고건수 (입고완료/승인대기)': in_c, 'B2B 건수': 0})
+        
+        c_mh = 0.0
+        if '1층' in str(center_name) or '375 1' in str(center_name): c_mh = tot_mh_375
+        elif 'XFC' in str(center_name).upper(): c_mh = tot_mh_xfc
+            
+        c_pph = round(b2c_c / c_mh, 1) if c_mh > 0 else 0.0
+        
+        summary_rows.append({
+            '센터': center_name,
+            'B2C 출고건수': b2c_c,
+            'PPH': c_pph,
+            '투입 M/H': round(c_mh, 1),
+            '입고건수': in_c,
+            'B2B 건수': 0
+        })
         
     if summary_rows:
         df_summary = pd.DataFrame(summary_rows)
         pivot_main = df_summary.set_index('센터')
         final_main_df = append_subtotals_to_pivot(pivot_main, ["센터"])
+        
+        for idx in final_main_df.index:
+            row_b2c = final_main_df.loc[idx, 'B2C 출고건수']
+            row_mh = final_main_df.loc[idx, '투입 M/H']
+            final_main_df.loc[idx, 'PPH'] = round(row_b2c / row_mh, 1) if row_mh > 0 else 0.0
+
         render_sticky_pivot(final_main_df, ["센터"], key_suffix="main_summary")
 
 elif main_mode == "🚚 B2C 출고 현황":
@@ -755,7 +855,6 @@ elif main_mode == "🚚 B2C 출고 현황":
     with tab1:
         st.header("센터 & 고객사별 출고현황 (06시 영업마감 기준)")
         expanded_months_tab1 = render_month_button_bar(session_key_selected="tab1_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=True, multi_select=True)
-        
         sel_m_list = expanded_months_tab1 if isinstance(expanded_months_tab1, list) else ([expanded_months_tab1] if expanded_months_tab1 else [])
         df_b2c_orders = load_shipment_orders(sel_m_list) if sel_m_list else pd.DataFrame()
 
@@ -791,7 +890,6 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                 render_sticky_pivot(pivot_df, group_cols, key_suffix="tab1")
 
-                # 요일별 일평균 분석 영역 (범례 제거, 단위문자 제외, 수평 높이 정렬)
                 st.markdown("---")
                 st.subheader("📅 요일별 일평균 출고 현황 분석")
                 
@@ -811,13 +909,11 @@ elif main_mode == "🚚 B2C 출고 현황":
                     ).reindex(ordered_weekdays).fillna(0)
 
                     weekday_summary['일평균출고량'] = (weekday_summary['총출고량'] / weekday_summary['발생일수'].replace(0, 1)).round(1)
-                    
                     tot_avg_sum = weekday_summary['일평균출고량'].sum()
                     weekday_summary['비중(%)'] = (weekday_summary['일평균출고량'] / tot_avg_sum * 100).round(1) if tot_avg_sum > 0 else 0.0
 
                     df_wk_plot = weekday_summary.reset_index()
 
-                    # 1.8 : 1 컬럼 배치
                     c_wk_left, c_wk_right = st.columns([1.8, 1])
 
                     with c_wk_left:
@@ -829,7 +925,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                             textposition='outside',
                             marker_color='#facc15'
                         ))
-
                         fig_wk.update_layout(
                             title="<b>선택 기간 내 요일별 일평균 출고건수 비교</b>",
                             template="plotly_dark",
@@ -843,20 +938,17 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                     with c_wk_right:
                         st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-                        
                         display_wk_df = pd.DataFrame({
                             '요일': df_wk_plot['요일'],
                             '일평균 출고량': df_wk_plot['일평균출고량'].apply(lambda x: f"{x:,.1f}"),
                             '비중 (%)': df_wk_plot['비중(%)'].apply(lambda x: f"{x:.1f}%")
                         })
-                        
                         total_avg_val = round(df_wk_plot['일평균출고량'].mean(), 1)
                         total_row = pd.DataFrame([{
                             '요일': '★ 전체 평균',
                             '일평균 출고량': f"{total_avg_val:,.1f}",
                             '비중 (%)': '100.0%'
                         }])
-                        
                         final_wk_table = pd.concat([display_wk_df, total_row], ignore_index=True)
                         st.dataframe(final_wk_table, use_container_width=True, hide_index=True, height=330)
         else:
@@ -897,7 +989,6 @@ elif main_mode == "🚚 B2C 출고 현황":
 
             if not chart_df.empty:
                 st.subheader(f"📊 {analysis_type} 점유율 및 출고 비중 분석 (상단 시각화 개편)")
-                
                 color_palette = px.colors.qualitative.Plotly
                 categories = chart_df[target_col].tolist()
                 colors_list = [color_palette[i % len(color_palette)] for i in range(len(categories))]
@@ -920,13 +1011,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         template="plotly_dark",
                         height=420,
                         margin=dict(t=50, b=80, l=10, r=10),
-                        legend=dict(
-                            orientation="h",
-                            yanchor="bottom",
-                            y=-0.35,
-                            xanchor="center",
-                            x=0.5
-                        )
+                        legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5)
                     )
                     st.plotly_chart(fig_pie, use_container_width=True)
 
@@ -953,9 +1038,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.plotly_chart(fig_bar, use_container_width=True)
                 st.markdown("---")
 
-            # --- 요일별 배송속성 / 판매처 구성현황 분석 영역 ---
             st.subheader(f"📅 요일별 [{analysis_type}] 구성 현황 분석")
-            
             weekday_kr_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
             ordered_weekdays = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
 
@@ -965,24 +1048,17 @@ elif main_mode == "🚚 B2C 출고 현황":
             
             if not df_tab2_copy.empty:
                 df_tab2_copy['요일'] = df_tab2_copy['dt_temp'].dt.weekday.map(weekday_kr_map)
-
-                # 실제 발생 일수 계산 (0일인 경우 나누기 에러 방지 위해 1로 치환)
                 active_days = df_tab2_copy.groupby('요일')['영업마감일자'].nunique().reindex(ordered_weekdays).fillna(0)
                 active_days_clean = active_days.apply(lambda x: x if x > 0 else 1)
 
-                # 데이터가 많은 경우, 상위 Top N 외에는 전부 '기타'로 합치기
                 top_targets = chart_df[target_col].tolist()
                 other_label = '기타/일반' if analysis_type == "배송 속성별" else '기타 (외 다수)'
                 df_tab2_copy[target_col] = df_tab2_copy[target_col].apply(lambda x: x if x in top_targets else other_label)
 
-                # 요일별 x 속성별 총 출고량 집계
                 wk_attr_raw = df_tab2_copy.groupby(['요일', target_col])['출고건수'].sum().unstack(fill_value=0)
                 wk_attr_raw = wk_attr_raw.reindex(ordered_weekdays).fillna(0)
-
-                # float 형변환 후 행별 나눗셈을 안전하게 수행
                 wk_attr_summary = wk_attr_raw.astype(float).div(active_days_clean, axis=0).round(1)
 
-                # ⭐ [열 정렬 개선] 총합(일평균 합계)이 높은 순으로 컬럼 내림차순 정렬 & '기타' 항목은 맨 끝으로 이동
                 col_sums = wk_attr_summary.sum(axis=0)
                 non_other_cols = [c for c in col_sums.index if c != other_label]
                 sorted_non_other = sorted(non_other_cols, key=lambda c: col_sums[c], reverse=True)
@@ -990,11 +1066,9 @@ elif main_mode == "🚚 B2C 출고 현황":
                 final_cols = sorted_non_other + ([other_label] if other_label in col_sums.index else [])
                 wk_attr_summary = wk_attr_summary[final_cols]
 
-                # ⭐ [화면 비율 조정] 그래프 가로폭 축소 & 목록 표 가로폭 확장 (1.2 : 1.8)
                 c_wk2_left, c_wk2_right = st.columns([1.2, 1.8])
 
                 with c_wk2_left:
-                    # 누적 막대 그래프 (Stacked Bar)
                     fig_wk2 = go.Figure()
                     for attr in wk_attr_summary.columns:
                         fig_wk2.add_trace(go.Bar(
@@ -1005,7 +1079,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                             textposition='inside'
                         ))
 
-                    # 요일별 총합을 막대 상단에 표기
                     totals_per_day = wk_attr_summary.sum(axis=1)
                     fig_wk2.add_trace(go.Scatter(
                         x=totals_per_day.index,
@@ -1015,7 +1088,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                         textposition='top center',
                         showlegend=False
                     ))
-
                     fig_wk2.update_layout(
                         title=f"<b>요일별 [{analysis_type}] 구성 현황 (일평균 출고)</b>",
                         template="plotly_dark",
@@ -1024,30 +1096,20 @@ elif main_mode == "🚚 B2C 출고 현황":
                         margin=dict(l=20, r=20, t=50, b=80),
                         xaxis_title="",
                         yaxis_title="",
-                        legend=dict(
-                            orientation="h",
-                            yanchor="bottom",
-                            y=-0.35,
-                            xanchor="center",
-                            x=0.5
-                        )
+                        legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5)
                     )
                     st.plotly_chart(fig_wk2, use_container_width=True)
 
                 with c_wk2_right:
-                    # 우측 요일 및 속성 수치 매트릭스 표 (출고량 많은 순 정렬 반영)
                     st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
                     st.markdown(f"<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>📋 요일별 {analysis_type} 세부 데이터</p>", unsafe_allow_html=True)
-
                     wk_attr_disp = wk_attr_summary.copy()
                     wk_attr_disp['합계'] = wk_attr_disp.sum(axis=1)
 
-                    # 전체평균 행 추가
                     avg_row = wk_attr_summary.mean(axis=0)
                     wk_attr_disp.loc['★ 전체 평균'] = avg_row
                     wk_attr_disp.loc['★ 전체 평균', '합계'] = avg_row.sum()
 
-                    # 소수점 1자리 표출 가독 처리
                     for col in wk_attr_disp.columns:
                         wk_attr_disp[col] = wk_attr_disp[col].apply(lambda x: f"{x:,.1f}")
 
@@ -1055,12 +1117,10 @@ elif main_mode == "🚚 B2C 출고 현황":
             
             st.markdown("---")
 
-            # 테이블 데이터 표시
             group_cols_tab2 = ['센터', target_col]
             if not df_tab2.empty:
                 pivot_raw2 = pd.pivot_table(df_tab2, index=group_cols_tab2, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
                 pivot_raw2['총 출고건수'] = pivot_raw2.sum(axis=1)
-                
                 pivot_with_sub2 = append_subtotals_to_pivot(pivot_raw2, group_cols_tab2)
                 pivot_df2 = smart_fold_pivot_columns(pivot_with_sub2, sel_m_list2)
                 render_sticky_pivot(pivot_df2, group_cols_tab2, key_suffix="tab2")
@@ -1091,7 +1151,6 @@ elif main_mode == "🚚 B2C 출고 현황":
 
     with tab4:
         st.header("🔍 SKU별 출고량")
-        
         c_sku1, c_sku2, c_sku3 = st.columns([3, 2, 2])
         
         df_centers_sample4 = load_shipment_orders("전체")
@@ -1121,22 +1180,21 @@ elif main_mode == "🚚 B2C 출고 현황":
             
             if not df_b2c_sku.empty:
                 group_cols4 = ['바코드', 'SKU명']
-                if "보이기" in show_client4:
-                    group_cols4 = ['고객사', '바코드', 'SKU명']
-                    
+                if "보이기" in show_client4: group_cols4 = ['고객사', '바코드', 'SKU명']
                 sku_summary = df_b2c_sku.groupby(group_cols4)[['출고건수', '총출고수량']].sum().reset_index()
                 sku_summary = sku_summary.sort_values(by='총출고수량', ascending=False).reset_index(drop=True)
                 st.dataframe(sku_summary.style.format({'출고건수': '{:,}', '총출고수량': '{:,}'}), use_container_width=True, hide_index=True)
             else:
                 st.info("선택된 기간 및 조건의 SKU 출고 데이터가 없습니다.")
 
-    # 탭 5 : 시간대별 주문/마감 분석 (06시 영업마감 기준)
+    # ==========================================
+    # ⏱️ 탭 5 : 시간대별 주문/마감 & PPH (PPH 막대 우측 단독 표출)
+    # ==========================================
     with tab5:
-        st.header("⏱️ 시간대별 주문 인입 vs 출고 마감 분석 (06시 영업마감 기준)")
-        st.caption("결제일시 기준 시간대별 주문 인입량과 마감일시 기준 송장 마감량을 06시 영업 타임라인(06:00 ~ 익일 05:00)에 맞추어 비교합니다.")
+        st.header("⏱️ 시간대별 주문 인입 vs 마감 & PPH 효율 분석 (06시 영업 타임라인)")
+        st.caption("주문 인입량과 송장 마감량을 세로형 타임라인으로 비교하고, 막대 우측 바깥쪽에 계산된 실시간 PPH 뱃지를 단독으로 표시합니다.")
 
         c_h1, c_h2, c_h3 = st.columns([3, 2, 2])
-        
         df_centers_sample_h = load_shipment_orders("전체")
         raw_centers_h = df_centers_sample_h['센터'].dropna().unique() if not df_centers_sample_h.empty and '센터' in df_centers_sample_h.columns else []
         avail_centers_h = get_formatted_center_options(raw_centers_h)
@@ -1165,6 +1223,15 @@ elif main_mode == "🚚 B2C 출고 현황":
             
             df_raw_h = load_b2c_raw_by_range(start_dh, end_dh, expanded_centers_h)
             
+            target_mh_group = None
+            if selected_center_h_input:
+                is_375 = any('375' in str(c) or '1층' in str(c) for c in selected_center_h_input)
+                is_xfc = any('XFC' in str(c).upper() for c in selected_center_h_input)
+                if is_375 and not is_xfc: target_mh_group = '375'
+                elif is_xfc and not is_375: target_mh_group = 'XFC'
+
+            df_mh_h = load_mh_data_by_range(start_dh, end_dh, center_group=target_mh_group)
+
             if selected_clients_h and not df_raw_h.empty and '고객사' in df_raw_h.columns:
                 df_raw_h = df_raw_h[df_raw_h['고객사'].isin(selected_clients_h)]
 
@@ -1174,17 +1241,12 @@ elif main_mode == "🚚 B2C 출고 현황":
                 def get_op_hour_label(dt_series):
                     dt_parsed = pd.to_datetime(dt_series, errors='coerce')
                     hour_int = dt_parsed.dt.hour
-                    
                     labels = []
                     for h in hour_int:
-                        if pd.isna(h):
-                            labels.append(None)
+                        if pd.isna(h): labels.append(None)
                         else:
                             h_int = int(h)
-                            if h_int >= 6:
-                                labels.append(f"{h_int:02d}:00 (D)")
-                            else:
-                                labels.append(f"{h_int:02d}:00 (D+1)")
+                            labels.append(f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)")
                     return labels
 
                 df_raw_h['결제시간대'] = get_op_hour_label(df_raw_h['결제일시'])
@@ -1193,7 +1255,13 @@ elif main_mode == "🚚 B2C 출고 현황":
                 inflow_cnt = df_raw_h.groupby('결제시간대')['송장번호'].nunique().to_dict()
                 shipment_cnt = df_raw_h.groupby('마감시간대')['송장번호'].nunique().to_dict()
 
+                mh_map = {}
+                if not df_mh_h.empty:
+                    mh_map = (df_mh_h.groupby('시간대')['MH'].sum() / num_days).to_dict()
+
                 chart_rows = []
+                max_cnt_val = 0
+
                 for h_str in op_hours_order:
                     h_int = int(h_str[:2])
                     label_key = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
@@ -1203,62 +1271,95 @@ elif main_mode == "🚚 B2C 출고 현황":
                     
                     avg_inflow = round(tot_inflow / num_days, 1)
                     avg_shipment = round(tot_shipment / num_days, 1)
+                    cur_mh = round(mh_map.get(label_key, 0.0), 1)
+                    cur_pph = round(avg_shipment / cur_mh, 1) if cur_mh > 0 else None
                     
+                    if avg_inflow > max_cnt_val: max_cnt_val = avg_inflow
+                    if avg_shipment > max_cnt_val: max_cnt_val = avg_shipment
+
                     chart_rows.append({
                         '시간대': label_key,
                         '주문 인입건수': avg_inflow,
-                        '송장 마감건수': avg_shipment
+                        '송장 마감건수': avg_shipment,
+                        '투입 M/H': cur_mh,
+                        'PPH': cur_pph
                     })
 
                 df_chart = pd.DataFrame(chart_rows)
-
                 title_prefix = f"일평균 ({num_days}일간 평균)" if num_days > 1 else f"당일 ({start_dh.strftime('%Y-%m-%d')})"
                 
-                fig_h = go.Figure()
+                fig_v = go.Figure()
                 
-                fig_h.add_trace(go.Bar(
+                # 1. 주문 인입량 가로 막대 (초록)
+                fig_v.add_trace(go.Bar(
                     y=df_chart['시간대'],
                     x=df_chart['주문 인입건수'],
                     name='주문 인입건수 (결제일시 기준)',
                     orientation='h',
                     marker_color='#81c784',
-                    text=[f"{v:,.1f}" for v in df_chart['주문 인입건수']],
+                    text=[f"{v:,.1f}" if v > 0 else "" for v in df_chart['주문 인입건수']],
                     textposition='outside'
                 ))
 
-                fig_h.add_trace(go.Bar(
+                # 2. 송장 마감량 가로 막대 (파랑)
+                fig_v.add_trace(go.Bar(
                     y=df_chart['시간대'],
                     x=df_chart['송장 마감건수'],
                     name='송장 마감건수 (마감일시 기준)',
                     orientation='h',
                     marker_color='#64b5f6',
-                    text=[f"{v:,.1f}" for v in df_chart['송장 마감건수']],
+                    text=[f"{v:,.1f}" if v > 0 else "" for v in df_chart['송장 마감건수']],
                     textposition='outside'
                 ))
 
-                fig_h.update_layout(
-                    title=f"<b>[{title_prefix}] 06시 영업마감 기준 시간대별 주문 인입 vs 출고 마감 비교</b>",
+                # ⭐ [가시성 개선] PPH를 막대그래프 안쪽에 겹치지 않고 우측 바깥쪽에 주황색 뱃지로 독립 표출
+                x_offset_badge = max_cnt_val * 1.08 if max_cnt_val > 0 else 500
+                valid_pph_df = df_chart[df_chart['PPH'].notnull()]
+                
+                if not valid_pph_df.empty:
+                    fig_v.add_trace(go.Scatter(
+                        y=valid_pph_df['시간대'],
+                        x=[x_offset_badge] * len(valid_pph_df),
+                        name='실시간 PPH 뱃지',
+                        mode='text',
+                        text=[f"⚡ PPH {v:,.1f}" for v in valid_pph_df['PPH']],
+                        textposition='middle right',
+                        textfont=dict(color='#f97316', size=11, family='sans-serif'),
+                        hoverinfo='none',
+                        showlegend=True
+                    ))
+
+                x_limit_max = max(max_cnt_val * 1.35, 1000)
+
+                fig_v.update_layout(
+                    title=f"<b>[{title_prefix}] 06시 영업 타임라인 시간대별 주문 인입 vs 마감 & PPH (세로형)</b>",
                     template="plotly_dark",
                     barmode='group',
                     height=1000,
-                    margin=dict(l=100, r=60, t=60, b=40),
+                    margin=dict(l=80, r=90, t=60, b=40),
                     yaxis=dict(autorange="reversed"),
-                    xaxis_title="",
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    xaxis=dict(title="건수 (건/일)", range=[0, x_limit_max]),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="right", x=1)
                 )
 
-                st.plotly_chart(fig_h, use_container_width=True)
+                st.plotly_chart(fig_v, use_container_width=True)
 
                 st.markdown("---")
-                st.subheader("📋 시간대별 세부 수치 비교표")
+                st.subheader("📋 시간대별 세부 수치 비교표 (M/H 및 PPH 포함)")
                 
                 tot_in = df_chart['주문 인입건수'].sum()
                 tot_out = df_chart['송장 마감건수'].sum()
                 
-                df_chart['인입 비중(%)'] = (df_chart['주문 인입건수'] / tot_in * 100).round(1).fillna(0).astype(str) + "%" if tot_in > 0 else "0.0%"
-                df_chart['마감 비중(%)'] = (df_chart['송장 마감건수'] / tot_out * 100).round(1).fillna(0).astype(str) + "%" if tot_out > 0 else "0.0%"
+                df_chart_disp = df_chart.copy()
+                df_chart_disp['인입 비중(%)'] = (df_chart['주문 인입건수'] / tot_in * 100).round(1).fillna(0).astype(str) + "%" if tot_in > 0 else "0.0%"
+                df_chart_disp['마감 비중(%)'] = (df_chart['송장 마감건수'] / tot_out * 100).round(1).fillna(0).astype(str) + "%" if tot_out > 0 else "0.0%"
+                
+                df_chart_disp['주문 인입건수'] = df_chart_disp['주문 인입건수'].apply(lambda x: f"{x:,.1f}")
+                df_chart_disp['송장 마감건수'] = df_chart_disp['송장 마감건수'].apply(lambda x: f"{x:,.1f}")
+                df_chart_disp['투입 M/H'] = df_chart_disp['투입 M/H'].apply(lambda x: f"{x:,.1f}" if float(x) > 0 else "-")
+                df_chart_disp['PPH'] = df_chart_disp['PPH'].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) else "-")
 
-                st.dataframe(df_chart, use_container_width=True, hide_index=True)
+                st.dataframe(df_chart_disp, use_container_width=True, hide_index=True)
 
             else:
                 st.info("선택된 기간 및 조건의 로우 데이터가 없습니다.")
@@ -1288,7 +1389,6 @@ elif main_mode == "🚚 B2C 출고 현황":
                 with st.spinner("데이터베이스에서 로우 데이터를 추출 중입니다..."):
                     expanded_centers_dl = expand_selected_centers(selected_centers_dl, list(raw_centers_dl)) if selected_centers_dl else []
                     df_raw_dl = load_b2c_raw_by_range(start_d, end_d, expanded_centers_dl)
-                    
                     st.session_state['searched_raw_df'] = df_raw_dl
                     st.session_state['searched_raw_dates'] = (start_d, end_d)
 
@@ -1297,13 +1397,11 @@ elif main_mode == "🚚 B2C 출고 현황":
                 start_d_s, end_d_s = st.session_state['searched_raw_dates']
                 
                 st.success(f"✅ 총 **{len(df_raw_dl):,}** 건의 로우 데이터가 조회되었습니다.")
-                
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     df_raw_dl.to_excel(writer, index=False, sheet_name='B2C_RawData')
 
                 out_filename = f"B2C_RawData_{start_d_s.strftime('%Y%m%d')}_{end_d_s.strftime('%Y%m%d')}.xlsx"
-                
                 st.download_button(
                     label="💾 로우 데이터 엑셀 파일 다운로드",
                     data=buffer.getvalue(),
@@ -1313,14 +1411,14 @@ elif main_mode == "🚚 B2C 출고 현황":
                     type="primary",
                     disabled=st.session_state['is_syncing']
                 )
-                
                 st.markdown("---")
                 st.dataframe(df_raw_dl.head(100), use_container_width=True)
-                st.caption("※ 화면상에는 상위 100건만 미리보기로 표시되며, [💾 로우 데이터 엑셀 파일 다운로드] 클릭 시 SKU명, 바코드, 총출고수량이 포함된 전체 로우 데이터가 다운로드됩니다.")
 
+# ==========================================
+# 📦 입고 현황
+# ==========================================
 elif main_mode == "📦 입고 현황":
     st.header("📦 입고 현황 모니터링")
-    
     col_ib1, col_ib2 = st.columns(2)
     with col_ib1:
         today_ib = date.today()
@@ -1338,7 +1436,6 @@ elif main_mode == "📦 입고 현황":
     if isinstance(date_range_ib, tuple) and len(date_range_ib) == 2:
         start_d_ib, end_d_ib = date_range_ib
         df_inbound = load_inbound_data_by_range(start_d_ib, end_d_ib, expanded_centers_ib)
-        
         if not df_inbound.empty:
             pivot_raw_ib = pd.pivot_table(df_inbound, index=['센터', '고객사', '상태'], columns='영업마감일자', values='입고완료수량', aggfunc='sum', fill_value=0)
             pivot_raw_ib['총 입고완료수량'] = pivot_raw_ib.sum(axis=1)
