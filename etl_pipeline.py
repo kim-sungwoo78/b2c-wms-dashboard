@@ -11,24 +11,25 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
 # ==========================================
-# ⚙️ 구글 드라이브 & 시트 ID 및 상수 설정
+# ⚙️ 구글 드라이브 & 시트 실제 ID 설정
 # ==========================================
 SCOPES = [
     'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/spreadsheets'
 ]
 
-TOP_FOLDER_ID = "1eN5m9U-VqVjPZkY0x_4G-xG_g1_example"
-B2C_FOLDER_ID = "1aBcDeFgHiJkLmNoPqRsTuVwXyZ_example"
-INBOUND_FOLDER_ID = "1InbOuNd_FoLdEr_Id_ExAmPlE"
-PROCESSED_FOLDER_ID = "1PrOcEsSeD_FoLdEr_Id_ExAmPlE"
-DB_FOLDER_ID = "1Db_FoLdEr_Id_ExAmPlE"
+# 실제 구글 드라이브 폴더 고유 ID
+B2C_FOLDER_ID = "1ArGfyeVpZDJYUrdlGNSCrhj734JrqGW9"
+B2B_FOLDER_ID = "1wpqrIBC8HnWTU20rShcg0Yvkcc1VIsml"
+INBOUND_FOLDER_ID = "1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp"
+DB_FOLDER_ID = "1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9"  # [DB전용] 절대 삭제 금지
+PROCESSED_FOLDER_ID = "1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ"  # 처리완료
 
-DEFAULT_IB_SHEET_ID = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlHGS6g"
 DB_INBOUND_PATH = "wms_inbound.db"
 
-SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlHGS6g"
-SHEET_ID_XFC = "1IGgpr8LezBs4hCySj_W34HSyHFhN6lt13uYSt3gbmqbs"
+# PPH 구글 시트 실제 ID
+SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlhGS6g"
+SHEET_ID_XFC = "1Bgpr8LezBs4hCy5j_W34RSyHFIN68zT3uY5i3gbmqbs"
 
 # ==========================================
 # 🔑 구글 API 서비스 연결 함수
@@ -96,7 +97,7 @@ def upload_db_to_drive(service, db_filename):
         service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
 
 def list_files_in_folder(service, folder_id):
-    query = f"'{folder_id}' in parents and trashed = false"
+    query = f"'{folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
     return safe_drive_list(service, query)
 
 def read_excel_fast(service, file_id):
@@ -129,7 +130,6 @@ def parse_inbound_date(date_val):
     return ""
 
 def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
-    # 입고 시트 검수 및 매칭 로직
     return 0, ""
 
 # ==========================================
@@ -156,7 +156,6 @@ def parse_pph_375(sheets_service):
             if not row:
                 continue
             
-            # B열(날짜) 병합 셀 구조 대응 (예: '10/24 토')
             raw_b = str(row[0]).strip() if len(row) > 0 else ""
             if raw_b and "/" in raw_b:
                 parts = raw_b.split()
@@ -170,7 +169,6 @@ def parse_pph_375(sheets_service):
             start_time = str(row[1]).strip() if len(row) > 1 else ""
             pph_val_raw = str(row[27]).strip() if len(row) > 27 else ""
             
-            # 정규 시간(HH:MM) 형태 필터링 및 PPH 수치 변환
             if curr_date_str and ":" in start_time and pph_val_raw:
                 clean_pph = pph_val_raw.replace(",", "").replace("-", "0")
                 try:
@@ -209,9 +207,9 @@ def parse_pph_xfc(sheets_service):
             if not row or len(row) < 19:
                 continue
             
-            raw_date = str(row[0]).strip() # 예: 2026-10-24(토)
-            start_time = str(row[6]).strip() # 예: 10:00
-            pph_val_raw = str(row[18]).strip() # S열
+            raw_date = str(row[0]).strip()
+            start_time = str(row[6]).strip()
+            pph_val_raw = str(row[18]).strip()
             
             if raw_date and ":" in start_time and pph_val_raw:
                 date_clean = raw_date[:10]
@@ -235,14 +233,12 @@ def parse_pph_xfc(sheets_service):
     return rows_to_save
 
 def sync_pph_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
-    """수집된 375, XFC PPH 데이터를 SQLite 로컬 DB에 저장하고 구글 드라이브에도 백업"""
     list_375 = parse_pph_375(sheets_service)
     list_xfc = parse_pph_xfc(sheets_service)
     all_pph = list_375 + list_xfc
     
     if all_pph:
         df_pph = pd.DataFrame(all_pph)
-        # 월별 DB(wms_b2c_YYYYMM.db)들과 기본 wms_b2c.db 모두에 테이블 생성/갱신
         target_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
         if not target_dbs:
             target_dbs = [db_path]
@@ -310,7 +306,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
             b2c_updated_months.add(month_db_name)
 
-            # 처리 완료 폴더로 파일 이동
+            # 처리 완료 폴더 내 연월(YYYY-MM) 서브폴더로 파일 이동
             target_month_str = latest_date_str[:7] if pd.notnull(latest_date_str) and len(str(latest_date_str)) >= 7 else datetime.now().strftime('%Y-%m')
             target_folder_id = get_or_create_subfolder(service, PROCESSED_FOLDER_ID, target_month_str)
 
@@ -341,7 +337,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     if matched_count > 0 or inbound_updated:
         upload_db_to_drive(service, DB_INBOUND_PATH)
 
-    # 5. ⭐ [신규 추가] 구글시트 시간대별 PPH 데이터 수집 및 DB 적재/백업
+    # 5. 구글 시트 시간대별 PPH 데이터 수집 및 DB 적재/백업
     if sheets_service:
         try:
             sync_pph_to_db(sheets_service, drive_service=service)
