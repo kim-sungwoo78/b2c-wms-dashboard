@@ -25,7 +25,7 @@ LAST_SYNC_FILE = "last_sync.txt"
 if 'is_syncing' not in st.session_state:
     st.session_state['is_syncing'] = False
 
-# ⭐ 동기화 진행 중 전체 화면 클릭 강제 차단 및 금지 커서 적용 강화 CSS
+# 동기화 진행 중 전체 화면 클릭 강제 차단 및 금지 커서 적용 강화 CSS
 if st.session_state['is_syncing']:
     st.markdown("""
         <style>
@@ -791,7 +791,7 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                 render_sticky_pivot(pivot_df, group_cols, key_suffix="tab1")
 
-                # ⭐ [수정 반영] 요일별 일평균 분석 영역 (범례 제거, 단위문자 제외, 수평 높이 정렬)
+                # 요일별 일평균 분석 영역 (범례 제거, 단위문자 제외, 수평 높이 정렬)
                 st.markdown("---")
                 st.subheader("📅 요일별 일평균 출고 현황 분석")
                 
@@ -825,7 +825,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         fig_wk.add_trace(go.Bar(
                             x=df_wk_plot['요일'],
                             y=df_wk_plot['일평균출고량'],
-                            # ⭐ 단위문자 제거, 26,332.3 형태의 수치만 표출
+                            # 단위문자 제거, 26,332.3 형태의 수치만 표출
                             text=[f"{v:,.1f}" for v in df_wk_plot['일평균출고량']],
                             textposition='outside',
                             marker_color='#facc15'
@@ -836,7 +836,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                             template="plotly_dark",
                             height=360,
                             margin=dict(l=20, r=20, t=50, b=20),
-                            # ⭐ 가로축, 세로축 범례 완전히 제거
+                            # 가로축, 세로축 범례 완전히 제거
                             xaxis_title="",
                             yaxis_title="",
                             showlegend=False
@@ -844,7 +844,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         st.plotly_chart(fig_wk, use_container_width=True)
 
                     with c_wk_right:
-                        # ⭐ 그래프와 위아래 수평 높이 완전 동기화
+                        # 그래프와 위아래 수평 높이 완전 동기화
                         st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
                         
                         display_wk_df = pd.DataFrame({
@@ -886,65 +886,176 @@ elif main_mode == "🚚 B2C 출고 현황":
             df_tab2 = df_b2c_orders2.copy()
             if expanded_centers_tab2: df_tab2 = df_tab2[df_tab2['센터'].isin(expanded_centers_tab2)]
 
-            chart_df = df_tab2.groupby(target_col)['출고건수'].sum().reset_index()
-            chart_df = chart_df.sort_values(by='출고건수', ascending=False)
+            raw_grp = df_tab2.groupby(target_col)['출고건수'].sum().reset_index()
+            raw_grp = raw_grp.sort_values(by='출고건수', ascending=False)
             
+            # --- 💡 [개선] 다중 항목에 대비해 Top 5(배송속성) 또는 Top 7(판매처) 이외의 항목 '기타'로 합산처리 ---
+            top_limit = 5 if analysis_type == "배송 속성별" else 7
+            if len(raw_grp) > top_limit:
+                top_grp = raw_grp.head(top_limit)
+                other_sum = raw_grp.iloc[top_limit:]['출고건수'].sum()
+                other_row = pd.DataFrame([{target_col: '기타/일반' if analysis_type == "배송 속성별" else '기타 (외 다수)', '출고건수': other_sum}])
+                chart_df = pd.concat([top_grp, other_row], ignore_index=True)
+            else:
+                chart_df = raw_grp
+
             if not chart_df.empty:
-                st.subheader(f"📊 {analysis_type} 점유율 및 출고 비중 분석 (상단 시각화)")
+                st.subheader(f"📊 {analysis_type} 점유율 및 출고 비중 분석 (상단 시각화 개편)")
                 
                 color_palette = px.colors.qualitative.Plotly
                 categories = chart_df[target_col].tolist()
                 colors_list = [color_palette[i % len(color_palette)] for i in range(len(categories))]
 
-                fig = make_subplots(
-                    rows=1, cols=2,
-                    specs=[[{"type": "domain"}, {"type": "xy"}]],
-                    subplot_titles=(f"<b>[{analysis_type}] 점유율 비율 (%)</b>", f"<b>[{analysis_type}] 총 출고건수 비교</b>")
-                )
+                c_vis_left, c_vis_right = st.columns([1.1, 1.8])
 
-                fig.add_trace(
-                    go.Pie(
+                with c_vis_left:
+                    # Donut Chart - 범례를 아래 가로형으로 배치하여 차트가 밀리는 현상 제거
+                    fig_pie = go.Figure()
+                    fig_pie.add_trace(go.Pie(
                         labels=chart_df[target_col],
                         values=chart_df['출고건수'],
-                        hole=0.4,
-                        textinfo='percent+label',
+                        hole=0.45,
+                        textinfo='percent',
                         textposition='inside',
                         marker=dict(colors=colors_list),
                         hoverinfo="label+value+percent",
-                        showlegend=True
-                    ),
-                    row=1, col=1
-                )
-
-                fig.add_trace(
-                    go.Bar(
-                        x=chart_df[target_col],
-                        y=chart_df['출고건수'],
-                        text=[f"{v:,}건" for v in chart_df['출고건수']],
-                        textposition='outside',
-                        marker_color=colors_list,
-                        showlegend=False
-                    ),
-                    row=1, col=2
-                )
-
-                fig.update_layout(
-                    template="plotly_dark",
-                    margin=dict(t=50, b=20, l=100, r=20),
-                    showlegend=True,
-                    legend=dict(
-                        orientation="v",
-                        yanchor="middle",
-                        y=0.5,
-                        xanchor="right",
-                        x=-0.1
+                    ))
+                    fig_pie.update_layout(
+                        title=f"<b>[{analysis_type}] 점유율 비율 (%)</b>",
+                        template="plotly_dark",
+                        height=420,
+                        margin=dict(t=50, b=80, l=10, r=10),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.35, # 범례를 차트 영역 완전히 하단으로 이동
+                            xanchor="center",
+                            x=0.5
+                        )
                     )
-                )
-                fig.update_yaxes(title_text="출고건수", row=1, col=2)
+                    st.plotly_chart(fig_pie, use_container_width=True)
 
-                st.plotly_chart(fig, use_container_width=True)
+                with c_vis_right:
+                    # 가로형 막대그래프 (Horizontal Bar)로 변경하여 채널명이 깨지거나 꺾이지 않고 온전하게 읽히도록 개선
+                    # 시각적 내림차순(Y축이 위에서부터 내려가도록 오름차순 역정렬)
+                    bar_df = chart_df.copy().iloc[::-1]
+                    fig_bar = go.Figure()
+                    fig_bar.add_trace(go.Bar(
+                        y=bar_df[target_col],
+                        x=bar_df['출고건수'],
+                        orientation='h',
+                        text=[f"{v:,}" for v in bar_df['출고건수']],
+                        textposition='outside',
+                        marker_color=colors_list[::-1]
+                    ))
+                    fig_bar.update_layout(
+                        title=f"<b>[{analysis_type}] 주요 구분별 총 출고건수 비교</b>",
+                        template="plotly_dark",
+                        height=420,
+                        margin=dict(t=50, b=20, l=120, r=80), # 수치 폰트 짤림 방지용 우측 마진
+                        xaxis_title="",
+                        yaxis_title="",
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig_bar, use_container_width=True)
                 st.markdown("---")
 
+            # --- 요일별 배송속성 / 판매처 구성현황 분석 영역 ---
+            st.subheader(f"📅 요일별 [{analysis_type}] 구성 현황 분석")
+            
+            weekday_kr_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
+            ordered_weekdays = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
+
+            df_tab2_copy = df_tab2.copy()
+            df_tab2_copy['dt_temp'] = pd.to_datetime(df_tab2_copy['영업마감일자'], errors='coerce')
+            df_tab2_copy = df_tab2_copy.dropna(subset=['dt_temp'])
+            
+            if not df_tab2_copy.empty:
+                df_tab2_copy['요일'] = df_tab2_copy['dt_temp'].dt.weekday.map(weekday_kr_map)
+
+                # 실제 발생 일수 계산
+                active_days = df_tab2_copy.groupby('요일')['영업마감일자'].nunique().reindex(ordered_weekdays).fillna(1)
+
+                # 데이터가 많은 경우, 상위 Top N 외에는 전부 '기타'로 합치기
+                top_targets = chart_df[target_col].tolist()
+                df_tab2_copy[target_col] = df_tab2_copy[target_col].apply(lambda x: x if x in top_targets else ('기타/일반' if analysis_type == "배송 속성별" else '기타 (외 다수)'))
+
+                # 요일별 x 속성별 총 출고량 집계
+                wk_attr_summary = df_tab2_copy.groupby(['요일', target_col])['출고건수'].sum().unstack(fill_value=0)
+                wk_attr_summary = wk_attr_summary.reindex(ordered_weekdays).fillna(0)
+
+                # 일평균 일수로 나누어 정규화
+                for day in ordered_weekdays:
+                    wk_attr_summary.loc[day] = wk_attr_summary.loc[day] / active_days[day]
+                
+                wk_attr_summary = wk_attr_summary.round(1)
+
+                # Layout 2 컬럼 배치 (좌측 누적 막대, 우측 표)
+                c_wk2_left, c_wk2_right = st.columns([1.8, 1.1])
+
+                with c_wk2_left:
+                    # 누적 막대 그래프 (Stacked Bar)
+                    fig_wk2 = go.Figure()
+                    for attr in wk_attr_summary.columns:
+                        fig_wk2.add_trace(go.Bar(
+                            x=wk_attr_summary.index,
+                            y=wk_attr_summary[attr],
+                            name=attr,
+                            text=[f"{v:,.0f}" if v > 1000 else "" for v in wk_attr_summary[attr]], # 막대 내부 수치 표기 (값 클 때만)
+                            textposition='inside'
+                        ))
+
+                    # 요일별 총합을 막대 상단에 표기
+                    totals_per_day = wk_attr_summary.sum(axis=1)
+                    fig_wk2.add_trace(go.Scatter(
+                        x=totals_per_day.index,
+                        y=totals_per_day.values,
+                        mode='text',
+                        text=[f"{v:,.1f}" for v in totals_per_day.values],
+                        textposition='top center',
+                        showlegend=False
+                    ))
+
+                    fig_wk2.update_layout(
+                        title=f"<b>요일별 [{analysis_type}] 구성 현황 (일평균 출고)</b>",
+                        template="plotly_dark",
+                        barmode='stack',
+                        height=420,
+                        margin=dict(l=20, r=20, t=50, b=80),
+                        xaxis_title="",
+                        yaxis_title="",
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.3,
+                            xanchor="center",
+                            x=0.5
+                        )
+                    )
+                    st.plotly_chart(fig_wk2, use_container_width=True)
+
+                with c_wk2_right:
+                    # 우측 요일 및 속성 수치 매트릭스 표
+                    st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
+                    st.markdown(f"<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>📋 요요일별 {analysis_type} 세부 데이터</p>", unsafe_allow_html=True)
+
+                    wk_attr_disp = wk_attr_summary.copy()
+                    wk_attr_disp['합계'] = wk_attr_disp.sum(axis=1)
+
+                    # 전체평균 행 추가
+                    avg_row = wk_attr_summary.mean(axis=0)
+                    wk_attr_disp.loc['★ 전체 평균'] = avg_row
+                    wk_attr_disp.loc['★ 전체 평균', '합계'] = avg_row.sum()
+
+                    # 소수점 1자리 표출 가독 처리
+                    for col in wk_attr_disp.columns:
+                        wk_attr_disp[col] = wk_attr_disp[col].apply(lambda x: f"{x:,.1f}")
+
+                    st.dataframe(wk_attr_disp.reset_index(), use_container_width=True, hide_index=True, height=350)
+            
+            st.markdown("---")
+
+            # 테이블 데이터 표시
             group_cols_tab2 = ['센터', target_col]
             if not df_tab2.empty:
                 pivot_raw2 = pd.pivot_table(df_tab2, index=group_cols_tab2, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
