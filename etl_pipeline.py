@@ -9,11 +9,11 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import openpyxl
 
-==========================================
+# ==========================================
 
 # ⚙️ 구글 드라이브 & 시트 실제 ID 설정 (검증 완료)
 
-==========================================
+# ==========================================
 
 TOP_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'       # 대시보드 업로드
 B2C_FOLDER_ID = '1ArGfyeVpZDJYUrdlGNSCrhj734JrqGW9'        # B2C 폴더
@@ -238,11 +238,11 @@ except Exception as e_sheet:
 return matched_count, err_msg
 
 
-==========================================
+# ==========================================
 
-📊 구글 시트 M/H 데이터 파싱 모듈 (주간/야간 상태 추적 + 1.5h 이하 필터)
+# 📊 구글 시트 M/H 데이터 파싱 모듈 (주간/야간 상태 추적 + 1.5h 이하 필터)
 
-==========================================
+# ==========================================
 
 def parse_mh_375(sheets_service):
 """
@@ -392,11 +392,11 @@ if all_mh:
 return 0
 
 
-==========================================
+# ==========================================
 
-🚀 메인 동기화 프로세스 실행 함수
+# 🚀 메인 동기화 프로세스 실행 함수
 
-==========================================
+# ==========================================
 
 def process_and_update(service, sheets_service=None, progress_callback=None):
 if not os.path.exists(DB_INBOUND_PATH):
