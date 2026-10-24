@@ -9,7 +9,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import openpyxl
 
-# 구글 드라이브 폴더 ID (검증 완료)
+# ==========================================
+# ⚙️ 구글 드라이브 & 시트 실제 ID 설정 (검증 완료)
+# ==========================================
 TOP_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'       # 대시보드 업로드
 B2C_FOLDER_ID = '1ArGfyeVpZDJYUrdlGNSCrhj734JrqGW9'        # B2C 폴더
 INBOUND_FOLDER_ID = '1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp'    # 입고 폴더
@@ -19,7 +21,7 @@ DB_FOLDER_ID = '1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9'         # DB 전용 폴더
 DEFAULT_IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
 DB_INBOUND_PATH = 'wms_inbound.db'
 
-# 구글 시트 실제 ID (대소문자 검증 완료)
+# PPH/MH 구글 시트 실제 ID (대소문자 검증 완료)
 SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlHGS6g"
 SHEET_ID_XFC = "1IGgpr8LezBs4hCySj_W34HSyHFhN6lt13uYSt3gbmqbs"
 
@@ -100,7 +102,7 @@ def upload_db_to_drive(service, db_filename):
             service.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
         else:
             file_metadata = {'name': db_filename, 'parents': [DB_FOLDER_ID]}
-            service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
+            service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
     except Exception as e:
         print(f"DB Upload Error ({db_filename}): {e}")
 
@@ -228,9 +230,14 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
     return matched_count, err_msg
 
 # ==========================================
-# 📊 구글 시트 M/H 데이터 파싱 및 적재 (신규 보조 모듈)
+# 📊 구글 시트 M/H 데이터 파싱 모듈 (요약행 필터링 보정 완료)
 # ==========================================
 def parse_mh_375(sheets_service):
+    """
+    375 센터: [출고] 2026작업현황
+    날짜: A열(또는 B열), 시작시간: C열, M/H: AB열
+    ⭐ B열이 '합계', '1차', '2차', '3차'인 요약 행은 제외하여 순수 시간대별 공수만 추출
+    """
     rows_to_save = []
     try:
         range_name = "'[출고] 2026작업현황'!A5:AB10000"
@@ -244,6 +251,7 @@ def parse_mh_375(sheets_service):
 
         for row in values:
             if not row: continue
+            
             raw_date = str(row[0]).strip() if len(row) > 0 else ""
             if not raw_date and len(row) > 1:
                 b_val = str(row[1]).strip()
@@ -256,6 +264,11 @@ def parse_mh_375(sheets_service):
                     try: curr_date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
                     except Exception: pass
             
+            # ⭐ [핵심 보정] 중간 요약 및 합계 행 제외 (1차, 2차, 3차, 합계 등)
+            shift_type = str(row[1]).strip() if len(row) > 1 else ""
+            if any(k in shift_type for k in ['합계', '1차', '2차', '3차']):
+                continue
+
             start_time = str(row[2]).strip() if len(row) > 2 else ""
             mh_val_raw = str(row[27]).strip() if len(row) > 27 else ""
             
@@ -263,6 +276,8 @@ def parse_mh_375(sheets_service):
                 clean_mh = mh_val_raw.replace(",", "").replace("-", "0")
                 try:
                     mh_float = float(clean_mh)
+                    if mh_float <= 0: continue
+
                     h_int = int(start_time.split(":")[0])
                     time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
                     rows_to_save.append({
@@ -278,6 +293,11 @@ def parse_mh_375(sheets_service):
     return rows_to_save
 
 def parse_mh_xfc(sheets_service):
+    """
+    XFC 센터: (XFC센터)출고Dashboard -> 'PPH-(일)(자동화)'
+    날짜: A열, 시작시간: G열, 작업시간: I열, P&P: U열
+    M/H = I열(작업시간) * U열(P&P인원)
+    """
     rows_to_save = []
     try:
         range_name = "'PPH-(일)(자동화)'!A6:U10000"
@@ -299,6 +319,8 @@ def parse_mh_xfc(sheets_service):
                     work_time = float(work_time_raw.replace(",", "").replace("-", "0"))
                     pp_val = float(pp_val_raw.replace(",", "").replace("-", "0"))
                     calculated_mh = round(work_time * pp_val, 2)
+                    if calculated_mh <= 0: continue
+
                     h_int = int(start_time.split(":")[0])
                     time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
                     rows_to_save.append({
@@ -337,7 +359,7 @@ def sync_mh_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
     return 0
 
 # ==========================================
-# 🚀 메인 프로세스 (etl_pipeline_3 원본 로직 유지)
+# 🚀 메인 동기화 프로세스 실행 함수 (etl_pipeline_3 원본 100% 보존)
 # ==========================================
 def process_and_update(service, sheets_service=None, progress_callback=None):
     if not os.path.exists(DB_INBOUND_PATH):
@@ -628,7 +650,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     conn_m.close()
                     b2c_updated_months.add(month_db_name)
 
-                # 파일 내 최신 마감일자의 연월 폴더로 이동 (처리완료/YYYY-MM)
                 latest_date_str = df_b2c_valid['영업마감일자'].max()
                 target_month_str = latest_date_str[:7] if pd.notnull(latest_date_str) and len(str(latest_date_str)) >= 7 else datetime.now().strftime('%Y-%m')
                 target_folder_id = get_or_create_subfolder(service, PROCESSED_FOLDER_ID, target_month_str)
