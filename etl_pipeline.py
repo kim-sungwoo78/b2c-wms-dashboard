@@ -9,7 +9,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import openpyxl
 
-# 구글 드라이브 폴더 ID
+# 구글 드라이브 폴더 ID (검증 완료)
 TOP_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'       # 대시보드 업로드
 B2C_FOLDER_ID = '1ArGfyeVpZDJYUrdlGNSCrhj734JrqGW9'        # B2C 폴더
 INBOUND_FOLDER_ID = '1BzKHxqaUrTFDubvJ7wnfXZqzNHaEvJjp'    # 입고 폴더
@@ -18,6 +18,10 @@ DB_FOLDER_ID = '1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9'         # DB 전용 폴더
 
 DEFAULT_IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
 DB_INBOUND_PATH = 'wms_inbound.db'
+
+# 구글 시트 실제 ID (대소문자 검증 완료)
+SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlHGS6g"
+SHEET_ID_XFC = "1IGgpr8LezBs4hCySj_W34HSyHFhN6lt13uYSt3gbmqbs"
 
 def get_drive_service(creds_dict):
     creds = Credentials.from_service_account_info(
@@ -223,6 +227,118 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 
     return matched_count, err_msg
 
+# ==========================================
+# 📊 구글 시트 M/H 데이터 파싱 및 적재 (신규 보조 모듈)
+# ==========================================
+def parse_mh_375(sheets_service):
+    rows_to_save = []
+    try:
+        range_name = "'[출고] 2026작업현황'!A5:AB10000"
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID_375, range=range_name
+        ).execute()
+        values = result.get('values', [])
+        
+        curr_date_str = ""
+        curr_year = datetime.now().year
+
+        for row in values:
+            if not row: continue
+            raw_date = str(row[0]).strip() if len(row) > 0 else ""
+            if not raw_date and len(row) > 1:
+                b_val = str(row[1]).strip()
+                if "/" in b_val: raw_date = b_val
+
+            if raw_date and "/" in raw_date:
+                parts = raw_date.split()
+                md = parts[0].split("/")
+                if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
+                    try: curr_date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
+                    except Exception: pass
+            
+            start_time = str(row[2]).strip() if len(row) > 2 else ""
+            mh_val_raw = str(row[27]).strip() if len(row) > 27 else ""
+            
+            if curr_date_str and ":" in start_time and mh_val_raw:
+                clean_mh = mh_val_raw.replace(",", "").replace("-", "0")
+                try:
+                    mh_float = float(clean_mh)
+                    h_int = int(start_time.split(":")[0])
+                    time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
+                    rows_to_save.append({
+                        '영업마감일자': curr_date_str,
+                        '시간대': time_label,
+                        '센터그룹': '375',
+                        'MH': mh_float
+                    })
+                except ValueError:
+                    continue
+    except Exception as e:
+        print(f"375 MH 수집 에러: {e}")
+    return rows_to_save
+
+def parse_mh_xfc(sheets_service):
+    rows_to_save = []
+    try:
+        range_name = "'PPH-(일)(자동화)'!A6:U10000"
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID_XFC, range=range_name
+        ).execute()
+        values = result.get('values', [])
+        
+        for row in values:
+            if not row or len(row) < 21: continue
+            raw_date = str(row[0]).strip()
+            start_time = str(row[6]).strip()
+            work_time_raw = str(row[8]).strip()
+            pp_val_raw = str(row[20]).strip()
+            
+            if raw_date and ":" in start_time and work_time_raw and pp_val_raw:
+                date_clean = raw_date[:10]
+                try:
+                    work_time = float(work_time_raw.replace(",", "").replace("-", "0"))
+                    pp_val = float(pp_val_raw.replace(",", "").replace("-", "0"))
+                    calculated_mh = round(work_time * pp_val, 2)
+                    h_int = int(start_time.split(":")[0])
+                    time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
+                    rows_to_save.append({
+                        '영업마감일자': date_clean,
+                        '시간대': time_label,
+                        '센터그룹': 'XFC',
+                        'MH': calculated_mh
+                    })
+                except ValueError:
+                    continue
+    except Exception as e:
+        print(f"XFC MH 수집 에러: {e}")
+    return rows_to_save
+
+def sync_mh_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
+    list_375 = parse_mh_375(sheets_service)
+    list_xfc = parse_mh_xfc(sheets_service)
+    all_mh = list_375 + list_xfc
+    
+    if all_mh:
+        df_mh = pd.DataFrame(all_mh)
+        df_mh_agg = df_mh.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].sum().reset_index()
+        target_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
+        if not target_dbs: target_dbs = [db_path]
+            
+        for d_path in set(target_dbs):
+            try:
+                conn = sqlite3.connect(d_path, timeout=10)
+                df_mh_agg.to_sql("center_mh_hourly", conn, if_exists="replace", index=False)
+                conn.close()
+                if drive_service:
+                    upload_db_to_drive(drive_service, d_path)
+            except Exception as e:
+                print(f"MH 테이블 DB 저장 에러 ({d_path}): {e}")
+        return len(df_mh_agg)
+    return 0
+
+# ==========================================
+# 🚀 메인 프로세스 (etl_pipeline_3 원본 로직 유지)
+# ==========================================
 def process_and_update(service, sheets_service=None, progress_callback=None):
     if not os.path.exists(DB_INBOUND_PATH):
         download_db_from_drive(service, DB_INBOUND_PATH)
@@ -435,7 +551,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                         
                     conn_m = sqlite3.connect(month_db_name, timeout=30)
 
-                    # ⭐ [기존 DB 구조 자동 컬럼 확장 동적 지원]
                     conn_m.execute("""
                     CREATE TABLE IF NOT EXISTS shipment_raw (
                         영업마감일자 TEXT, 센터 TEXT, 고객사 TEXT, 배송속성 TEXT, 판매처 TEXT,
@@ -447,7 +562,6 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
                     )
                     """)
                     
-                    # 기존 DB에 신규 컬럼 3개가 없을 경우 자동으로 ALTER TABLE 추가
                     cursor = conn_m.cursor()
                     cursor.execute("PRAGMA table_info(shipment_raw)")
                     existing_cols = [col[1] for col in cursor.fetchall()]
@@ -541,5 +655,12 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
     if matched_count > 0 or inbound_updated:
         upload_db_to_drive(service, DB_INBOUND_PATH)
+
+    # ⭐ [안전 연동] B2C 적재 및 업로드 완료 후 구글시트 M/H 데이터 수집 및 DB 동기화
+    if sheets_service:
+        try:
+            sync_mh_to_db(sheets_service, drive_service=service)
+        except Exception as mh_e:
+            print(f"MH Sync Error: {mh_e}")
 
     return matched_count, err_msg
