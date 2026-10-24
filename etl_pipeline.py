@@ -230,13 +230,13 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
     return matched_count, err_msg
 
 # ==========================================
-# 📊 구글 시트 M/H 데이터 파싱 모듈 (요약행 필터링 보정 완료)
+# 📊 구글 시트 M/H 데이터 파싱 모듈 (주간/야간 상태 추적 + 1.5h 이하 필터)
 # ==========================================
 def parse_mh_375(sheets_service):
     """
     375 센터: [출고] 2026작업현황
-    날짜: A열(또는 B열), 시작시간: C열, M/H: AB열
-    ⭐ B열이 '합계', '1차', '2차', '3차'인 요약 행은 제외하여 순수 시간대별 공수만 추출
+    날짜: A열, 차수: B열(주간/야간), 시작: C열, 작업시간: E열, M/H: AB열
+    ⭐ 병합 셀인 B열의 주간/야간 상태를 추적하고, 작업시간이 1.5시간 이하인 실작업 행만 수집
     """
     rows_to_save = []
     try:
@@ -247,36 +247,55 @@ def parse_mh_375(sheets_service):
         values = result.get('values', [])
         
         curr_date_str = ""
+        curr_shift = None
         curr_year = datetime.now().year
 
         for row in values:
             if not row: continue
             
+            # 1. A열 날짜 추적
             raw_date = str(row[0]).strip() if len(row) > 0 else ""
-            if not raw_date and len(row) > 1:
-                b_val = str(row[1]).strip()
-                if "/" in b_val: raw_date = b_val
+            if not raw_date and len(row) > 1 and "/" in str(row[1]):
+                raw_date = str(row[1]).strip()
 
             if raw_date and "/" in raw_date:
                 parts = raw_date.split()
                 md = parts[0].split("/")
                 if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
-                    try: curr_date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
+                    try:
+                        curr_date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
+                        curr_shift = None  # 날짜 변경 시 차수 리셋
                     except Exception: pass
             
-            # ⭐ [핵심 보정] 중간 요약 및 합계 행 제외 (1차, 2차, 3차, 합계 등)
-            shift_type = str(row[1]).strip() if len(row) > 1 else ""
-            if any(k in shift_type for k in ['합계', '1차', '2차', '3차']):
+            # 2. B열 차수 상태 갱신 (병합 셀 forward-fill)
+            raw_shift = str(row[1]).strip() if len(row) > 1 else ""
+            if "주간" in raw_shift:
+                curr_shift = "주간"
+            elif "야간" in raw_shift:
+                curr_shift = "야간"
+            elif any(k in raw_shift for k in ['합계', '1차', '2차', '3차']):
+                curr_shift = None  # 요약 행 진입 시 해제
+
+            if curr_shift not in ["주간", "야간"]:
                 continue
 
+            # 3. E열 작업시간 검증 (1.5시간 이하 실작업 행만 인정)
+            work_time_str = str(row[4]).strip() if len(row) > 4 else ""
+            try:
+                work_time_val = float(work_time_str.replace(",", "").replace("-", "0"))
+                if work_time_val <= 0 or work_time_val > 1.5:
+                    continue
+            except ValueError:
+                continue
+
+            # 4. C열 시작시간 및 AB열 M/H 수집
             start_time = str(row[2]).strip() if len(row) > 2 else ""
             mh_val_raw = str(row[27]).strip() if len(row) > 27 else ""
             
             if curr_date_str and ":" in start_time and mh_val_raw:
-                clean_mh = mh_val_raw.replace(",", "").replace("-", "0")
                 try:
-                    mh_float = float(clean_mh)
-                    if mh_float <= 0: continue
+                    clean_mh = float(mh_val_raw.replace(",", "").replace("-", "0"))
+                    if clean_mh <= 0: continue
 
                     h_int = int(start_time.split(":")[0])
                     time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
@@ -284,7 +303,7 @@ def parse_mh_375(sheets_service):
                         '영업마감일자': curr_date_str,
                         '시간대': time_label,
                         '센터그룹': '375',
-                        'MH': mh_float
+                        'MH': clean_mh
                     })
                 except ValueError:
                     continue
@@ -359,7 +378,7 @@ def sync_mh_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
     return 0
 
 # ==========================================
-# 🚀 메인 동기화 프로세스 실행 함수 (etl_pipeline_3 원본 100% 보존)
+# 🚀 메인 동기화 프로세스 실행 함수
 # ==========================================
 def process_and_update(service, sheets_service=None, progress_callback=None):
     if not os.path.exists(DB_INBOUND_PATH):
