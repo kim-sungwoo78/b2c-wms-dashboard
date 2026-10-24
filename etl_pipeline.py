@@ -27,7 +27,7 @@ PROCESSED_FOLDER_ID = "1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ"  # 처리완료
 
 DB_INBOUND_PATH = "wms_inbound.db"
 
-# PPH 구글 시트 실제 ID
+# PPH/MH 구글 시트 실제 ID
 SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlhGS6g"
 SHEET_ID_XFC = "1Bgpr8LezBs4hCy5j_W34RSyHFIN68zT3uY5i3gbmqbs"
 
@@ -133,17 +133,18 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
     return 0, ""
 
 # ==========================================
-# 📊 구글 시트 PPH(시간당 처리량) 데이터 동기화 모듈
+# 📊 구글 시트 M/H(총투입공수) 데이터 동기화 모듈
 # ==========================================
-def parse_pph_375(sheets_service):
+def parse_mh_375(sheets_service):
     """
     375 센터: [confidential] ES2_Operation Sheet (OB)
     시트탭: '[출고] 2026작업현황'
-    날짜: B열, 시작시간: C열, PPH: AC열
+    날짜: A열(또는 B열), 시작시간: C열, M/H: AB열
+    적용 센터: 이천375 1층(네이버), 이천375 1층(코어), 375 소계
     """
     rows_to_save = []
     try:
-        range_name = "'[출고] 2026작업현황'!B5:AC10000"
+        range_name = "'[출고] 2026작업현황'!A5:AB10000"
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID_375, range=range_name
         ).execute()
@@ -156,9 +157,13 @@ def parse_pph_375(sheets_service):
             if not row:
                 continue
             
-            raw_b = str(row[0]).strip() if len(row) > 0 else ""
-            if raw_b and "/" in raw_b:
-                parts = raw_b.split()
+            # 1. 날짜 확인 (A열 또는 B열 병합 셀 대응)
+            raw_date = str(row[0]).strip() if len(row) > 0 else ""
+            if not raw_date and len(row) > 1:
+                raw_date = str(row[1]).strip()
+
+            if raw_date and "/" in raw_date:
+                parts = raw_date.split()
                 md = parts[0].split("/")
                 if len(md) == 2:
                     try:
@@ -166,79 +171,97 @@ def parse_pph_375(sheets_service):
                     except Exception:
                         pass
             
-            start_time = str(row[1]).strip() if len(row) > 1 else ""
-            pph_val_raw = str(row[27]).strip() if len(row) > 27 else ""
+            # 2. C열 시작시간 확인 (인덱스 2)
+            start_time = str(row[2]).strip() if len(row) > 2 else ""
             
-            if curr_date_str and ":" in start_time and pph_val_raw:
-                clean_pph = pph_val_raw.replace(",", "").replace("-", "0")
+            # 3. AB열 M/H 확인 (인덱스 27)
+            mh_val_raw = str(row[27]).strip() if len(row) > 27 else ""
+            
+            if curr_date_str and ":" in start_time and mh_val_raw:
+                clean_mh = mh_val_raw.replace(",", "").replace("-", "0")
                 try:
-                    pph_float = float(clean_pph)
+                    mh_float = float(clean_mh)
                     h_int = int(start_time.split(":")[0])
                     time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
                     
                     rows_to_save.append({
                         '영업마감일자': curr_date_str,
                         '시간대': time_label,
-                        '센터': '이천375 1층(네이버)',
-                        'PPH': pph_float
+                        '센터그룹': '375',
+                        'MH': mh_float
                     })
                 except ValueError:
                     continue
     except Exception as e:
-        print(f"375 PPH 수집 에러: {e}")
+        print(f"375 MH 수집 에러: {e}")
         
     return rows_to_save
 
-def parse_pph_xfc(sheets_service):
+def parse_mh_xfc(sheets_service):
     """
     XFC 센터: (XFC센터)출고Dashboard
     시트탭: 'PPH-(일)(자동화)'
-    날짜: A열, 시작시간: G열, PPH: S열
+    날짜: A열, 시작시간: G열, 작업시간: I열, P&P: U열
+    M/H = I열(작업시간) * U열(P&P인원)
+    적용 센터: 이천375 XFC(네이버), 이천375 XFC(코어), XFC 소계
     """
     rows_to_save = []
     try:
-        range_name = "'PPH-(일)(자동화)'!A6:S10000"
+        range_name = "'PPH-(일)(자동화)'!A6:U10000"
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID_XFC, range=range_name
         ).execute()
         values = result.get('values', [])
         
         for row in values:
-            if not row or len(row) < 19:
+            if not row or len(row) < 21:
                 continue
             
+            # 1. A열 날짜 (인덱스 0)
             raw_date = str(row[0]).strip()
+            # 2. G열 시작시간 (인덱스 6)
             start_time = str(row[6]).strip()
-            pph_val_raw = str(row[18]).strip()
+            # 3. I열 작업시간 (인덱스 8)
+            work_time_raw = str(row[8]).strip()
+            # 4. U열 P&P 수치 (인덱스 20)
+            pp_val_raw = str(row[20]).strip()
             
-            if raw_date and ":" in start_time and pph_val_raw:
+            if raw_date and ":" in start_time and work_time_raw and pp_val_raw:
                 date_clean = raw_date[:10]
-                clean_pph = pph_val_raw.replace(",", "").replace("-", "0")
                 try:
-                    pph_float = float(clean_pph)
+                    work_time = float(work_time_raw.replace(",", "").replace("-", "0"))
+                    pp_val = float(pp_val_raw.replace(",", "").replace("-", "0"))
+                    
+                    # 5. MH = 작업시간 * P&P
+                    calculated_mh = round(work_time * pp_val, 2)
+                    
                     h_int = int(start_time.split(":")[0])
                     time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
                     
                     rows_to_save.append({
                         '영업마감일자': date_clean,
                         '시간대': time_label,
-                        '센터': '이천375 XFC(네이버)',
-                        'PPH': pph_float
+                        '센터그룹': 'XFC',
+                        'MH': calculated_mh
                     })
                 except ValueError:
                     continue
     except Exception as e:
-        print(f"XFC PPH 수집 에러: {e}")
+        print(f"XFC MH 수집 에러: {e}")
         
     return rows_to_save
 
-def sync_pph_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
-    list_375 = parse_pph_375(sheets_service)
-    list_xfc = parse_pph_xfc(sheets_service)
-    all_pph = list_375 + list_xfc
+def sync_mh_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
+    """수집된 375, XFC M/H 데이터를 통합하고 30분 단위 시간대 중복 합산하여 DB에 저장"""
+    list_375 = parse_mh_375(sheets_service)
+    list_xfc = parse_mh_xfc(sheets_service)
+    all_mh = list_375 + list_xfc
     
-    if all_pph:
-        df_pph = pd.DataFrame(all_pph)
+    if all_mh:
+        df_mh = pd.DataFrame(all_mh)
+        # 같은 날짜, 시간대, 센터그룹의 분할 작업시간 M/H 합산 (예: 12:00~12:30, 12:30~13:00)
+        df_mh_agg = df_mh.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].sum().reset_index()
+        
         target_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
         if not target_dbs:
             target_dbs = [db_path]
@@ -246,14 +269,14 @@ def sync_pph_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
         for d_path in set(target_dbs):
             try:
                 conn = sqlite3.connect(d_path, timeout=10)
-                df_pph.to_sql("center_pph_hourly", conn, if_exists="replace", index=False)
+                df_mh_agg.to_sql("center_mh_hourly", conn, if_exists="replace", index=False)
                 conn.close()
                 if drive_service:
                     upload_db_to_drive(drive_service, d_path)
             except Exception as e:
-                print(f"PPH 테이블 DB 저장 에러 ({d_path}): {e}")
+                print(f"MH 테이블 DB 저장 에러 ({d_path}): {e}")
                 
-        return len(df_pph)
+        return len(df_mh_agg)
     return 0
 
 # ==========================================
@@ -337,11 +360,11 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     if matched_count > 0 or inbound_updated:
         upload_db_to_drive(service, DB_INBOUND_PATH)
 
-    # 5. 구글 시트 시간대별 PPH 데이터 수집 및 DB 적재/백업
+    # 5. 구글 시트 시간대별 M/H 데이터 수집 및 DB 적재/백업
     if sheets_service:
         try:
-            sync_pph_to_db(sheets_service, drive_service=service)
-        except Exception as pph_e:
-            print(f"PPH Sync Error: {pph_e}")
+            sync_mh_to_db(sheets_service, drive_service=service)
+        except Exception as mh_e:
+            print(f"MH Sync Error: {mh_e}")
 
     return matched_count, err_msg
