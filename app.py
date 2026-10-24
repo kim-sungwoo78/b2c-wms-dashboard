@@ -972,17 +972,26 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                 # 데이터가 많은 경우, 상위 Top N 외에는 전부 '기타'로 합치기
                 top_targets = chart_df[target_col].tolist()
-                df_tab2_copy[target_col] = df_tab2_copy[target_col].apply(lambda x: x if x in top_targets else ('기타/일반' if analysis_type == "배송 속성별" else '기타 (외 다수)'))
+                other_label = '기타/일반' if analysis_type == "배송 속성별" else '기타 (외 다수)'
+                df_tab2_copy[target_col] = df_tab2_copy[target_col].apply(lambda x: x if x in top_targets else other_label)
 
                 # 요일별 x 속성별 총 출고량 집계
                 wk_attr_raw = df_tab2_copy.groupby(['요일', target_col])['출고건수'].sum().unstack(fill_value=0)
                 wk_attr_raw = wk_attr_raw.reindex(ordered_weekdays).fillna(0)
 
-                # ⭐ [수정된 부분] float 형변환 후 행별 나눗셈을 안전하게 수행 (LossySetitemError 원천 방지)
+                # float 형변환 후 행별 나눗셈을 안전하게 수행
                 wk_attr_summary = wk_attr_raw.astype(float).div(active_days_clean, axis=0).round(1)
 
-                # Layout 2 컬럼 배치 (좌측 누적 막대, 우측 표)
-                c_wk2_left, c_wk2_right = st.columns([1.8, 1.1])
+                # ⭐ [열 정렬 개선] 총합(일평균 합계)이 높은 순으로 컬럼 내림차순 정렬 & '기타' 항목은 맨 끝으로 이동
+                col_sums = wk_attr_summary.sum(axis=0)
+                non_other_cols = [c for c in col_sums.index if c != other_label]
+                sorted_non_other = sorted(non_other_cols, key=lambda c: col_sums[c], reverse=True)
+                
+                final_cols = sorted_non_other + ([other_label] if other_label in col_sums.index else [])
+                wk_attr_summary = wk_attr_summary[final_cols]
+
+                # ⭐ [화면 비율 조정] 그래프 가로폭 축소 & 목록 표 가로폭 확장 (1.2 : 1.8)
+                c_wk2_left, c_wk2_right = st.columns([1.2, 1.8])
 
                 with c_wk2_left:
                     # 누적 막대 그래프 (Stacked Bar)
@@ -1018,7 +1027,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         legend=dict(
                             orientation="h",
                             yanchor="bottom",
-                            y=-0.3,
+                            y=-0.35,
                             xanchor="center",
                             x=0.5
                         )
@@ -1026,7 +1035,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.plotly_chart(fig_wk2, use_container_width=True)
 
                 with c_wk2_right:
-                    # 우측 요일 및 속성 수치 매트릭스 표
+                    # 우측 요일 및 속성 수치 매트릭스 표 (출고량 많은 순 정렬 반영)
                     st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
                     st.markdown(f"<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>📋 요일별 {analysis_type} 세부 데이터</p>", unsafe_allow_html=True)
 
