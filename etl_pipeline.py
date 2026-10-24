@@ -24,7 +24,7 @@ DB_FOLDER_ID = '1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9'         # DB 전용 폴더
 DEFAULT_IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
 DB_INBOUND_PATH = 'wms_inbound.db'
 
-PPH/MH 구글 시트 실제 ID (대소문자 검증 완료)
+# PPH/MH 구글 시트 실제 ID (대소문자 검증 완료)
 
 SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlHGS6g"
 SHEET_ID_XFC = "1IGgpr8LezBs4hCySj_W34HSyHFhN6lt13uYSt3gbmqbs"
