@@ -27,9 +27,9 @@ PROCESSED_FOLDER_ID = "1RiUOVDt8VEgOnePr_bje-ZPuzqlTYOXZ"  # 처리완료
 
 DB_INBOUND_PATH = "wms_inbound.db"
 
-# PPH/MH 구글 시트 실제 ID
-SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlhGS6g"
-SHEET_ID_XFC = "1Bgpr8LezBs4hCy5j_W34RSyHFIN68zT3uY5i3gbmqbs"
+# ⭐ [오타 수정 완료] 브라우저 원본 구글 시트 ID
+SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlHGS6g"
+SHEET_ID_XFC = "1IGgpr8LezBs4hCySj_W34HSyHFhN6lt13uYSt3gbmqbs"
 
 # ==========================================
 # 🔑 구글 API 서비스 연결 함수
@@ -139,8 +139,7 @@ def parse_mh_375(sheets_service):
     """
     375 센터: [confidential] ES2_Operation Sheet (OB)
     시트탭: '[출고] 2026작업현황'
-    날짜: A열(또는 B열), 시작시간: C열, M/H: AB열
-    적용 센터: 이천375 1층(네이버), 이천375 1층(코어), 375 소계
+    날짜: A열, 시작시간: C열, M/H: AB열
     """
     rows_to_save = []
     try:
@@ -157,15 +156,18 @@ def parse_mh_375(sheets_service):
             if not row:
                 continue
             
-            # 1. 날짜 확인 (A열 또는 B열 병합 셀 대응)
+            # 1. A열(또는 B열) 날짜 확인
             raw_date = str(row[0]).strip() if len(row) > 0 else ""
             if not raw_date and len(row) > 1:
-                raw_date = str(row[1]).strip()
+                # B열에 날짜가 있는 경우 대응
+                b_val = str(row[1]).strip()
+                if "/" in b_val:
+                    raw_date = b_val
 
             if raw_date and "/" in raw_date:
                 parts = raw_date.split()
                 md = parts[0].split("/")
-                if len(md) == 2:
+                if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
                     try:
                         curr_date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
                     except Exception:
@@ -203,7 +205,6 @@ def parse_mh_xfc(sheets_service):
     시트탭: 'PPH-(일)(자동화)'
     날짜: A열, 시작시간: G열, 작업시간: I열, P&P: U열
     M/H = I열(작업시간) * U열(P&P인원)
-    적용 센터: 이천375 XFC(네이버), 이천375 XFC(코어), XFC 소계
     """
     rows_to_save = []
     try:
@@ -259,7 +260,7 @@ def sync_mh_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
     
     if all_mh:
         df_mh = pd.DataFrame(all_mh)
-        # 같은 날짜, 시간대, 센터그룹의 분할 작업시간 M/H 합산 (예: 12:00~12:30, 12:30~13:00)
+        # 같은 날짜, 시간대, 센터그룹의 분할 작업시간 M/H 합산
         df_mh_agg = df_mh.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].sum().reset_index()
         
         target_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
@@ -329,7 +330,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
 
             b2c_updated_months.add(month_db_name)
 
-            # 처리 완료 폴더 내 연월(YYYY-MM) 서브폴더로 파일 이동
+            # 처리 완료 서브폴더(YYYY-MM)로 파일 이동
             target_month_str = latest_date_str[:7] if pd.notnull(latest_date_str) and len(str(latest_date_str)) >= 7 else datetime.now().strftime('%Y-%m')
             target_folder_id = get_or_create_subfolder(service, PROCESSED_FOLDER_ID, target_month_str)
 
@@ -360,7 +361,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     if matched_count > 0 or inbound_updated:
         upload_db_to_drive(service, DB_INBOUND_PATH)
 
-    # 5. 구글 시트 시간대별 M/H 데이터 수집 및 DB 적재/백업
+    # 5. 구글 시트 시간대별 M/H 데이터 수집 및 DB 적재
     if sheets_service:
         try:
             sync_mh_to_db(sheets_service, drive_service=service)
