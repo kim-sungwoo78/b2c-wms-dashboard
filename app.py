@@ -26,7 +26,7 @@ if 'is_syncing' not in st.session_state:
     st.session_state['is_syncing'] = False
 
 if st.session_state['is_syncing']:
-    st.markdown("""
+    st.markdown('''
         <style>
             .sync-overlay {
                 position: fixed;
@@ -42,7 +42,7 @@ if st.session_state['is_syncing']:
             }
         </style>
         <div class="sync-overlay"></div>
-    """, unsafe_allow_html=True)
+    ''', unsafe_allow_html=True)
 
 def save_last_sync_time():
     try:
@@ -65,7 +65,7 @@ def get_last_sync_time():
 if 'loaded_sync_time' not in st.session_state:
     st.session_state['loaded_sync_time'] = get_last_sync_time()
 
-# ⭐ [수정] 9월 DB(wms_b2c_202609.db)를 포함한 모든 월별 DB 자동 다운로드
+# ⭐ [9월 DB 포함 전체 월별 DB 자동 다운로드 복원]
 def init_db_from_drive():
     if "gcp_service_account" in st.secrets:
         try:
@@ -77,7 +77,7 @@ def init_db_from_drive():
             if not os.path.exists(DB_INBOUND_PATH):
                 etl_pipeline.download_db_from_drive(service, DB_INBOUND_PATH)
                 
-            # 2. 구글 드라이브 DB 폴더 내 모든 파일 검색 후 wms_b2c_*.db 다운로드
+            # 2. 구글 드라이브 DB 폴더 내 모든 파일 검색 후 wms_b2c_*.db 다운로드 (9월 포함)
             query = f"'{etl_pipeline.DB_FOLDER_ID}' in parents and trashed = false"
             db_files = etl_pipeline.safe_drive_list(service, query)
             
@@ -246,7 +246,6 @@ def load_b2c_sku_data_by_range(start_date, end_date, selected_centers, selected_
     
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = end_date.strftime('%Y-%m-%d')
-    
     all_dfs = []
     for db_p in all_db_files:
         if os.path.exists(db_p):
@@ -281,7 +280,6 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
     
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = end_date.strftime('%Y-%m-%d')
-    
     all_dfs = []
     for db_p in all_db_files:
         if os.path.exists(db_p):
@@ -296,21 +294,17 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
                     WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?
                 """
                 params = [start_str, end_str]
-                
                 if selected_centers:
                     placeholders = ','.join(['?'] * len(selected_centers))
                     query += f" AND 센터 IN ({placeholders})"
                     params.extend(selected_centers)
-                
                 df_raw = pd.read_sql(query, conn, params=params)
                 conn.close()
-                if not df_raw.empty:
-                    all_dfs.append(df_raw)
-            except Exception:
-                pass
+                if not df_raw.empty: all_dfs.append(df_raw)
+            except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 데이터 로드 함수]
+# ⭐ [M/H 데이터 로드]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
@@ -462,7 +456,7 @@ def load_inbound_distinct_counts(selected_m_list):
     except Exception: return pd.DataFrame()
 
 # CSS 스티키 테이블 스타일
-st.markdown("""
+st.markdown('''
 <style>
     .sticky-table-container {
         max-height: 750px; overflow-y: auto; overflow-x: auto;
@@ -494,7 +488,7 @@ st.markdown("""
         background-color: #172554 !important; color: #60a5fa !important; font-weight: bold !important;
     }
 </style>
-""", unsafe_allow_html=True)
+''', unsafe_allow_html=True)
 
 st.title("🏢 센터 통합 물류 운영 대시보드")
 
@@ -752,7 +746,7 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
     return st.session_state[session_key_selected]
 
 # ==========================================
-# 🏢 메인 : 센터 종합 현황 (PPH 카드 출고건수 옆 배치)
+# 🏢 메인 : 센터 종합 현황 (출고건수 옆 PPH 배치)
 # ==========================================
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
@@ -798,7 +792,7 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
 
     overall_pph = round(total_b2c_cnt / applicable_mh, 1) if applicable_mh > 0 else 0.0
 
-    # ⭐ B2C 출고건수 바로 옆에 전체 PPH 배치
+    # ⭐ [KPI 카드 순서] B2C 출고건수 바로 옆에 전체 PPH 배치
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     kpi1.metric("🚚 B2C 출고건수", f"{total_b2c_cnt:,} 건")
     kpi2.metric("⚡ 전체 PPH (시간당 처리량)", f"{overall_pph:,.1f}" if overall_pph > 0 else "-")
@@ -1312,7 +1306,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     textposition='outside'
                 ))
 
-                # ⭐ [가시성 개선] PPH를 막대그래프 안쪽에 겹치지 않고 우측 바깥쪽에 주황색 뱃지로 독립 표출
+                # ⭐ [가시성 개선] PPH를 막대 안쪽에 겹치지 않고 우측 바깥쪽에 주황색 뱃지로 독립 표출
                 x_offset_badge = max_cnt_val * 1.08 if max_cnt_val > 0 else 500
                 valid_pph_df = df_chart[df_chart['PPH'].notnull()]
                 
@@ -1364,7 +1358,6 @@ elif main_mode == "🚚 B2C 출고 현황":
             else:
                 st.info("선택된 기간 및 조건의 로우 데이터가 없습니다.")
 
-    # 탭 6 : B2C 로우파일 추출 및 다운로드
     with tab6:
         st.header("📥 B2C 로우파일 추출 및 다운로드")
         st.caption("원하는 기간과 센터 조건을 지정하여 B2C 출고 로우 원장(shipment_raw)을 엑셀 파일로 다운로드할 수 있습니다.")
