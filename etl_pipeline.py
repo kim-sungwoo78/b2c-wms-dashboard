@@ -247,7 +247,7 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 def parse_mh_375(sheets_service):
     """
     375 센터: [출고] 2026작업현황
-    ⭐ XFC와 동일한 직관적 방식: 실작업 시간(0.2~1.5h) 및 순수 실작업 행만 직접 수집
+    ⭐ 실작업 시간대(작업시간 <= 1.5h, M/H <= 70)만 수집하여 1차(198), 합계 등 중복 합산 원천 차단
     """
     rows_to_save = []
     try:
@@ -264,12 +264,12 @@ def parse_mh_375(sheets_service):
             if not row or len(row) < 5:
                 continue
 
-            # 1. B열에 1차, 2차, 3차, 합계, 소계 등이 적힌 요약행은 즉시 제외
-            b_val = str(row[1]).strip() if len(row) > 1 else ""
-            if any(k in b_val for k in ['1차', '2차', '3차', '합계', '소계']):
+            # 1. 행 어디에든 1차, 2차, 3차, 합계 키워드가 있으면 즉시 제외 (198.0 등 요약치 차단)
+            row_str = " ".join([str(x).strip() for x in row if x is not None])
+            if any(k in row_str for k in ['1차', '2차', '3차', '합계', '소계', '평균']):
                 continue
 
-            # 2. 날짜 파싱 (A열에 채워져 있으면 그것을 쓰고, 병합 상태면 forward-fill)
+            # 2. 날짜 파싱 (A열에 채워진 날짜 우선, 병합 셀 forward-fill 지원)
             raw_date = str(row[0]).strip() if len(row) > 0 else ""
             if "/" in raw_date:
                 clean_date_part = raw_date.split()[0].strip()
@@ -280,12 +280,12 @@ def parse_mh_375(sheets_service):
                     except Exception:
                         pass
 
-            # 유효한 날짜가 없거나 시작시간이 없으면 스킵
+            # 시작시간(C열) 유효성 검사
             start_time = str(row[2]).strip() if len(row) > 2 else ""
             if not curr_date_str or ":" not in start_time:
                 continue
 
-            # 3. 작업시간(E열) 검증: 실작업(0.2h ~ 1.5h)만 인정 (1차 5.0h, 합계 13.5h 등은 자동 차단)
+            # 3. 작업시간(E열) 검증: 1차(5.0h), 2차(3.0h) 등은 1.5h 초과이므로 자동 배제
             work_time_str = str(row[4]).strip() if len(row) > 4 else ""
             try:
                 work_time_val = float(work_time_str.replace(",", "").replace("-", "0"))
@@ -294,14 +294,15 @@ def parse_mh_375(sheets_service):
             except ValueError:
                 continue
 
-            # 4. M/H(AB열, 인덱스 27) 수집
+            # 4. M/H(AB열, 인덱스 27) 수집: 실작업치(44, 57, 40 등 70 이하)만 허용
             mh_val_raw = str(row[27]).strip() if len(row) > 27 else ""
             if not mh_val_raw:
                 continue
 
             try:
                 clean_mh = float(mh_val_raw.replace(",", "").replace("-", "0"))
-                if clean_mh <= 0:
+                # 실작업 단위 M/H가 아니거나 70을 초과하면 요약치이므로 스킵
+                if clean_mh <= 0 or clean_mh > 70.0:
                     continue
 
                 h_int = int(start_time.split(":")[0])
