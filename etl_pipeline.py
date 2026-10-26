@@ -247,7 +247,7 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 def parse_mh_375(sheets_service):
     """
     375 센터: [출고] 2026작업현황
-    ⭐ 요약행(1차, 2차, 3차, 합계) 및 인덱스 밀림 완벽 차단 로직
+    ⭐ XFC와 동일한 직관적 방식: 실작업 시간(0.2~1.5h) 및 순수 실작업 행만 직접 수집
     """
     rows_to_save = []
     try:
@@ -264,17 +264,13 @@ def parse_mh_375(sheets_service):
             if not row or len(row) < 5:
                 continue
 
-            row_text = " ".join([str(x).strip() for x in row if x is not None])
-
-            # 1. 행 어디에든 요약/통계 키워드가 있으면 즉시 제외 (인덱스 밀림 대비 행 전체 검사)
-            if any(k in row_text for k in ['1차', '2차', '3차', '합계', '소계', '평균']):
+            # 1. B열에 1차, 2차, 3차, 합계, 소계 등이 적힌 요약행은 즉시 제외
+            b_val = str(row[1]).strip() if len(row) > 1 else ""
+            if any(k in b_val for k in ['1차', '2차', '3차', '합계', '소계']):
                 continue
 
-            # 2. 날짜 파싱 (MM/DD 추출)
+            # 2. 날짜 파싱 (A열에 채워져 있으면 그것을 쓰고, 병합 상태면 forward-fill)
             raw_date = str(row[0]).strip() if len(row) > 0 else ""
-            if not raw_date and len(row) > 1 and "/" in str(row[1]):
-                raw_date = str(row[1]).strip()
-
             if "/" in raw_date:
                 clean_date_part = raw_date.split()[0].strip()
                 md = clean_date_part.split("/")
@@ -284,58 +280,30 @@ def parse_mh_375(sheets_service):
                     except Exception:
                         pass
 
-            if not curr_date_str:
+            # 유효한 날짜가 없거나 시작시간이 없으면 스킵
+            start_time = str(row[2]).strip() if len(row) > 2 else ""
+            if not curr_date_str or ":" not in start_time:
                 continue
 
-            # 3. 실작업 행 판별:
-            # 실작업 행은 '주간' 또는 '야간' 텍스트를 포함하거나,
-            # B열/C열에 실작업 시작시간(HH:MM)이 있고 작업시간(0.2~1.2h)이 존재하는 행
-            is_valid_work_row = False
-            start_time = ""
-            work_time_val = 0.0
-
-            # 인덱스 밀림 여부와 상관없이 시간(HH:MM) 포맷 셀 찾기
-            for c_idx in [1, 2, 3]:
-                if len(row) > c_idx and ":" in str(row[c_idx]):
-                    parts = str(row[c_idx]).strip().split(":")
-                    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                        start_time = str(row[c_idx]).strip()
-                        # 작업시간 확인 (시작시간 2칸 뒤 열)
-                        w_idx = c_idx + 2
-                        if len(row) > w_idx:
-                            try:
-                                w_str = str(row[w_idx]).replace(",", "").replace("-", "0").strip()
-                                work_time_val = float(w_str)
-                            except Exception:
-                                work_time_val = 0.0
-                        break
-
-            # 실작업 시간은 0.2시간 이상 1.2시간 이하만 인정
-            if not start_time or work_time_val <= 0.1 or work_time_val > 1.2:
+            # 3. 작업시간(E열) 검증: 실작업(0.2h ~ 1.5h)만 인정 (1차 5.0h, 합계 13.5h 등은 자동 차단)
+            work_time_str = str(row[4]).strip() if len(row) > 4 else ""
+            try:
+                work_time_val = float(work_time_str.replace(",", "").replace("-", "0"))
+                if work_time_val <= 0.1 or work_time_val > 1.5:
+                    continue
+            except ValueError:
                 continue
 
-            # 4. M/H 수집 (AB열 인덱스 27 또는 끝쪽 M/H 값 추출)
-            # 실작업 인원은 15~65명이므로 M/H는 반드시 70.0 이하임 (171, 198, 221, 590 등 요약치 배제)
-            clean_mh = 0.0
-            if len(row) > 27:
-                try:
-                    clean_mh = float(str(row[27]).replace(",", "").replace("-", "0").strip())
-                except Exception:
-                    clean_mh = 0.0
+            # 4. M/H(AB열, 인덱스 27) 수집
+            mh_val_raw = str(row[27]).strip() if len(row) > 27 else ""
+            if not mh_val_raw:
+                continue
 
-            # 만약 27번 인덱스가 0이면 끝에서 역순으로 정상 실작업 M/H 수치 탐색
-            if clean_mh <= 0.0 or clean_mh > 70.0:
-                for c_val in reversed(row[-8:]):
-                    try:
-                        v = float(str(c_val).replace(",", "").replace("-", "0").strip())
-                        if 10.0 <= v <= 70.0:
-                            clean_mh = v
-                            break
-                    except Exception:
-                        continue
+            try:
+                clean_mh = float(mh_val_raw.replace(",", "").replace("-", "0"))
+                if clean_mh <= 0:
+                    continue
 
-            # 유효한 실작업 M/H(10~70 사이)만 수집
-            if 10.0 <= clean_mh <= 70.0:
                 h_int = int(start_time.split(":")[0])
                 time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
 
@@ -345,9 +313,12 @@ def parse_mh_375(sheets_service):
                     '센터그룹': '375',
                     'MH': clean_mh
                 })
+            except ValueError:
+                continue
     except Exception as e:
         print(f"375 MH 수집 에러: {e}")
     return rows_to_save
+    
 
 def parse_mh_xfc(sheets_service):
     """
