@@ -307,18 +307,30 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 데이터 로드 - 복수 DB 합산 버그 수정]
+# ⭐ [M/H 데이터 로드 - 해당 월 DB 정밀 조회 및 구버전 오염 데이터 방지]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
-    all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
-    if not all_db_files and os.path.exists("wms_b2c.db"):
-        all_db_files = ["wms_b2c.db"]
-        
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = end_date.strftime('%Y-%m-%d')
-    all_dfs = []
     
-    for db_p in set(all_db_files):
+    # 조회 기간에 해당하는 월별 DB 리스트 추출 (예: 202610 -> wms_b2c_202610.db)
+    start_ym = start_date.strftime('%Y%m')
+    end_ym = end_date.strftime('%Y%m')
+    
+    all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c_') and f.endswith('.db')]
+    target_dbs = []
+    for db_f in all_db_files:
+        ym = db_f.replace('wms_b2c_', '').replace('.db', '')
+        if start_ym <= ym <= end_ym:
+            target_dbs.append(db_f)
+            
+    if not target_dbs:
+        target_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
+    if not target_dbs and os.path.exists("wms_b2c.db"):
+        target_dbs = ["wms_b2c.db"]
+
+    all_dfs = []
+    for db_p in set(target_dbs):
         if os.path.exists(db_p):
             try:
                 conn = sqlite3.connect(db_p, timeout=10)
@@ -329,12 +341,15 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                     params.append(center_group)
                 df_mh = pd.read_sql(query, conn, params=params)
                 conn.close()
-                if not df_mh.empty: all_dfs.append(df_mh)
-            except Exception: pass
+                if not df_mh.empty:
+                    all_dfs.append(df_mh)
+            except Exception:
+                pass
                 
     if all_dfs:
         combined = pd.concat(all_dfs, ignore_index=True)
-        dedup_mh = combined.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].max().reset_index()
+        # 중복 데이터 제거 (최신 1건만 유지)
+        dedup_mh = combined.drop_duplicates(subset=['영업마감일자', '시간대', '센터그룹'], keep='last')
         return dedup_mh
     return pd.DataFrame()
 
