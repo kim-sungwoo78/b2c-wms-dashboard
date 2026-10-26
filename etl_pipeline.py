@@ -247,33 +247,15 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 def parse_mh_375(sheets_service):
     """
     375 센터: [출고] 2026작업현황
-    - 요약 행(1차, 2차, 3차, 합계, 소계)을 원천 차단
-    - 시작/종료 시간 간격이 1.5시간 이하인 실작업 시간대만 정밀 수집
+    ⭐ 구글시트 B열이 '주간', '야간'인 실작업 구간만 엄격 수집 (1차, 2차, 3차, 합계 원천 차단)
     """
     rows_to_save = []
     try:
-        range_name = "'[출고] 2026작업현황'!A1:AF10000"
+        range_name = "'[출고] 2026작업현황'!A5:AB10000"
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID_375, range=range_name
         ).execute()
         values = result.get('values', [])
-
-        if not values:
-            return []
-
-        # 헤더 행 탐색 (A1:AF10 내)
-        col_start_idx = 2    # C열 기본
-        col_end_idx = 3      # D열 기본
-        col_work_idx = 4     # E열 기본
-        col_mh_idx = 27      # AB열 기본
-
-        for r_i, r in enumerate(values[:10]):
-            r_str = [str(c).replace(" ", "").upper() for c in r]
-            for c_i, c_val in enumerate(r_str):
-                if c_val == '시작': col_start_idx = c_i
-                elif c_val == '종료': col_end_idx = c_i
-                elif '작업시간' in c_val: col_work_idx = c_i
-                elif c_val == 'M/H' or c_val == 'MH': col_mh_idx = c_i
 
         curr_date_str = ""
         curr_shift = None
@@ -283,14 +265,14 @@ def parse_mh_375(sheets_service):
             if not row:
                 continue
 
-            row_text = " ".join([str(x).strip() for x in row])
+            row_str_all = " ".join([str(x).strip() for x in row])
 
-            # ⭐ [원천 차단 1] 요약 행 키워드 발견 시 즉시 제외 및 차수 리셋
-            if any(k in row_text for k in ['합계', '1차', '2차', '3차', '소계', '평균']):
+            # 1. 요약 행 키워드 발견 시 즉시 차수 리셋 및 제외
+            if any(k in row_str_all for k in ['1차', '2차', '3차', '합계', '소계', '평균']):
                 curr_shift = None
                 continue
 
-            # 1. 날짜 추출 (A열 또는 B열에서 MM/DD 추출)
+            # 2. 날짜 파싱 (A열 또는 B열에서 MM/DD 추출)
             raw_date = str(row[0]).strip() if len(row) > 0 else ""
             if not raw_date and len(row) > 1 and "/" in str(row[1]):
                 raw_date = str(row[1]).strip()
@@ -305,69 +287,50 @@ def parse_mh_375(sheets_service):
                     except Exception:
                         pass
 
-            # 2. 주간/야간 차수 추적 (병합 셀 forward-fill)
+            # 3. B열 차수 추적 (주간/야간이 아니면 즉시 차수 해제)
             raw_shift = str(row[1]).strip() if len(row) > 1 else ""
             if "주간" in raw_shift:
                 curr_shift = "주간"
             elif "야간" in raw_shift:
                 curr_shift = "야간"
+            elif raw_shift != "":
+                curr_shift = None
 
-            # 실작업 차수가 아니면 스킵
+            # B열 상태가 '주간' 또는 '야간'이 아니면 수집 제외
             if curr_shift not in ["주간", "야간"]:
                 continue
 
-            # 3. 시작시간 및 종료시간 확인
-            start_time = str(row[col_start_idx]).strip() if len(row) > col_start_idx else ""
-            end_time = str(row[col_end_idx]).strip() if len(row) > col_end_idx else ""
-
-            if not curr_date_str or ":" not in start_time:
-                continue
-
-            # ⭐ [원천 차단 2] 시작-종료 시간 차이 직접 계산 (1.5시간 초과 요약 행 배제)
-            if ":" in end_time:
-                try:
-                    s_h, s_m = map(int, start_time.split(":")[:2])
-                    e_h, e_m = map(int, end_time.split(":")[:2])
-                    dur = (e_h * 60 + e_m) - (s_h * 60 + s_m)
-                    if dur < 0:
-                        dur += 24 * 60
-                    dur_hours = dur / 60.0
-                    # 실작업 단위는 0.2시간 ~ 1.5시간 범위임
-                    if dur_hours <= 0.1 or dur_hours > 1.5:
-                        continue
-                except Exception:
-                    pass
-
-            # 4. E열 작업시간 검증 (1.5시간 이하 실작업 확인)
-            work_time_str = str(row[col_work_idx]).strip() if len(row) > col_work_idx else ""
+            # 4. E열 작업시간 검증 (실작업은 0.5~1.0h, 요약행의 3.0~13.5h 배제)
+            work_time_str = str(row[4]).strip() if len(row) > 4 else ""
             try:
                 work_time_val = float(work_time_str.replace(",", "").replace("-", "0"))
-                if work_time_val <= 0 or work_time_val > 1.5:
+                if work_time_val <= 0 or work_time_val > 1.2:
                     continue
             except ValueError:
                 continue
 
-            # 5. M/H 수집 (AB열)
-            mh_val_raw = str(row[col_mh_idx]).strip() if len(row) > col_mh_idx else ""
-            if not mh_val_raw:
-                continue
+            # 5. C열 시작시간 및 AB열 M/H 수집
+            start_time = str(row[2]).strip() if len(row) > 2 else ""
+            mh_val_raw = str(row[27]).strip() if len(row) > 27 else ""
 
-            try:
-                clean_mh = float(mh_val_raw.replace(",", "").replace("-", "0"))
-                if clean_mh <= 0:
+            if curr_date_str and ":" in start_time and mh_val_raw:
+                try:
+                    clean_mh = float(mh_val_raw.replace(",", "").replace("-", "0"))
+                    # 단일 시간대 M/H가 100을 초과하면 요약 행이므로 배제
+                    if clean_mh <= 0 or clean_mh >= 100.0:
+                        continue
+
+                    h_int = int(start_time.split(":")[0])
+                    time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
+
+                    rows_to_save.append({
+                        '영업마감일자': curr_date_str,
+                        '시간대': time_label,
+                        '센터그룹': '375',
+                        'MH': clean_mh
+                    })
+                except ValueError:
                     continue
-
-                h_int = int(start_time.split(":")[0])
-                time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
-
-                rows_to_save.append({
-                    '영업마감일자': curr_date_str,
-                    '시간대': time_label,
-                    '센터그룹': '375',
-                    'MH': clean_mh
-                })
-            except ValueError:
-                continue
     except Exception as e:
         print(f"375 MH 수집 에러: {e}")
     return rows_to_save
