@@ -65,7 +65,7 @@ def get_last_sync_time():
 if 'loaded_sync_time' not in st.session_state:
     st.session_state['loaded_sync_time'] = get_last_sync_time()
 
-# ⭐ [9월 DB 포함 전체 월별 DB 자동 다운로드 복원]
+# ⭐ [전체 월별 DB 자동 다운로드]
 def init_db_from_drive():
     if "gcp_service_account" in st.secrets:
         try:
@@ -77,7 +77,7 @@ def init_db_from_drive():
             if not os.path.exists(DB_INBOUND_PATH):
                 etl_pipeline.download_db_from_drive(service, DB_INBOUND_PATH)
                 
-            # 2. 구글 드라이브 DB 폴더 내 모든 파일 검색 후 wms_b2c_*.db 다운로드 (9월 포함)
+            # 2. 구글 드라이브 DB 폴더 내 모든 파일 검색 후 wms_b2c_*.db 다운로드
             query = f"'{etl_pipeline.DB_FOLDER_ID}' in parents and trashed = false"
             db_files = etl_pipeline.safe_drive_list(service, query)
             
@@ -304,7 +304,7 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 데이터 로드]
+# ⭐ [M/H 데이터 로드 - 복수 DB 합산 버그 수정]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     all_db_files = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
@@ -330,8 +330,10 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
             except Exception: pass
                 
     if all_dfs:
-        combined = pd.concat(all_dfs, ignore_index=True).drop_duplicates()
-        return combined
+        combined = pd.concat(all_dfs, ignore_index=True)
+        # 여러 DB 파일에서 읽어왔을 때 동일 일자/시간대/센터그룹의 중복 합산 방지 (최대값 채택)
+        dedup_mh = combined.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].max().reset_index()
+        return dedup_mh
     return pd.DataFrame()
 
 @st.cache_data(ttl=5)
@@ -360,15 +362,16 @@ def load_mh_summary_by_months(selected_m_list):
         if os.path.exists(db_p):
             try:
                 conn = sqlite3.connect(db_p, timeout=10)
-                query = f"SELECT 영업마감일자, 센터그룹, MH FROM center_mh_hourly {where_clause}"
+                query = f"SELECT 영업마감일자, 시간대, 센터그룹, MH FROM center_mh_hourly {where_clause}"
                 df_mh = pd.read_sql(query, conn, params=params)
                 conn.close()
                 if not df_mh.empty: all_dfs.append(df_mh)
             except Exception: pass
                 
     if all_dfs:
-        combined = pd.concat(all_dfs, ignore_index=True).drop_duplicates()
-        return combined
+        combined = pd.concat(all_dfs, ignore_index=True)
+        dedup_mh = combined.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].max().reset_index()
+        return dedup_mh
     return pd.DataFrame()
 
 @st.cache_data(ttl=5)
@@ -746,7 +749,7 @@ def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 �
     return st.session_state[session_key_selected]
 
 # ==========================================
-# 🏢 메인 : 센터 종합 현황 (출고건수 옆 PPH 배치)
+# 🏢 메인 : 센터 종합 현황
 # ==========================================
 if main_mode == "🏢 메인 : 센터 종합 현황":
     st.header("📊 센터 종합 운영 실적 요약")
@@ -792,7 +795,6 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
 
     overall_pph = round(total_b2c_cnt / applicable_mh, 1) if applicable_mh > 0 else 0.0
 
-    # ⭐ [KPI 카드 순서] B2C 출고건수 바로 옆에 전체 PPH 배치
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     kpi1.metric("🚚 B2C 출고건수", f"{total_b2c_cnt:,} 건")
     kpi2.metric("⚡ 전체 PPH (시간당 처리량)", f"{overall_pph:,.1f}" if overall_pph > 0 else "-")
@@ -1251,6 +1253,7 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                 mh_map = {}
                 if not df_mh_h.empty:
+                    # 선택 일자 수(num_days) 기준 시간대별 일평균 M/H 정확 계산
                     mh_map = (df_mh_h.groupby('시간대')['MH'].sum() / num_days).to_dict()
 
                 chart_rows = []
@@ -1266,6 +1269,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     avg_inflow = round(tot_inflow / num_days, 1)
                     avg_shipment = round(tot_shipment / num_days, 1)
                     cur_mh = round(mh_map.get(label_key, 0.0), 1)
+                    # ⭐ 1,217건 / 44.0 = 27.7 PPH 정확 계산
                     cur_pph = round(avg_shipment / cur_mh, 1) if cur_mh > 0 else None
                     
                     if avg_inflow > max_cnt_val: max_cnt_val = avg_inflow
@@ -1306,7 +1310,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     textposition='outside'
                 ))
 
-                # ⭐ [가시성 개선] PPH를 막대 안쪽에 겹치지 않고 우측 바깥쪽에 주황색 뱃지로 독립 표출
+                # ⭐ 실시간 PPH 뱃지 (독립 표출)
                 x_offset_badge = max_cnt_val * 1.08 if max_cnt_val > 0 else 500
                 valid_pph_df = df_chart[df_chart['PPH'].notnull()]
                 
