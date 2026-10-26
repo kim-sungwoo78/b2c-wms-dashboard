@@ -307,13 +307,12 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 데이터 로드 - 실시간 DB 직접 조회 및 오염 데이터 방지]
+# ⭐ [M/H 데이터 로드 - 정상 M/H 데이터 복원 및 중복 방지]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = end_date.strftime('%Y-%m-%d')
     
-    # 현재 폴더에 있는 모든 wms_b2c*.db 검색
     all_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
     if not all_dbs:
         return pd.DataFrame()
@@ -330,15 +329,13 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
             df_mh = pd.read_sql(query, conn, params=params)
             conn.close()
             if not df_mh.empty:
-                # 단일 시간대 M/H가 80 이상인 비정상 요약치는 메모리 조회 단계에서도 2차 차단
-                df_mh = df_mh[df_mh['MH'] < 80.0]
                 all_dfs.append(df_mh)
         except Exception:
             pass
 
     if all_dfs:
         combined = pd.concat(all_dfs, ignore_index=True)
-        # 중복 적재 방지: 일자/시간대/센터그룹별 최신 1개 행만 유지
+        # 중복 방지: 영업마감일자/시간대/센터그룹별 최신 1개 행 유지
         dedup_mh = combined.drop_duplicates(subset=['영업마감일자', '시간대', '센터그룹'], keep='last')
         return dedup_mh
     return pd.DataFrame()
