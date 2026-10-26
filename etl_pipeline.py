@@ -247,7 +247,7 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 def parse_mh_375(sheets_service):
     """
     375 센터: [출고] 2026작업현황
-    ⭐ 구글시트 실작업 시간대 정밀 수집 (10시, 16시, 20시 누락 방지 및 요약행 원천 차단)
+    ⭐ 요약행(1차, 2차, 3차, 합계) 원천 배제 및 실작업 시간대(10시, 16시, 20시 포함) 수집
     """
     rows_to_save = []
     try:
@@ -262,17 +262,17 @@ def parse_mh_375(sheets_service):
         curr_year = datetime.now().year
 
         for row in values:
-            if not row or len(row) < 4:
+            if not row or len(row) < 5:
                 continue
 
-            row_joined = " ".join([str(x).strip() for x in row if x is not None])
+            row_text = " ".join([str(x).strip() for x in row if x is not None])
 
-            # 1. 요약 행 키워드 발견 시 즉시 차수 해제 및 스킵
-            if any(k in row_joined for k in ['1차', '2차', '3차', '합계', '소계', '평균']):
+            # 1. 1차, 2차, 3차, 합계 요약행 발견 시 즉시 제외 및 차수 리셋
+            if any(k in row_text for k in ['1차', '2차', '3차', '합계', '소계', '평균']):
                 curr_shift = None
                 continue
 
-            # 2. 날짜 파싱 (A열 또는 B열에서 MM/DD 추출)
+            # 2. 날짜 파싱 (MM/DD 추출)
             raw_date = str(row[0]).strip() if len(row) > 0 else ""
             if not raw_date and len(row) > 1 and "/" in str(row[1]):
                 raw_date = str(row[1]).strip()
@@ -286,7 +286,7 @@ def parse_mh_375(sheets_service):
                     except Exception:
                         pass
 
-            # 3. B열 차수 추적 (주간/야간 상태 관리 - 날짜 첫 행에서도 정상 갱신)
+            # 3. B열 차수 추적 (주간/야간)
             raw_shift = str(row[1]).strip() if len(row) > 1 else ""
             if "주간" in raw_shift:
                 curr_shift = "주간"
@@ -295,30 +295,22 @@ def parse_mh_375(sheets_service):
             elif raw_shift != "":
                 curr_shift = None
 
-            # 주간/야간 실작업 구간이 아니면 제외
             if curr_shift not in ["주간", "야간"]:
                 continue
 
-            # 4. 시작시간(C열)과 종료시간(D열) 검증
+            # 4. C열 시작시간 검증
             start_time = str(row[2]).strip() if len(row) > 2 else ""
-            end_time = str(row[3]).strip() if len(row) > 3 else ""
-
             if not curr_date_str or ":" not in start_time:
                 continue
 
-            # 5. 작업시간 검증 (시작-종료 시간차가 존재할 경우 1.25시간 이하 실작업만 인정)
-            if ":" in end_time:
-                try:
-                    sh, sm = map(int, start_time.split(":")[:2])
-                    eh, em = map(int, end_time.split(":")[:2])
-                    diff_m = (eh * 60 + em) - (sh * 60 + sm)
-                    if diff_m < 0:
-                        diff_m += 24 * 60
-                    # 1차(6시간), 2차(3시간), 합계(15시간) 등 장시간 요약행 배제
-                    if diff_m > 75:
-                        continue
-                except Exception:
-                    pass
+            # 5. E열 작업시간 검증 (실작업 0.2~1.5시간만 통과)
+            work_time_str = str(row[4]).strip() if len(row) > 4 else ""
+            try:
+                work_time_val = float(work_time_str.replace(",", "").replace("-", "0"))
+                if work_time_val <= 0 or work_time_val > 1.5:
+                    continue
+            except ValueError:
+                continue
 
             # 6. AB열 M/H 수집 (AB열 인덱스 27)
             mh_val_raw = str(row[27]).strip() if len(row) > 27 else ""
@@ -327,8 +319,7 @@ def parse_mh_375(sheets_service):
 
             try:
                 clean_mh = float(mh_val_raw.replace(",", "").replace("-", "0"))
-                # 실작업 단위 M/H만 허용 (요약행의 대형 수치 배제)
-                if clean_mh <= 0 or clean_mh > 70.0:
+                if clean_mh <= 0:
                     continue
 
                 h_int = int(start_time.split(":")[0])
@@ -346,6 +337,46 @@ def parse_mh_375(sheets_service):
         print(f"375 MH 수집 에러: {e}")
     return rows_to_save
 
+def parse_mh_xfc(sheets_service):
+    """
+    XFC 센터: (XFC센터)출고Dashboard -> 'PPH-(일)(자동화)'
+    """
+    rows_to_save = []
+    try:
+        range_name = "'PPH-(일)(자동화)'!A6:U10000"
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID_XFC, range=range_name
+        ).execute()
+        values = result.get('values', [])
+
+        for row in values:
+            if not row or len(row) < 21: continue
+            raw_date = str(row[0]).strip()
+            start_time = str(row[6]).strip()
+            work_time_raw = str(row[8]).strip()
+            pp_val_raw = str(row[20]).strip()
+            
+            if raw_date and ":" in start_time and work_time_raw and pp_val_raw:
+                date_clean = raw_date[:10]
+                try:
+                    work_time = float(work_time_raw.replace(",", "").replace("-", "0"))
+                    pp_val = float(pp_val_raw.replace(",", "").replace("-", "0"))
+                    calculated_mh = round(work_time * pp_val, 2)
+                    if calculated_mh <= 0 or work_time > 1.5: continue
+
+                    h_int = int(start_time.split(":")[0])
+                    time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
+                    rows_to_save.append({
+                        '영업마감일자': date_clean,
+                        '시간대': time_label,
+                        '센터그룹': 'XFC',
+                        'MH': calculated_mh
+                    })
+                except ValueError:
+                    continue
+    except Exception as e:
+        print(f"XFC MH 수집 에러: {e}")
+    return rows_to_save
 
 def sync_mh_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
     list_375 = parse_mh_375(sheets_service)
