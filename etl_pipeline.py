@@ -10,7 +10,7 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import openpyxl
 
 # ==========================================
-# ⚙️ 구글 드라이브 & 시트 실제 ID 설정 (검증 완료)
+# ⚙️ 구글 드라이브 & 시트 실제 ID 설정
 # ==========================================
 
 TOP_FOLDER_ID = '1UlsDUOZv3QPp19M_vMNptLiDZjEHPPUw'       # 대시보드 업로드
@@ -22,7 +22,7 @@ DB_FOLDER_ID = '1jfi8ls7PWm9BWQUZwVYj9km5zAEuUKg9'         # DB 전용 폴더
 DEFAULT_IB_SHEET_ID = '1j3yHXjpOpdYRBI_dFP6TBBG3Q3_vgbMAi3DW4po0SD0'
 DB_INBOUND_PATH = 'wms_inbound.db'
 
-# PPH/MH 구글 시트 실제 ID (대소문자 검증 완료)
+# PPH/MH 구글 시트 실제 ID
 SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlHGS6g"
 SHEET_ID_XFC = "1IGgpr8LezBs4hCySj_W34HSyHFhN6lt13uYSt3gbmqbs"
 
@@ -241,14 +241,13 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 
 
 # ==========================================
-# 📊 구글 시트 M/H 데이터 파싱 모듈 (주간/야간 상태 추적 + 1.5h 이하 필터)
+# 📊 구글 시트 M/H 데이터 파싱 모듈
 # ==========================================
 
 def parse_mh_375(sheets_service):
     """
     375 센터: [출고] 2026작업현황
-    날짜: A열, 차수: B열(주간/야간), 시작: C열, 작업시간: E열, M/H: AB열
-    ⭐ 병합 셀인 B열의 주간/야간 상태를 추적하고, 작업시간이 1.5시간 이하인 실작업 행만 수집
+    A열: 날짜, B열: 차수, C열: 시작, E열: 작업시간, AB열: M/H
     """
     rows_to_save = []
     try:
@@ -265,7 +264,7 @@ def parse_mh_375(sheets_service):
         for row in values:
             if not row: continue
             
-            # 1. A열 날짜 추적
+            # 1. A열 날짜 파싱
             raw_date = str(row[0]).strip() if len(row) > 0 else ""
             if not raw_date and len(row) > 1 and "/" in str(row[1]):
                 raw_date = str(row[1]).strip()
@@ -276,22 +275,22 @@ def parse_mh_375(sheets_service):
                 if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
                     try:
                         curr_date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
-                        curr_shift = None  # 날짜 변경 시 차수 리셋
+                        curr_shift = None
                     except Exception: pass
             
-            # 2. B열 차수 상태 갱신 (병합 셀 forward-fill)
+            # 2. B열 차수 추적
             raw_shift = str(row[1]).strip() if len(row) > 1 else ""
             if "주간" in raw_shift:
                 curr_shift = "주간"
             elif "야간" in raw_shift:
                 curr_shift = "야간"
-            elif any(k in raw_shift for k in ['합계', '1차', '2차', '3차']):
-                curr_shift = None  # 요약 행 진입 시 해제
+            elif any(k in raw_shift for k in ['합계', '1차', '2차', '3차', '소계']):
+                curr_shift = None
 
             if curr_shift not in ["주간", "야간"]:
                 continue
 
-            # 3. E열 작업시간 검증 (1.5시간 이하 실작업 행만 인정)
+            # 3. E열 작업시간 검증 (1.5시간 이하 실작업)
             work_time_str = str(row[4]).strip() if len(row) > 4 else ""
             try:
                 work_time_val = float(work_time_str.replace(",", "").replace("-", "0"))
@@ -327,8 +326,6 @@ def parse_mh_375(sheets_service):
 def parse_mh_xfc(sheets_service):
     """
     XFC 센터: (XFC센터)출고Dashboard -> 'PPH-(일)(자동화)'
-    날짜: A열, 시작시간: G열, 작업시간: I열, P&P: U열
-    M/H = I열(작업시간) * U열(P&P인원)
     """
     rows_to_save = []
     try:
@@ -375,6 +372,7 @@ def sync_mh_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
 
     if all_mh:
         df_mh = pd.DataFrame(all_mh)
+        # 시간대/일자/센터그룹별 1회만 고유 집계
         df_mh_agg = df_mh.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].sum().reset_index()
         target_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
         if not target_dbs: target_dbs = [db_path]
@@ -382,7 +380,18 @@ def sync_mh_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
         for d_path in set(target_dbs):
             try:
                 conn = sqlite3.connect(d_path, timeout=10)
-                df_mh_agg.to_sql("center_mh_hourly", conn, if_exists="replace", index=False)
+                conn.execute("""
+                CREATE TABLE IF NOT EXISTS center_mh_hourly (
+                    영업마감일자 TEXT,
+                    시간대 TEXT,
+                    센터그룹 TEXT,
+                    MH REAL,
+                    PRIMARY KEY (영업마감일자, 시간대, 센터그룹)
+                )
+                """)
+                conn.execute("DELETE FROM center_mh_hourly")
+                df_mh_agg.to_sql("center_mh_hourly", conn, if_exists="append", index=False)
+                conn.commit()
                 conn.close()
                 if drive_service:
                     upload_db_to_drive(drive_service, d_path)
@@ -712,7 +721,7 @@ def process_and_update(service, sheets_service=None, progress_callback=None):
     if matched_count > 0 or inbound_updated:
         upload_db_to_drive(service, DB_INBOUND_PATH)
 
-    # ⭐ [안전 연동] B2C 적재 및 업로드 완료 후 구글시트 M/H 데이터 수집 및 DB 동기화
+    # B2C 적재 완료 후 구글시트 M/H 수집 및 동기화
     if sheets_service:
         try:
             sync_mh_to_db(sheets_service, drive_service=service)
