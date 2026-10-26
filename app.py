@@ -95,7 +95,10 @@ def run_sync():
     if "gcp_service_account" in st.secrets:
         st.session_state['is_syncing'] = True
         try:
+            import importlib
             import etl_pipeline
+            importlib.reload(etl_pipeline)  # ⭐ 수정된 etl_pipeline 강제 즉시 반영
+            
             creds_dict = dict(st.secrets["gcp_service_account"])
             service = etl_pipeline.get_drive_service(creds_dict)
             sheets_service = etl_pipeline.get_sheets_service(creds_dict)
