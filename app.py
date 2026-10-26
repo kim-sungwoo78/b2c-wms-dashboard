@@ -331,7 +331,6 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                 
     if all_dfs:
         combined = pd.concat(all_dfs, ignore_index=True)
-        # 여러 DB 파일에서 읽어왔을 때 동일 일자/시간대/센터그룹의 중복 합산 방지 (최대값 채택)
         dedup_mh = combined.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].max().reset_index()
         return dedup_mh
     return pd.DataFrame()
@@ -1253,7 +1252,6 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                 mh_map = {}
                 if not df_mh_h.empty:
-                    # 선택 일자 수(num_days) 기준 시간대별 일평균 M/H 정확 계산
                     mh_map = (df_mh_h.groupby('시간대')['MH'].sum() / num_days).to_dict()
 
                 chart_rows = []
