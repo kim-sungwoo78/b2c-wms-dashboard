@@ -247,7 +247,7 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 def parse_mh_375(sheets_service):
     """
     375 센터: [출고] 2026작업현황
-    ⭐ 구글시트 B열이 '주간', '야간'인 실작업 구간만 수집 (1차, 2차, 3차, 합계 원천 차단)
+    ⭐ B열이 '주간', '야간'인 실작업 행만 수집 (1차, 2차, 3차, 합계 요약행 원천 배제)
     """
     rows_to_save = []
     try:
@@ -265,51 +265,46 @@ def parse_mh_375(sheets_service):
             if not row or len(row) < 5:
                 continue
 
-            # 1. 행 내 모든 텍스트 결합 후 요약/통계 키워드 검사
-            row_joined = " ".join([str(x).strip() for x in row if x is not None])
-            
-            # 요약 행 키워드가 들어있는 행은 즉시 차수 해제 및 무조건 스킵
-            if any(k in row_joined for k in ['1차', '2차', '3차', '합계', '소계', '평균']):
+            row_text = " ".join([str(x).strip() for x in row if x is not None])
+
+            # 1. 요약/통계 키워드가 들어있는 행은 즉시 제외 및 차수 리셋
+            if any(k in row_text for k in ['1차', '2차', '3차', '합계', '소계', '평균']):
                 curr_shift = None
                 continue
 
-            # 2. 날짜 파싱 (A열 또는 B열에서 MM/DD 추출)
+            # 2. 날짜 추출 ('10/15 목' 또는 '10/15' 형태)
             raw_date = str(row[0]).strip() if len(row) > 0 else ""
             if not raw_date and len(row) > 1 and "/" in str(row[1]):
                 raw_date = str(row[1]).strip()
 
-            if raw_date and "/" in raw_date:
-                parts = raw_date.split()
-                md = parts[0].split("/")
+            if "/" in raw_date:
+                clean_date_part = raw_date.split()[0].strip()  # '10/15' 추출
+                md = clean_date_part.split("/")
                 if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
                     try:
                         curr_date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
-                        curr_shift = None  # 날짜 변경 시 차수 초기화
+                        curr_shift = None
                     except Exception:
                         pass
 
-            # 3. B열 차수 추적 (주간/야간 상태 관리)
+            # 3. B열 차수 상태 관리
             raw_shift = str(row[1]).strip() if len(row) > 1 else ""
             if "주간" in raw_shift:
                 curr_shift = "주간"
             elif "야간" in raw_shift:
                 curr_shift = "야간"
             elif raw_shift != "":
-                # 주간/야간이 아닌 다른 문자열이 B열에 있으면 차수 해제
                 curr_shift = None
 
-            # 실작업 차수가 아니면 스킵
             if curr_shift not in ["주간", "야간"]:
                 continue
 
-            # 4. C열(시작) 및 D열(종료) 시간 검증
+            # 4. C열 시작시간 검증
             start_time = str(row[2]).strip() if len(row) > 2 else ""
-            end_time = str(row[3]).strip() if len(row) > 3 else ""
-
             if not curr_date_str or ":" not in start_time:
                 continue
 
-            # 5. E열 작업시간 검증 (실작업은 0.5~1.0h, 요약행의 긴 작업시간 배제)
+            # 5. E열 작업시간 검증 (실작업 0.5~1.0h만 허용, 요약행 3.0h 이상 차단)
             work_time_str = str(row[4]).strip() if len(row) > 4 else ""
             try:
                 work_time_val = float(work_time_str.replace(",", "").replace("-", "0"))
@@ -318,15 +313,15 @@ def parse_mh_375(sheets_service):
             except ValueError:
                 continue
 
-            # 6. AB열 M/H 수집 (AB열은 인덱스 27)
+            # 6. AB열 M/H 수집 (AB열 인덱스는 27)
             mh_val_raw = str(row[27]).strip() if len(row) > 27 else ""
             if not mh_val_raw:
                 continue
 
             try:
                 clean_mh = float(mh_val_raw.replace(",", "").replace("-", "0"))
-                # 실작업 M/H는 보통 10~60 수준이며, 요약행(171, 198, 221, 590 등)은 차단
-                if clean_mh <= 0 or clean_mh >= 90.0:
+                # 실작업 1개 시간대 M/H는 10~60 수준이므로 80 이상 요약치는 제외
+                if clean_mh <= 0 or clean_mh >= 80.0:
                     continue
 
                 h_int = int(start_time.split(":")[0])
