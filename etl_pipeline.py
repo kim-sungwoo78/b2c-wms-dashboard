@@ -247,11 +247,10 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 def parse_mh_375(sheets_service):
     """
     375 센터: '2026PPH' 정제 시트 직결 수집
-    A열: 날짜, B열: 시작시간, C열: 종료시간, D열: 작업시간, E열: M/H, F열: PPH
+    A열: 날자, B열: 시작, C열: 종료, D열: 작업시간, E열: M/H, F열: PPH
     """
     rows_to_save = []
     try:
-        # 새로 생성된 정제 시트('2026PPH')에서 A열부터 E열까지 직접 수집
         range_name = "'2026PPH'!A2:E10000"
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID_375, range=range_name
@@ -268,33 +267,51 @@ def parse_mh_375(sheets_service):
             start_time = str(row[1]).strip()
             mh_raw = str(row[4]).strip()
 
-            # 날짜, 시작시간, M/H가 모두 존재하는 행만 수집
-            if "/" in raw_date and ":" in start_time and mh_raw:
-                try:
-                    clean_mh = float(mh_raw.replace(",", "").replace("-", "0"))
-                    if clean_mh <= 0:
-                        continue
+            if not raw_date or not start_time or ":" not in start_time or not mh_raw:
+                continue
 
-                    # 날짜 형식 정리 (MM/DD -> YYYY-MM-DD)
-                    clean_date_part = raw_date.split()[0].strip()
-                    md = clean_date_part.split("/")
-                    if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
-                        date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
-                    else:
-                        continue
+            # 날짜 형식 정밀 파싱 (2026. 10. 15, 2026-10-15, 10/15 목 모두 자동 인식)
+            date_str = None
+            if "." in raw_date:
+                parts = [p.strip() for p in raw_date.split(".") if p.strip()]
+                if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+                    y = int(parts[0])
+                    m = int(parts[1])
+                    d = int(parts[2].split()[0])
+                    date_str = f"{y:04d}-{m:02d}-{d:02d}"
+            elif "-" in raw_date:
+                parts = [p.strip() for p in raw_date.split("-") if p.strip()]
+                if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+                    y = int(parts[0])
+                    m = int(parts[1])
+                    d = int(parts[2].split()[0])
+                    date_str = f"{y:04d}-{m:02d}-{d:02d}"
+            elif "/" in raw_date:
+                clean_date_part = raw_date.split()[0].strip()
+                md = clean_date_part.split("/")
+                if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
+                    date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
 
-                    # 시작시간 기준 시간대 라벨 생성
-                    h_int = int(start_time.split(":")[0])
-                    time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
+            if not date_str:
+                continue
 
-                    rows_to_save.append({
-                        '영업마감일자': date_str,
-                        '시간대': time_label,
-                        '센터그룹': '375',
-                        'MH': clean_mh
-                    })
-                except Exception:
+            try:
+                # '0.0 0' 같은 서식 공백 대비 split()[0] 처리
+                clean_mh = float(str(mh_raw).split()[0].replace(",", "").replace("-", "0"))
+                if clean_mh <= 0:
                     continue
+
+                h_int = int(start_time.split(":")[0])
+                time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
+
+                rows_to_save.append({
+                    '영업마감일자': date_str,
+                    '시간대': time_label,
+                    '센터그룹': '375',
+                    'MH': clean_mh
+                })
+            except Exception:
+                continue
     except Exception as e:
         print(f"2026PPH 수집 에러: {e}")
     return rows_to_save
