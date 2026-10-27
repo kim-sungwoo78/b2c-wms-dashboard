@@ -307,18 +307,24 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 데이터 로드 - 정상 M/H 데이터 복원 및 중복 방지]
+# ⭐ [M/H 데이터 로드 - 과거 stale DB 덮어쓰기 방지 및 정밀 조회]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = end_date.strftime('%Y-%m-%d')
-    
+    start_ym = start_date.strftime('%Y%m')
+    end_ym = end_date.strftime('%Y%m')
+
+    # 해당 조회 기간에 매칭되는 월별 DB 파일 우선 검색
     all_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
     if not all_dbs:
         return pd.DataFrame()
 
+    # 월별 DB(wms_b2c_YYYYMM.db)를 기본 DB(wms_b2c.db)보다 우선하도록 정렬
+    sorted_dbs = sorted(all_dbs, key=lambda x: (len(x), x), reverse=True)
+
     all_dfs = []
-    for db_p in set(all_dbs):
+    for db_p in sorted_dbs:
         try:
             conn = sqlite3.connect(db_p, timeout=10)
             query = "SELECT 영업마감일자, 시간대, 센터그룹, MH FROM center_mh_hourly WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?"
@@ -332,6 +338,13 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                 all_dfs.append(df_mh)
         except Exception:
             pass
+
+    if all_dfs:
+        combined = pd.concat(all_dfs, ignore_index=True)
+        # 우선순위가 높은 월별 전용 DB의 데이터(first)를 유지하고 중복 제거
+        dedup_mh = combined.drop_duplicates(subset=['영업마감일자', '시간대', '센터그룹'], keep='first')
+        return dedup_mh
+    return pd.DataFrame()
 
     if all_dfs:
         combined = pd.concat(all_dfs, ignore_index=True)
