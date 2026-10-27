@@ -320,46 +320,76 @@ def parse_mh_375(sheets_service):
 
 def parse_mh_xfc(sheets_service):
     """
-    XFC 센터: (XFC센터)출고Dashboard -> 'PPH-(일)(자동화)'
+    XFC 센터: (XFC센터)출고Dashboard -> gid=2095366234 탭 직결 수집
     A열: 날짜(0), G열: 시작시간(6), I열: 작업시간(8), J열: 완성된 M/H(9)
     """
     rows_to_save = []
     try:
-        # 1. 시트 탭 목록 확인 후 'PPH-(일)(자동화)' 탭 자동 탐색
+        # 1. 고유 gid(2095366234)로 정확한 탭 이름 자동 탐색
         meta = sheets_service.spreadsheets().get(spreadsheetId=SHEET_ID_XFC).execute()
-        target_tab = 'PPH-(일)(자동화)'
+        target_tab = None
         for s in meta.get('sheets', []):
-            t_title = s.get('properties', {}).get('title', '')
-            if 'PPH-(일)(자동화)' in t_title.replace(" ", ""):
-                target_tab = t_title
+            s_props = s.get('properties', {})
+            # URL에 포함된 고유 시트 ID(gid) 일치 확인
+            if str(s_props.get('sheetId', '')) == '2095366234':
+                target_tab = s_props.get('title', '')
                 break
+            # 백업: 탭 이름에 PPH나 자동화가 포함된 경우
+            if 'PPH' in s_props.get('title', '').replace(" ", ""):
+                target_tab = s_props.get('title', '')
 
-        # 2. A열부터 J열(인덱스 9)까지만 안전하게 수집 (21칸까지 갈 필요 없음)
+        if not target_tab:
+            target_tab = meta.get('sheets', [])[0].get('properties', {}).get('title', 'PPH-(일)(자동화)')
+
+        # 2. A열(날짜)부터 J열(M/H)까지 직접 수집
         range_name = f"'{target_tab}'!A6:J"
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID_XFC, range=range_name
         ).execute()
         values = result.get('values', [])
 
+        curr_year = datetime.now().year
+
         for row in values:
-            # 최소 J열(인덱스 9)까지 존재하는 행만 확인
             if not row or len(row) < 10:
                 continue
 
             raw_date = str(row[0]).strip()
             start_time = str(row[6]).strip()
             work_time_raw = str(row[8]).strip()
-            mh_raw = str(row[9]).strip()  # ⭐ J열에 이미 계산된 완성 M/H 직접 수집
+            mh_raw = str(row[9]).strip()  # ⭐ J열 완성된 M/H 직접 수집
 
             if not raw_date or ":" not in start_time or not mh_raw:
                 continue
 
-            # 날짜 정제: '2026-10-15(목)' -> '2026-10-15'
-            date_clean = raw_date[:10]
+            # 날짜 정밀 파싱 (46310 일련번호, 2026-10-15(목), 2026.10.15 모두 대응)
+            date_clean = None
+            try:
+                val_float = float(raw_date)
+                if 40000 <= val_float <= 60000:
+                    date_clean = (datetime(1899, 12, 30) + timedelta(days=int(val_float))).strftime('%Y-%m-%d')
+            except Exception:
+                pass
+
+            if not date_clean and "-" in raw_date:
+                parts = [p.strip() for p in raw_date.split("-") if p.strip()]
+                if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+                    d_num = "".join([c for c in parts[2] if c.isdigit()])
+                    if d_num:
+                        date_clean = f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(d_num):02d}"
+            elif not date_clean and "." in raw_date:
+                parts = [p.strip() for p in raw_date.split(".") if p.strip()]
+                if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+                    d_num = "".join([c for c in parts[2] if c.isdigit()])
+                    if d_num:
+                        date_clean = f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(d_num):02d}"
+
+            if not date_clean:
+                continue
 
             try:
                 work_time = float(work_time_raw.replace(",", "").replace("-", "0"))
-                # 실작업 시간대(0.1h ~ 1.5h)만 인정 (준비/휴게 시간 0.00h 제외)
+                # 실작업 시간대(0.1h ~ 1.5h)만 인정
                 if work_time <= 0.1 or work_time > 1.5:
                     continue
 
