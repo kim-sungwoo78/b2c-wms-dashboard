@@ -307,13 +307,14 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 데이터 로드 - 2026PPH 정제 시트 실시간 직결 연동]
+# ⭐ [M/H 데이터 로드 - 2026PPH 정제 시트 실시간 직결 + 예외 안전 방어]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = end_date.strftime('%Y-%m-%d')
 
     rows_to_save = []
+
     # 1. 375 센터 M/H: 새로 만드신 2026PPH 구글 시트에서 직접 수집
     if "gcp_service_account" in st.secrets and (not center_group or center_group == '375'):
         try:
@@ -321,7 +322,16 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
             creds_dict = dict(st.secrets["gcp_service_account"])
             sheets_service = etl_pipeline.get_sheets_service(creds_dict)
             
-            range_name = "'2026PPH'!A2:E"
+            # 시트 탭 목록을 동적으로 확인하여 '2026PPH'가 포함된 정확한 탭 이름을 탐색
+            meta = sheets_service.spreadsheets().get(spreadsheetId=etl_pipeline.SHEET_ID_375).execute()
+            target_tab_title = '2026PPH'
+            for s_info in meta.get('sheets', []):
+                t_name = s_info.get('properties', {}).get('title', '')
+                if '2026PPH' in t_name.replace(" ", ""):
+                    target_tab_title = t_name
+                    break
+
+            range_name = f"'{target_tab_title}'!A2:F"
             result = sheets_service.spreadsheets().values().get(
                 spreadsheetId=etl_pipeline.SHEET_ID_375, range=range_name
             ).execute()
@@ -339,20 +349,31 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                 if not raw_date or not start_time or ":" not in start_time or not mh_raw:
                     continue
 
+                # 날짜 형식 자동 파싱 (2026. 10. 15 / 10/15 목 / 2026-10-15 모두 대응)
                 date_str = None
                 if "." in raw_date:
                     parts = [p.strip() for p in raw_date.split(".") if p.strip()]
                     if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
-                        date_str = f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2].split()[0]):02d}"
+                        d_num = "".join([c for c in parts[2].split()[0] if c.isdigit()])
+                        if d_num:
+                            y = int(parts[0])
+                            if y < 100: y += 2000
+                            date_str = f"{y:04d}-{int(parts[1]):02d}-{int(d_num):02d}"
                 elif "-" in raw_date:
                     parts = [p.strip() for p in raw_date.split("-") if p.strip()]
                     if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
-                        date_str = f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2].split()[0]):02d}"
+                        d_num = "".join([c for c in parts[2].split()[0] if c.isdigit()])
+                        if d_num:
+                            y = int(parts[0])
+                            if y < 100: y += 2000
+                            date_str = f"{y:04d}-{int(parts[1]):02d}-{int(d_num):02d}"
                 elif "/" in raw_date:
-                    clean_date_part = raw_date.split()[0].strip()
-                    md = clean_date_part.split("/")
-                    if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
-                        date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
+                    parts = [p.strip() for p in raw_date.split("/") if p.strip()]
+                    if len(parts) == 2:
+                        m_str = "".join([c for c in parts[0] if c.isdigit()])
+                        d_str = "".join([c for c in parts[1].split()[0] if c.isdigit()])
+                        if m_str and d_str:
+                            date_str = f"{curr_year}-{int(m_str):02d}-{int(d_str):02d}"
 
                 if not date_str:
                     continue
@@ -373,7 +394,7 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                 except Exception:
                     continue
         except Exception as e:
-            print(f"2026PPH 직결 로드 에러: {e}")
+            st.toast(f"⚠️ 2026PPH 실시간 로드 안내: {e}")
 
     # 2. XFC 센터 M/H 로드
     if "gcp_service_account" in st.secrets and (not center_group or center_group == 'XFC'):
@@ -386,14 +407,36 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
         except Exception:
             pass
 
-    # 3. 날짜 범위 필터링 및 반환
+    # 3. 실시간 구글 시트에서 수집된 데이터 필터링 반환
     if rows_to_save:
         df_res = pd.DataFrame(rows_to_save)
         df_filtered = df_res[(df_res['영업마감일자'] >= start_str) & (df_res['영업마감일자'] <= end_str)]
         if center_group:
             df_filtered = df_filtered[df_filtered['센터그룹'] == center_group]
-        # 시간대별 고유 집계
-        return df_filtered.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].sum().reset_index()
+        if not df_filtered.empty:
+            return df_filtered.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].sum().reset_index()
+
+    # 4. (안전 백업) 구글 시트 조회가 비어있을 경우 기존 SQLite DB 파일에서 보조 로드
+    all_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
+    sorted_dbs = sorted(all_dbs, key=lambda x: (len(x), x), reverse=True)
+    all_dfs = []
+    for db_p in sorted_dbs:
+        try:
+            conn = sqlite3.connect(db_p, timeout=10)
+            query = "SELECT 영업마감일자, 시간대, 센터그룹, MH FROM center_mh_hourly WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?"
+            params = [start_str, end_str]
+            if center_group:
+                query += " AND 센터그룹 = ?"
+                params.append(center_group)
+            df_mh = pd.read_sql(query, conn, params=params)
+            conn.close()
+            if not df_mh.empty:
+                all_dfs.append(df_mh)
+        except Exception:
+            pass
+    if all_dfs:
+        combined = pd.concat(all_dfs, ignore_index=True)
+        return combined.drop_duplicates(subset=['영업마감일자', '시간대', '센터그룹'], keep='first')
 
     return pd.DataFrame()
 
@@ -1329,7 +1372,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     avg_inflow = round(tot_inflow / num_days, 1)
                     avg_shipment = round(tot_shipment / num_days, 1)
                     cur_mh = round(mh_map.get(label_key, 0.0), 1)
-                    # ⭐ 1,217건 / 44.0 = 27.7 PPH 정확 계산
+                    # ⭐ 실시간 PPH 계산
                     cur_pph = round(avg_shipment / cur_mh, 1) if cur_mh > 0 else None
                     
                     if avg_inflow > max_cnt_val: max_cnt_val = avg_inflow
