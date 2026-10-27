@@ -251,7 +251,8 @@ def parse_mh_375(sheets_service):
     """
     rows_to_save = []
     try:
-        range_name = "'2026PPH'!A2:E10000"
+        # 새로 만드신 2026PPH 시트의 A2:F 전체 범위를 직접 수집
+        range_name = "'2026PPH'!A2:F"
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID_375, range=range_name
         ).execute()
@@ -270,7 +271,7 @@ def parse_mh_375(sheets_service):
             if not raw_date or not start_time or ":" not in start_time or not mh_raw:
                 continue
 
-            # 날짜 형식 정밀 파싱 (2026. 10. 15, 2026-10-15, 10/15 목 모두 자동 인식)
+            # 날짜 형식 자동 정밀 변환 (2026. 10. 15 / 10/15 목 / 2026-10-15 모두 대응)
             date_str = None
             if "." in raw_date:
                 parts = [p.strip() for p in raw_date.split(".") if p.strip()]
@@ -296,7 +297,7 @@ def parse_mh_375(sheets_service):
                 continue
 
             try:
-                # '0.0 0' 같은 서식 공백 대비 split()[0] 처리
+                # 서식 공백 대비 split()[0] 처리
                 clean_mh = float(str(mh_raw).split()[0].replace(",", "").replace("-", "0"))
                 if clean_mh <= 0:
                     continue
