@@ -97,7 +97,7 @@ def run_sync():
         try:
             import importlib
             import etl_pipeline
-            importlib.reload(etl_pipeline)  # ⭐ 수정된 etl_pipeline 강제 즉시 반영
+            importlib.reload(etl_pipeline)  # 수정된 etl_pipeline 강제 즉시 반영
             
             creds_dict = dict(st.secrets["gcp_service_account"])
             service = etl_pipeline.get_drive_service(creds_dict)
@@ -307,122 +307,42 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 데이터 로드 - 375 및 XFC 구글 시트 실시간 직결 연동]
+# ⭐ [M/H 및 전체/직접 PPH 데이터 로드 - 375 & XFC 구글 시트 직결]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = end_date.strftime('%Y-%m-%d')
 
     rows_to_save = []
-    CORRECT_SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlhGS6g"
-
-    # 1. 375 센터 M/H: 2026PPH 구글 시트 직결 수집
-    if "gcp_service_account" in st.secrets and (not center_group or center_group == '375'):
+    if "gcp_service_account" in st.secrets:
         try:
             import etl_pipeline
             creds_dict = dict(st.secrets["gcp_service_account"])
             sheets_service = etl_pipeline.get_sheets_service(creds_dict)
-            
-            meta = sheets_service.spreadsheets().get(spreadsheetId=CORRECT_SHEET_ID_375).execute()
-            target_tab_title = '2026PPH'
-            for s_info in meta.get('sheets', []):
-                t_name = s_info.get('properties', {}).get('title', '')
-                if '2026PPH' in t_name.replace(" ", ""):
-                    target_tab_title = t_name
-                    break
 
-            range_name = f"'{target_tab_title}'!A2:F"
-            result = sheets_service.spreadsheets().values().get(
-                spreadsheetId=CORRECT_SHEET_ID_375, range=range_name
-            ).execute()
-            values = result.get('values', [])
-            curr_year = datetime.now().year
+            if not center_group or center_group == '375':
+                list_375 = etl_pipeline.parse_mh_375(sheets_service)
+                rows_to_save.extend(list_375)
 
-            for row in values:
-                if not row or len(row) < 5:
-                    continue
-                raw_date = str(row[0]).strip()
-                start_time = str(row[1]).strip()
-                mh_raw = str(row[4]).strip()
-
-                if not raw_date or not start_time or ":" not in start_time or not mh_raw:
-                    continue
-
-                date_str = None
-                try:
-                    val_float = float(raw_date)
-                    if 40000 <= val_float <= 60000:
-                        date_str = (datetime(1899, 12, 30) + timedelta(days=int(val_float))).strftime('%Y-%m-%d')
-                except Exception:
-                    pass
-
-                if not date_str and "." in raw_date:
-                    parts = [p.strip() for p in raw_date.split(".") if p.strip()]
-                    if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
-                        d_num = "".join([c for c in parts[2].split()[0] if c.isdigit()])
-                        if d_num:
-                            y = int(parts[0])
-                            if y < 100: y += 2000
-                            date_str = f"{y:04d}-{int(parts[1]):02d}-{int(d_num):02d}"
-                elif not date_str and "-" in raw_date:
-                    parts = [p.strip() for p in raw_date.split("-") if p.strip()]
-                    if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
-                        d_num = "".join([c for c in parts[2].split()[0] if c.isdigit()])
-                        if d_num:
-                            y = int(parts[0])
-                            if y < 100: y += 2000
-                            date_str = f"{y:04d}-{int(parts[1]):02d}-{int(d_num):02d}"
-                elif not date_str and "/" in raw_date:
-                    parts = [p.strip() for p in raw_date.split("/") if p.strip()]
-                    if len(parts) == 2:
-                        m_str = "".join([c for c in parts[0] if c.isdigit()])
-                        d_str = "".join([c for c in parts[1].split()[0] if c.isdigit()])
-                        if m_str and d_str:
-                            date_str = f"{curr_year}-{int(m_str):02d}-{int(d_str):02d}"
-
-                if not date_str:
-                    continue
-
-                try:
-                    clean_mh = float(str(mh_raw).split()[0].replace(",", "").replace("-", "0"))
-                    if clean_mh <= 0:
-                        continue
-                    h_int = int(start_time.split(":")[0])
-                    time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
-
-                    rows_to_save.append({
-                        '영업마감일자': date_str,
-                        '시간대': time_label,
-                        '센터그룹': '375',
-                        'MH': clean_mh
-                    })
-                except Exception:
-                    continue
+            if not center_group or center_group == 'XFC':
+                list_xfc = etl_pipeline.parse_mh_xfc(sheets_service)
+                rows_to_save.extend(list_xfc)
         except Exception as e:
-            st.toast(f"⚠️ 2026PPH 연동 에러: {e}")
+            st.toast(f"⚠️ PPH 데이터 실시간 로드 안내: {e}")
 
-    # 2. XFC 센터 M/H: 고유 gid 탭 직결 수집
-    if "gcp_service_account" in st.secrets and (not center_group or center_group == 'XFC'):
-        try:
-            import etl_pipeline
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            sheets_service = etl_pipeline.get_sheets_service(creds_dict)
-            list_xfc = etl_pipeline.parse_mh_xfc(sheets_service)
-            rows_to_save.extend(list_xfc)
-        except Exception as e_xfc:
-            st.toast(f"⚠️ XFC 실시간 로드 안내: {e_xfc}")
-
-    # 3. 실시간 구글 시트 수집 데이터 필터링 반환
     if rows_to_save:
         df_res = pd.DataFrame(rows_to_save)
         df_filtered = df_res[(df_res['영업마감일자'] >= start_str) & (df_res['영업마감일자'] <= end_str)]
         if center_group:
             df_filtered = df_filtered[df_filtered['센터그룹'] == center_group]
         if not df_filtered.empty:
-            return df_filtered.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].sum().reset_index()
+            return df_filtered.groupby(['영업마감일자', '시간대', '센터그룹']).agg({
+                'MH': 'sum',
+                '전체PPH': 'mean',
+                '직접PPH': 'mean'
+            }).reset_index()
 
     return pd.DataFrame()
-    
 
 @st.cache_data(ttl=5)
 def load_mh_summary_by_months(selected_m_list):
@@ -1272,11 +1192,11 @@ elif main_mode == "🚚 B2C 출고 현황":
                 st.info("선택된 기간 및 조건의 SKU 출고 데이터가 없습니다.")
 
     # ==========================================
-    # ⏱️ 탭 5 : 시간대별 주문/마감 & PPH (PPH 막대 우측 단독 표출)
+    # ⏱️ 탭 5 : 시간대별 주문/마감 & 전체/직접 PPH 독립 세로형 추세선 분석
     # ==========================================
     with tab5:
         st.header("⏱️ 시간대별 주문 인입 vs 마감 & PPH 효율 분석 (06시 영업 타임라인)")
-        st.caption("주문 인입량과 송장 마감량을 세로형 타임라인으로 비교하고, 막대 우측 바깥쪽에 계산된 실시간 PPH 뱃지를 단독으로 표시합니다.")
+        st.caption("주문 인입량과 송장 마감량을 비교하고, 우측에 전체 PPH 및 직접 PPH를 세로형 추세선으로 나란히 표시합니다.")
 
         c_h1, c_h2, c_h3 = st.columns([3, 2, 2])
         df_centers_sample_h = load_shipment_orders("전체")
@@ -1340,8 +1260,14 @@ elif main_mode == "🚚 B2C 출고 현황":
                 shipment_cnt = df_raw_h.groupby('마감시간대')['송장번호'].nunique().to_dict()
 
                 mh_map = {}
+                pph_tot_map = {}
+                pph_dir_map = {}
                 if not df_mh_h.empty:
                     mh_map = (df_mh_h.groupby('시간대')['MH'].sum() / num_days).to_dict()
+                    if '전체PPH' in df_mh_h.columns:
+                        pph_tot_map = df_mh_h.dropna(subset=['전체PPH']).groupby('시간대')['전체PPH'].mean().to_dict()
+                    if '직접PPH' in df_mh_h.columns:
+                        pph_dir_map = df_mh_h.dropna(subset=['직접PPH']).groupby('시간대')['직접PPH'].mean().to_dict()
 
                 chart_rows = []
                 max_cnt_val = 0
@@ -1356,9 +1282,15 @@ elif main_mode == "🚚 B2C 출고 현황":
                     avg_inflow = round(tot_inflow / num_days, 1)
                     avg_shipment = round(tot_shipment / num_days, 1)
                     cur_mh = round(mh_map.get(label_key, 0.0), 1)
-                    # ⭐ 실시간 PPH 계산
-                    cur_pph = round(avg_shipment / cur_mh, 1) if cur_mh > 0 else None
                     
+                    # 전체 PPH & 직접 PPH 값 추출
+                    tot_p_val = pph_tot_map.get(label_key, None)
+                    dir_p_val = pph_dir_map.get(label_key, None)
+
+                    # 375 센터의 전체 PPH가 시트에 아직 비어있으면 마감건수/MH 자동 보정 산출
+                    if tot_p_val is None and target_mh_group == '375' and cur_mh > 0:
+                        tot_p_val = round(avg_shipment / cur_mh, 1)
+
                     if avg_inflow > max_cnt_val: max_cnt_val = avg_inflow
                     if avg_shipment > max_cnt_val: max_cnt_val = avg_shipment
 
@@ -1367,84 +1299,126 @@ elif main_mode == "🚚 B2C 출고 현황":
                         '주문 인입건수': avg_inflow,
                         '송장 마감건수': avg_shipment,
                         '투입 M/H': cur_mh,
-                        'PPH': cur_pph
+                        '전체 PPH': tot_p_val,
+                        '직접 PPH': dir_p_val
                     })
 
                 df_chart = pd.DataFrame(chart_rows)
                 title_prefix = f"일평균 ({num_days}일간 평균)" if num_days > 1 else f"당일 ({start_dh.strftime('%Y-%m-%d')})"
-                
-                fig_v = go.Figure()
-                
-                # 1. 주문 인입량 가로 막대 (초록)
+
+                # 3열 서브플롯 구성: [가로 막대 60%] | [전체 PPH 세로 추세선 20%] | [직접 PPH 세로 추세선 20%]
+                fig_v = make_subplots(
+                    rows=1, cols=3,
+                    column_widths=[0.60, 0.20, 0.20],
+                    shared_yaxes=True,
+                    horizontal_spacing=0.03,
+                    subplot_titles=(
+                        f"<b>[{title_prefix}] 주문 인입 vs 송장 마감</b>",
+                        "<b>⚡ 전체 PPH</b>",
+                        "<b>🎯 직접 PPH</b>"
+                    )
+                )
+
+                # 1. 좌측 가로 막대: 주문 인입건수 (초록)
                 fig_v.add_trace(go.Bar(
                     y=df_chart['시간대'],
                     x=df_chart['주문 인입건수'],
                     name='주문 인입건수 (결제일시 기준)',
                     orientation='h',
                     marker_color='#81c784',
-                    text=[f"{v:,.1f}" if v > 0 else "" for v in df_chart['주문 인입건수']],
+                    text=[f"{v:,.0f}" if v > 0 else "" for v in df_chart['주문 인입건수']],
                     textposition='outside'
-                ))
+                ), row=1, col=1)
 
-                # 2. 송장 마감량 가로 막대 (파랑)
+                # 1. 좌측 가로 막대: 송장 마감건수 (파랑)
                 fig_v.add_trace(go.Bar(
                     y=df_chart['시간대'],
                     x=df_chart['송장 마감건수'],
                     name='송장 마감건수 (마감일시 기준)',
                     orientation='h',
                     marker_color='#64b5f6',
-                    text=[f"{v:,.1f}" if v > 0 else "" for v in df_chart['송장 마감건수']],
+                    text=[f"{v:,.0f}" if v > 0 else "" for v in df_chart['송장 마감건수']],
                     textposition='outside'
-                ))
+                ), row=1, col=1)
 
-                # ⭐ 실시간 PPH 뱃지 (독립 표출)
-                x_offset_badge = max_cnt_val * 1.08 if max_cnt_val > 0 else 500
-                valid_pph_df = df_chart[df_chart['PPH'].notnull()]
-                
-                if not valid_pph_df.empty:
+                # 2. 우측 1열: 전체 PPH 세로형 추세선 (주황색)
+                valid_tot = df_chart[df_chart['전체 PPH'].notnull()]
+                if not valid_tot.empty:
                     fig_v.add_trace(go.Scatter(
-                        y=valid_pph_df['시간대'],
-                        x=[x_offset_badge] * len(valid_pph_df),
-                        name='실시간 PPH 뱃지',
-                        mode='text',
-                        text=[f"⚡ PPH {v:,.1f}" for v in valid_pph_df['PPH']],
+                        y=valid_tot['시간대'],
+                        x=valid_tot['전체 PPH'],
+                        name='전체 PPH 추세',
+                        mode='lines+markers+text',
+                        line=dict(color='#f97316', width=2.5),
+                        marker=dict(size=7, color='#ea580c', line=dict(color='#ffffff', width=1.2)),
+                        text=[f"{v:.1f}" for v in valid_tot['전체 PPH']],
                         textposition='middle right',
-                        textfont=dict(color='#f97316', size=11, family='sans-serif'),
-                        hoverinfo='none',
-                        showlegend=True
-                    ))
+                        textfont=dict(color='#fb923c', size=11),
+                        showlegend=False
+                    ), row=1, col=2)
 
-                x_limit_max = max(max_cnt_val * 1.35, 1000)
+                # 3. 우측 2열: 직접 PPH 세로형 추세선 (초록색)
+                valid_dir = df_chart[df_chart['직접 PPH'].notnull()]
+                if not valid_dir.empty:
+                    fig_v.add_trace(go.Scatter(
+                        y=valid_dir['시간대'],
+                        x=valid_dir['직접 PPH'],
+                        name='직접 PPH 추세',
+                        mode='lines+markers+text',
+                        line=dict(color='#10b981', width=2.5),
+                        marker=dict(size=7, color='#059669', line=dict(color='#ffffff', width=1.2)),
+                        text=[f"{v:.1f}" for v in valid_dir['직접 PPH']],
+                        textposition='middle right',
+                        textfont=dict(color='#34d399', size=11),
+                        showlegend=False
+                    ), row=1, col=3)
+
+                # 차트 축 및 레이아웃 설정
+                x_bar_max = max(max_cnt_val * 1.25, 1000)
+                fig_v.update_xaxes(title_text="건수 (건/일)", range=[0, x_bar_max], row=1, col=1)
+                
+                if not valid_tot.empty:
+                    min_t, max_t = valid_tot['전체 PPH'].min(), valid_tot['전체 PPH'].max()
+                    fig_v.update_xaxes(range=[max(0, min_t - 5), max_t + 10], row=1, col=2)
+                else:
+                    fig_v.update_xaxes(showticklabels=False, row=1, col=2)
+
+                if not valid_dir.empty:
+                    min_d, max_d = valid_dir['직접 PPH'].min(), valid_dir['직접 PPH'].max()
+                    fig_v.update_xaxes(range=[max(0, min_d - 5), max_d + 10], row=1, col=3)
+                else:
+                    fig_v.update_xaxes(showticklabels=False, row=1, col=3)
+
+                fig_v.update_yaxes(autorange="reversed")
 
                 fig_v.update_layout(
-                    title=f"<b>[{title_prefix}] 06시 영업 타임라인 시간대별 주문 인입 vs 마감 & PPH (세로형)</b>",
                     template="plotly_dark",
                     barmode='group',
-                    height=1000,
-                    margin=dict(l=80, r=90, t=60, b=40),
-                    yaxis=dict(autorange="reversed"),
-                    xaxis=dict(title="건수 (건/일)", range=[0, x_limit_max]),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="right", x=1)
+                    height=950,
+                    margin=dict(l=80, r=40, t=70, b=40),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0)
                 )
 
                 st.plotly_chart(fig_v, use_container_width=True)
 
                 st.markdown("---")
-                st.subheader("📋 시간대별 세부 수치 비교표 (M/H 및 PPH 포함)")
-                
+                st.subheader("📋 시간대별 세부 수치 비교표 (전체 PPH 및 직접 PPH 포함)")
+
                 tot_in = df_chart['주문 인입건수'].sum()
                 tot_out = df_chart['송장 마감건수'].sum()
-                
-                df_chart_disp = df_chart.copy()
-                df_chart_disp['인입 비중(%)'] = (df_chart['주문 인입건수'] / tot_in * 100).round(1).fillna(0).astype(str) + "%" if tot_in > 0 else "0.0%"
-                df_chart_disp['마감 비중(%)'] = (df_chart['송장 마감건수'] / tot_out * 100).round(1).fillna(0).astype(str) + "%" if tot_out > 0 else "0.0%"
-                
-                df_chart_disp['주문 인입건수'] = df_chart_disp['주문 인입건수'].apply(lambda x: f"{x:,.1f}")
-                df_chart_disp['송장 마감건수'] = df_chart_disp['송장 마감건수'].apply(lambda x: f"{x:,.1f}")
-                df_chart_disp['투입 M/H'] = df_chart_disp['투입 M/H'].apply(lambda x: f"{x:,.1f}" if float(x) > 0 else "-")
-                df_chart_disp['PPH'] = df_chart_disp['PPH'].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) else "-")
 
-                st.dataframe(df_chart_disp, use_container_width=True, hide_index=True)
+                # 7개 컬럼 순서 데이터프레임 구성
+                df_table = pd.DataFrame({
+                    '시간대': df_chart['시간대'],
+                    '주문 인입건수': df_chart['주문 인입건수'].apply(lambda x: f"{x:,.0f}"),
+                    '송장 마감건수': df_chart['송장 마감건수'].apply(lambda x: f"{x:,.0f}"),
+                    '인입 비중(%)': (df_chart['주문 인입건수'] / tot_in * 100).round(1).fillna(0).astype(str) + "%" if tot_in > 0 else "0.0%",
+                    '마감 비중(%)': (df_chart['송장 마감건수'] / tot_out * 100).round(1).fillna(0).astype(str) + "%" if tot_out > 0 else "0.0%",
+                    '전체 PPH': df_chart['전체 PPH'].apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "-"),
+                    '직접 PPH': df_chart['직접 PPH'].apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "-")
+                })
+
+                st.dataframe(df_table, use_container_width=True, hide_index=True)
 
             else:
                 st.info("선택된 기간 및 조건의 로우 데이터가 없습니다.")
