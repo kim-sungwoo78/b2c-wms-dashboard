@@ -405,7 +405,7 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
         except Exception as e:
             st.toast(f"⚠️ 2026PPH 연동 에러: {e}")
 
-   # 2. XFC 센터 M/H 로드 (예외 발생 시 화면 우측 상단 토스트로 안내 표출)
+  # 2. XFC 센터 M/H 로드 (예외 시 토스트 안내 표출)
     if "gcp_service_account" in st.secrets and (not center_group or center_group == 'XFC'):
         try:
             import etl_pipeline
