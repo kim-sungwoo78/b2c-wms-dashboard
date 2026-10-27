@@ -307,7 +307,7 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 데이터 로드 - 2026PPH 정제 시트 실시간 직결 + 예외 안전 방어]
+# ⭐ [M/H 데이터 로드 - 2026PPH 일련번호/텍스트 날짜 완벽 직결]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     start_str = start_date.strftime('%Y-%m-%d')
@@ -322,7 +322,7 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
             creds_dict = dict(st.secrets["gcp_service_account"])
             sheets_service = etl_pipeline.get_sheets_service(creds_dict)
             
-            # 시트 탭 목록을 동적으로 확인하여 '2026PPH'가 포함된 정확한 탭 이름을 탐색
+            # 시트 탭 목록 동적 확인
             meta = sheets_service.spreadsheets().get(spreadsheetId=etl_pipeline.SHEET_ID_375).execute()
             target_tab_title = '2026PPH'
             for s_info in meta.get('sheets', []):
@@ -349,9 +349,18 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                 if not raw_date or not start_time or ":" not in start_time or not mh_raw:
                     continue
 
-                # 날짜 형식 자동 파싱 (2026. 10. 15 / 10/15 목 / 2026-10-15 모두 대응)
                 date_str = None
-                if "." in raw_date:
+
+                # ① 구글시트 수식 일련번호 날짜 처리 (예: 46310 -> 2026-10-15)
+                try:
+                    val_float = float(raw_date)
+                    if 40000 <= val_float <= 60000:
+                        date_str = (datetime(1899, 12, 30) + timedelta(days=int(val_float))).strftime('%Y-%m-%d')
+                except Exception:
+                    pass
+
+                # ② 점(.) 구분자 날짜 처리 (예: 2026. 10. 15)
+                if not date_str and "." in raw_date:
                     parts = [p.strip() for p in raw_date.split(".") if p.strip()]
                     if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
                         d_num = "".join([c for c in parts[2].split()[0] if c.isdigit()])
@@ -359,7 +368,9 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                             y = int(parts[0])
                             if y < 100: y += 2000
                             date_str = f"{y:04d}-{int(parts[1]):02d}-{int(d_num):02d}"
-                elif "-" in raw_date:
+
+                # ③ 하이픈(-) 구분자 날짜 처리 (예: 2026-10-15)
+                if not date_str and "-" in raw_date:
                     parts = [p.strip() for p in raw_date.split("-") if p.strip()]
                     if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
                         d_num = "".join([c for c in parts[2].split()[0] if c.isdigit()])
@@ -367,7 +378,9 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                             y = int(parts[0])
                             if y < 100: y += 2000
                             date_str = f"{y:04d}-{int(parts[1]):02d}-{int(d_num):02d}"
-                elif "/" in raw_date:
+
+                # ④ 슬래시(/) 구분자 날짜 처리 (예: 10/15 목)
+                if not date_str and "/" in raw_date:
                     parts = [p.strip() for p in raw_date.split("/") if p.strip()]
                     if len(parts) == 2:
                         m_str = "".join([c for c in parts[0] if c.isdigit()])
@@ -415,6 +428,8 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
             df_filtered = df_filtered[df_filtered['센터그룹'] == center_group]
         if not df_filtered.empty:
             return df_filtered.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].sum().reset_index()
+
+    return pd.DataFrame()
 
     # 4. (안전 백업) 구글 시트 조회가 비어있을 경우 기존 SQLite DB 파일에서 보조 로드
     all_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
