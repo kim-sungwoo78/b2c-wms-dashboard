@@ -316,79 +316,68 @@ def parse_mh_375(sheets_service):
     except Exception as e:
         print(f"2026PPH 수집 에러: {e}")
     return rows_to_save
-    
+
 
 def parse_mh_xfc(sheets_service):
-  """XFC 센터: (XFC센터)출고Dashboard -> 'PPH-(일)(자동화)'
+    """
+    XFC 센터: (XFC센터)출고Dashboard -> 'PPH-(일)(자동화)'
+    A열: 날짜(0), G열: 시작(6), H열: 종료(7), I열: 작업시간(8), J열: M/H(9)
+    """
+    rows_to_save = []
+    try:
+        # 1. 시트 탭 이름 자동 탐색 ('PPH-(일)(자동화)')
+        meta = sheets_service.spreadsheets().get(spreadsheetId=SHEET_ID_XFC).execute()
+        target_tab = 'PPH-(일)(자동화)'
+        for s in meta.get('sheets', []):
+            t_title = s.get('properties', {}).get('title', '')
+            if 'PPH-(일)(자동화)' in t_title.replace(" ", ""):
+                target_tab = t_title
+                break
 
-  A열: 날짜(0), G열: 시작(6), H열: 종료(7), I열: 작업시간(8), J열: M/H(9)
-  """
-  rows_to_save = []
-  try:
-    # 1. 탭 이름 자동 탐색 ('PPH-(일)(자동화)' 포함 여부 확인)
-    meta = (
-        sheets_service.spreadsheets()
-        .get(spreadsheetId=SHEET_ID_XFC)
-        .execute()
-    )
-    target_tab = "PPH-(일)(자동화)"
-    for s in meta.get("sheets", []):
-      t_title = s.get("properties", {}).get("title", "")
-      if "PPH-(일)(자동화)" in t_title.replace(" ", ""):
-        target_tab = t_title
-        break
+        # 2. A열(날짜)부터 J열(M/H)까지만 안전하게 수집
+        range_name = f"'{target_tab}'!A6:J10000"
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID_XFC, range=range_name
+        ).execute()
+        values = result.get('values', [])
 
-    # 2. A열(날짜)부터 J열(M/H)까지만 수집 (인덱스 9번까지만 필요하므로 21칸까지 갈 필요 없음)
-    range_name = f"'{target_tab}'!A6:J10000"
-    result = (
-        sheets_service.spreadsheets()
-        .values()
-        .get(spreadsheetId=SHEET_ID_XFC, range=range_name)
-        .execute()
-    )
-    values = result.get("values", [])
+        for row in values:
+            if not row or len(row) < 10:
+                continue
 
-    for row in values:
-      # 최소 J열(인덱스 9)까지 존재하는 행만 확인
-      if not row or len(row) < 10:
-        continue
+            raw_date = str(row[0]).strip()
+            start_time = str(row[6]).strip()
+            work_time_raw = str(row[8]).strip()
+            mh_raw = str(row[9]).strip()  # ⭐ J열에 이미 완성된 M/H 값 직접 수집
 
-      raw_date = str(row[0]).strip()
-      start_time = str(row[6]).strip()
-      work_time_raw = str(row[8]).strip()
-      mh_raw = str(row[9]).strip()  # ⭐ J열에 이미 완성된 M/H 값 직접 수집
+            if not raw_date or ":" not in start_time or not mh_raw:
+                continue
 
-      if not raw_date or ":" not in start_time or not mh_raw:
-        continue
+            date_clean = raw_date[:10]  # '2026-10-15(목)' -> '2026-10-15'
 
-      date_clean = raw_date[:10]  # '2026-10-15(목)' -> '2026-10-15'
+            try:
+                work_time = float(work_time_raw.replace(",", "").replace("-", "0"))
+                if work_time <= 0.1 or work_time > 1.5:
+                    continue
 
-      try:
-        # 작업시간이 0.1h ~ 1.5h 사이인 실작업 시간대만 인정
-        work_time = float(work_time_raw.replace(",", "").replace("-", "0"))
-        if work_time <= 0.1 or work_time > 1.5:
-          continue
+                clean_mh = float(mh_raw.replace(",", "").replace("-", "0"))
+                if clean_mh <= 0:
+                    continue
 
-        clean_mh = float(mh_raw.replace(",", "").replace("-", "0"))
-        if clean_mh <= 0:
-          continue
+                h_int = int(start_time.split(":")[0])
+                time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
 
-        h_int = int(start_time.split(":")[0])
-        time_label = (
-            f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
-        )
-
-        rows_to_save.append({
-            "영업마감일자": date_clean,
-            "시간대": time_label,
-            "센터그룹": "XFC",
-            "MH": clean_mh,
-        })
-      except Exception:
-        continue
-  except Exception as e:
-    print(f"XFC MH 수집 에러: {e}")
-  return rows_to_save
+                rows_to_save.append({
+                    '영업마감일자': date_clean,
+                    '시간대': time_label,
+                    '센터그룹': 'XFC',
+                    'MH': clean_mh
+                })
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"XFC MH 수집 에러: {e}")
+    return rows_to_save
     
 
 def sync_mh_to_db(sheets_service, drive_service=None, db_path="wms_b2c.db"):
