@@ -307,7 +307,7 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 및 전체/직접 PPH 데이터 로드 - 375 & XFC 구글 시트 직결]
+# ⭐ [M/H 및 전체/직접 PPH 데이터 로드 - KeyError 방어 로직 적용]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     start_str = start_date.strftime('%Y-%m-%d')
@@ -332,15 +332,24 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
 
     if rows_to_save:
         df_res = pd.DataFrame(rows_to_save)
+
+        # ⭐ KeyError 방어: 누락된 컬럼 자동 생성
+        for col_name in ['MH', '전체PPH', '직접PPH']:
+            if col_name not in df_res.columns:
+                df_res[col_name] = None
+
         df_filtered = df_res[(df_res['영업마감일자'] >= start_str) & (df_res['영업마감일자'] <= end_str)]
         if center_group:
             df_filtered = df_filtered[df_filtered['센터그룹'] == center_group]
+
         if not df_filtered.empty:
-            return df_filtered.groupby(['영업마감일자', '시간대', '센터그룹']).agg({
-                'MH': 'sum',
-                '전체PPH': 'mean',
-                '직접PPH': 'mean'
-            }).reset_index()
+            agg_dict = {'MH': 'sum'}
+            if '전체PPH' in df_filtered.columns:
+                agg_dict['전체PPH'] = 'mean'
+            if '직접PPH' in df_filtered.columns:
+                agg_dict['직접PPH'] = 'mean'
+
+            return df_filtered.groupby(['영업마감일자', '시간대', '센터그룹']).agg(agg_dict).reset_index()
 
     return pd.DataFrame()
 
