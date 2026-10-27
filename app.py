@@ -405,7 +405,7 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
         except Exception as e:
             st.toast(f"⚠️ 2026PPH 연동 에러: {e}")
 
-    # 2. XFC 센터 M/H 로드
+   # 2. XFC 센터 M/H 로드 (예외 발생 시 화면 우측 상단 토스트로 안내 표출)
     if "gcp_service_account" in st.secrets and (not center_group or center_group == 'XFC'):
         try:
             import etl_pipeline
@@ -413,8 +413,8 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
             sheets_service = etl_pipeline.get_sheets_service(creds_dict)
             list_xfc = etl_pipeline.parse_mh_xfc(sheets_service)
             rows_to_save.extend(list_xfc)
-        except Exception:
-            pass
+        except Exception as e_xfc:
+            st.toast(f"⚠️ XFC 실시간 로드 안내: {e_xfc}")
 
     # 3. 날짜 범위 필터링 반환
     if rows_to_save:
