@@ -307,7 +307,7 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 데이터 로드 - 올바른 구글시트 ID(소문자 h) 직결]
+# ⭐ [M/H 데이터 로드 - 375 및 XFC 구글 시트 실시간 직결 연동]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     start_str = start_date.strftime('%Y-%m-%d')
@@ -316,14 +316,13 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
     rows_to_save = []
     CORRECT_SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlhGS6g"
 
-    # 1. 375 센터 M/H: 2026PPH 구글 시트에서 직접 수집
+    # 1. 375 센터 M/H: 2026PPH 구글 시트 직결 수집
     if "gcp_service_account" in st.secrets and (not center_group or center_group == '375'):
         try:
             import etl_pipeline
             creds_dict = dict(st.secrets["gcp_service_account"])
             sheets_service = etl_pipeline.get_sheets_service(creds_dict)
             
-            # 시트 탭 목록 확인 후 2026PPH 탐색
             meta = sheets_service.spreadsheets().get(spreadsheetId=CORRECT_SHEET_ID_375).execute()
             target_tab_title = '2026PPH'
             for s_info in meta.get('sheets', []):
@@ -337,7 +336,6 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                 spreadsheetId=CORRECT_SHEET_ID_375, range=range_name
             ).execute()
             values = result.get('values', [])
-            
             curr_year = datetime.now().year
 
             for row in values:
@@ -351,7 +349,6 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                     continue
 
                 date_str = None
-                # 일련번호 날짜 (46310 -> 2026-10-15)
                 try:
                     val_float = float(raw_date)
                     if 40000 <= val_float <= 60000:
@@ -359,7 +356,6 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
                 except Exception:
                     pass
 
-                # 문자열 날짜 포맷 대응
                 if not date_str and "." in raw_date:
                     parts = [p.strip() for p in raw_date.split(".") if p.strip()]
                     if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
@@ -405,7 +401,7 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
         except Exception as e:
             st.toast(f"⚠️ 2026PPH 연동 에러: {e}")
 
-  # 2. XFC 센터 M/H 로드 (예외 시 토스트 안내 표출)
+    # 2. XFC 센터 M/H: 고유 gid 탭 직결 수집
     if "gcp_service_account" in st.secrets and (not center_group or center_group == 'XFC'):
         try:
             import etl_pipeline
@@ -416,7 +412,7 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
         except Exception as e_xfc:
             st.toast(f"⚠️ XFC 실시간 로드 안내: {e_xfc}")
 
-    # 3. 날짜 범위 필터링 반환
+    # 3. 실시간 구글 시트 수집 데이터 필터링 반환
     if rows_to_save:
         df_res = pd.DataFrame(rows_to_save)
         df_filtered = df_res[(df_res['영업마감일자'] >= start_str) & (df_res['영업마감일자'] <= end_str)]
@@ -427,30 +423,6 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
 
     return pd.DataFrame()
     
-
-    # 4. (안전 백업) 구글 시트 조회가 비어있을 경우 기존 SQLite DB 파일에서 보조 로드
-    all_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
-    sorted_dbs = sorted(all_dbs, key=lambda x: (len(x), x), reverse=True)
-    all_dfs = []
-    for db_p in sorted_dbs:
-        try:
-            conn = sqlite3.connect(db_p, timeout=10)
-            query = "SELECT 영업마감일자, 시간대, 센터그룹, MH FROM center_mh_hourly WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?"
-            params = [start_str, end_str]
-            if center_group:
-                query += " AND 센터그룹 = ?"
-                params.append(center_group)
-            df_mh = pd.read_sql(query, conn, params=params)
-            conn.close()
-            if not df_mh.empty:
-                all_dfs.append(df_mh)
-        except Exception:
-            pass
-    if all_dfs:
-        combined = pd.concat(all_dfs, ignore_index=True)
-        return combined.drop_duplicates(subset=['영업마감일자', '시간대', '센터그룹'], keep='first')
-
-    return pd.DataFrame()
 
 @st.cache_data(ttl=5)
 def load_mh_summary_by_months(selected_m_list):
