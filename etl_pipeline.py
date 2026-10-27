@@ -24,7 +24,7 @@ DB_INBOUND_PATH = 'wms_inbound.db'
 
 # PPH/MH 구글 시트 실제 ID
 SHEET_ID_375 = "1x8zWC0BZRs4ji9N8-CLPb9RutbegxcVh0BXNAlhGS6g"
-SHEET_ID_XFC = "1IGgpr8LezBs4hCySj_W34HSyHFhN6lt13uYSt3gbmqbs"
+SHEET_ID_XFC = "1Bgpr8LezBs4hCy5j_W34RSyHFIN68zT3uY5i3gbmqbs"
 
 
 def get_drive_service(creds_dict):
