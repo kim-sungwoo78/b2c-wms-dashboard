@@ -307,50 +307,94 @@ def load_b2c_raw_by_range(start_date, end_date, selected_centers):
             except Exception: pass
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# ⭐ [M/H 데이터 로드 - 과거 stale DB 덮어쓰기 방지 및 정밀 조회]
+# ⭐ [M/H 데이터 로드 - 2026PPH 정제 시트 실시간 직결 연동]
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = end_date.strftime('%Y-%m-%d')
-    start_ym = start_date.strftime('%Y%m')
-    end_ym = end_date.strftime('%Y%m')
 
-    # 해당 조회 기간에 매칭되는 월별 DB 파일 우선 검색
-    all_dbs = [f for f in os.listdir('.') if f.startswith('wms_b2c') and f.endswith('.db')]
-    if not all_dbs:
-        return pd.DataFrame()
-
-    # 월별 DB(wms_b2c_YYYYMM.db)를 기본 DB(wms_b2c.db)보다 우선하도록 정렬
-    sorted_dbs = sorted(all_dbs, key=lambda x: (len(x), x), reverse=True)
-
-    all_dfs = []
-    for db_p in sorted_dbs:
+    rows_to_save = []
+    # 1. 375 센터 M/H: 새로 만드신 2026PPH 구글 시트에서 직접 수집
+    if "gcp_service_account" in st.secrets and (not center_group or center_group == '375'):
         try:
-            conn = sqlite3.connect(db_p, timeout=10)
-            query = "SELECT 영업마감일자, 시간대, 센터그룹, MH FROM center_mh_hourly WHERE 영업마감일자 >= ? AND 영업마감일자 <= ?"
-            params = [start_str, end_str]
-            if center_group:
-                query += " AND 센터그룹 = ?"
-                params.append(center_group)
-            df_mh = pd.read_sql(query, conn, params=params)
-            conn.close()
-            if not df_mh.empty:
-                all_dfs.append(df_mh)
+            import etl_pipeline
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            sheets_service = etl_pipeline.get_sheets_service(creds_dict)
+            
+            range_name = "'2026PPH'!A2:E"
+            result = sheets_service.spreadsheets().values().get(
+                spreadsheetId=etl_pipeline.SHEET_ID_375, range=range_name
+            ).execute()
+            values = result.get('values', [])
+            
+            curr_year = datetime.now().year
+
+            for row in values:
+                if not row or len(row) < 5:
+                    continue
+                raw_date = str(row[0]).strip()
+                start_time = str(row[1]).strip()
+                mh_raw = str(row[4]).strip()
+
+                if not raw_date or not start_time or ":" not in start_time or not mh_raw:
+                    continue
+
+                date_str = None
+                if "." in raw_date:
+                    parts = [p.strip() for p in raw_date.split(".") if p.strip()]
+                    if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+                        date_str = f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2].split()[0]):02d}"
+                elif "-" in raw_date:
+                    parts = [p.strip() for p in raw_date.split("-") if p.strip()]
+                    if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+                        date_str = f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2].split()[0]):02d}"
+                elif "/" in raw_date:
+                    clean_date_part = raw_date.split()[0].strip()
+                    md = clean_date_part.split("/")
+                    if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
+                        date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
+
+                if not date_str:
+                    continue
+
+                try:
+                    clean_mh = float(str(mh_raw).split()[0].replace(",", "").replace("-", "0"))
+                    if clean_mh <= 0:
+                        continue
+                    h_int = int(start_time.split(":")[0])
+                    time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
+
+                    rows_to_save.append({
+                        '영업마감일자': date_str,
+                        '시간대': time_label,
+                        '센터그룹': '375',
+                        'MH': clean_mh
+                    })
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"2026PPH 직결 로드 에러: {e}")
+
+    # 2. XFC 센터 M/H 로드
+    if "gcp_service_account" in st.secrets and (not center_group or center_group == 'XFC'):
+        try:
+            import etl_pipeline
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            sheets_service = etl_pipeline.get_sheets_service(creds_dict)
+            list_xfc = etl_pipeline.parse_mh_xfc(sheets_service)
+            rows_to_save.extend(list_xfc)
         except Exception:
             pass
 
-    if all_dfs:
-        combined = pd.concat(all_dfs, ignore_index=True)
-        # 우선순위가 높은 월별 전용 DB의 데이터(first)를 유지하고 중복 제거
-        dedup_mh = combined.drop_duplicates(subset=['영업마감일자', '시간대', '센터그룹'], keep='first')
-        return dedup_mh
-    return pd.DataFrame()
+    # 3. 날짜 범위 필터링 및 반환
+    if rows_to_save:
+        df_res = pd.DataFrame(rows_to_save)
+        df_filtered = df_res[(df_res['영업마감일자'] >= start_str) & (df_res['영업마감일자'] <= end_str)]
+        if center_group:
+            df_filtered = df_filtered[df_filtered['센터그룹'] == center_group]
+        # 시간대별 고유 집계
+        return df_filtered.groupby(['영업마감일자', '시간대', '센터그룹'])['MH'].sum().reset_index()
 
-    if all_dfs:
-        combined = pd.concat(all_dfs, ignore_index=True)
-        # 중복 방지: 영업마감일자/시간대/센터그룹별 최신 1개 행 유지
-        dedup_mh = combined.drop_duplicates(subset=['영업마감일자', '시간대', '센터그룹'], keep='last')
-        return dedup_mh
     return pd.DataFrame()
 
 @st.cache_data(ttl=5)
