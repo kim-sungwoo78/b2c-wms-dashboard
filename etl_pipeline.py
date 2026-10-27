@@ -247,17 +247,15 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 def parse_mh_375(sheets_service):
     """
     375 센터: '2026PPH' 정제 시트 직결 수집
-    A열: 날자, B열: 시작, C열: 종료, D열: 작업시간, E열: M/H, F열: PPH
+    A: 날짜(0), B: 시작(1), C: 종료(2), D: 작업시간(3), E: M/H(4), F: 직접 PPH(5), G: 전체 PPH(6)
     """
     rows_to_save = []
     try:
-        # 새로 만드신 2026PPH 시트의 A2:F 전체 범위를 직접 수집
-        range_name = "'2026PPH'!A2:F"
+        range_name = "'2026PPH'!A2:G"
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID_375, range=range_name
         ).execute()
         values = result.get('values', [])
-
         curr_year = datetime.now().year
 
         for row in values:
@@ -267,40 +265,62 @@ def parse_mh_375(sheets_service):
             raw_date = str(row[0]).strip()
             start_time = str(row[1]).strip()
             mh_raw = str(row[4]).strip()
+            direct_pph_raw = str(row[5]).strip() if len(row) > 5 else ""
+            total_pph_raw = str(row[6]).strip() if len(row) > 6 else ""
 
             if not raw_date or not start_time or ":" not in start_time or not mh_raw:
                 continue
 
-            # 날짜 형식 자동 정밀 변환 (2026. 10. 15 / 10/15 목 / 2026-10-15 모두 대응)
+            # 날짜 정밀 변환 (일련번호 46310, 점, 하이픈, 슬래시 대응)
             date_str = None
-            if "." in raw_date:
+            try:
+                val_float = float(raw_date)
+                if 40000 <= val_float <= 60000:
+                    date_str = (datetime(1899, 12, 30) + timedelta(days=int(val_float))).strftime('%Y-%m-%d')
+            except Exception:
+                pass
+
+            if not date_str and "." in raw_date:
                 parts = [p.strip() for p in raw_date.split(".") if p.strip()]
                 if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
-                    y = int(parts[0])
-                    m = int(parts[1])
-                    d = int(parts[2].split()[0])
-                    date_str = f"{y:04d}-{m:02d}-{d:02d}"
-            elif "-" in raw_date:
+                    d_num = "".join([c for c in parts[2].split()[0] if c.isdigit()])
+                    if d_num:
+                        y = int(parts[0])
+                        if y < 100: y += 2000
+                        date_str = f"{y:04d}-{int(parts[1]):02d}-{int(d_num):02d}"
+            elif not date_str and "-" in raw_date:
                 parts = [p.strip() for p in raw_date.split("-") if p.strip()]
                 if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
-                    y = int(parts[0])
-                    m = int(parts[1])
-                    d = int(parts[2].split()[0])
-                    date_str = f"{y:04d}-{m:02d}-{d:02d}"
-            elif "/" in raw_date:
-                clean_date_part = raw_date.split()[0].strip()
-                md = clean_date_part.split("/")
-                if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
-                    date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
+                    d_num = "".join([c for c in parts[2].split()[0] if c.isdigit()])
+                    if d_num:
+                        y = int(parts[0])
+                        if y < 100: y += 2000
+                        date_str = f"{y:04d}-{int(parts[1]):02d}-{int(d_num):02d}"
+            elif not date_str and "/" in raw_date:
+                parts = [p.strip() for p in raw_date.split("/") if p.strip()]
+                if len(parts) == 2:
+                    m_str = "".join([c for c in parts[0] if c.isdigit()])
+                    d_str = "".join([c for c in parts[1].split()[0] if c.isdigit()])
+                    if m_str and d_str:
+                        date_str = f"{curr_year}-{int(m_str):02d}-{int(d_str):02d}"
 
             if not date_str:
                 continue
 
             try:
-                # 서식 공백 대비 split()[0] 처리
                 clean_mh = float(str(mh_raw).split()[0].replace(",", "").replace("-", "0"))
                 if clean_mh <= 0:
                     continue
+
+                def parse_val(v_str):
+                    if not v_str or v_str in ['-', 'nan', 'None']: return None
+                    try:
+                        f_v = float(str(v_str).split()[0].replace(",", ""))
+                        return round(f_v, 1) if f_v > 0 else None
+                    except Exception: return None
+
+                direct_pph = parse_val(direct_pph_raw)
+                total_pph = parse_val(total_pph_raw)
 
                 h_int = int(start_time.split(":")[0])
                 time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
@@ -309,7 +329,9 @@ def parse_mh_375(sheets_service):
                     '영업마감일자': date_str,
                     '시간대': time_label,
                     '센터그룹': '375',
-                    'MH': clean_mh
+                    'MH': clean_mh,
+                    '전체PPH': total_pph,
+                    '직접PPH': direct_pph
                 })
             except Exception:
                 continue
@@ -320,35 +342,29 @@ def parse_mh_375(sheets_service):
 
 def parse_mh_xfc(sheets_service):
     """
-    XFC 센터: (XFC센터)출고Dashboard -> gid=2095366234 탭 직결 수집
-    A열: 날짜(0), G열: 시작시간(6), I열: 작업시간(8), J열: 완성된 M/H(9)
+    XFC 센터: (XFC센터)출고Dashboard -> gid=2095366234
+    A: 날짜(0), G: 시작(6), I: 작업시간(8), J: M/H(9), R: 전체 PPH(17), S: 직접 PPH(18)
     """
     rows_to_save = []
     try:
-        # 1. 고유 gid(2095366234)로 정확한 탭 이름 자동 탐색
         meta = sheets_service.spreadsheets().get(spreadsheetId=SHEET_ID_XFC).execute()
         target_tab = None
         for s in meta.get('sheets', []):
             s_props = s.get('properties', {})
-            # URL에 포함된 고유 시트 ID(gid) 일치 확인
             if str(s_props.get('sheetId', '')) == '2095366234':
                 target_tab = s_props.get('title', '')
                 break
-            # 백업: 탭 이름에 PPH나 자동화가 포함된 경우
             if 'PPH' in s_props.get('title', '').replace(" ", ""):
                 target_tab = s_props.get('title', '')
 
         if not target_tab:
             target_tab = meta.get('sheets', [])[0].get('properties', {}).get('title', 'PPH-(일)(자동화)')
 
-        # 2. A열(날짜)부터 J열(M/H)까지 직접 수집
-        range_name = f"'{target_tab}'!A6:J"
+        range_name = f"'{target_tab}'!A6:S"
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID_XFC, range=range_name
         ).execute()
         values = result.get('values', [])
-
-        curr_year = datetime.now().year
 
         for row in values:
             if not row or len(row) < 10:
@@ -357,12 +373,13 @@ def parse_mh_xfc(sheets_service):
             raw_date = str(row[0]).strip()
             start_time = str(row[6]).strip()
             work_time_raw = str(row[8]).strip()
-            mh_raw = str(row[9]).strip()  # ⭐ J열 완성된 M/H 직접 수집
+            mh_raw = str(row[9]).strip()
+            total_pph_raw = str(row[17]).strip() if len(row) > 17 else ""
+            direct_pph_raw = str(row[18]).strip() if len(row) > 18 else ""
 
             if not raw_date or ":" not in start_time or not mh_raw:
                 continue
 
-            # 날짜 정밀 파싱 (46310 일련번호, 2026-10-15(목), 2026.10.15 모두 대응)
             date_clean = None
             try:
                 val_float = float(raw_date)
@@ -389,13 +406,22 @@ def parse_mh_xfc(sheets_service):
 
             try:
                 work_time = float(work_time_raw.replace(",", "").replace("-", "0"))
-                # 실작업 시간대(0.1h ~ 1.5h)만 인정
                 if work_time <= 0.1 or work_time > 1.5:
                     continue
 
                 clean_mh = float(mh_raw.replace(",", "").replace("-", "0"))
                 if clean_mh <= 0:
                     continue
+
+                def parse_val(v_str):
+                    if not v_str or v_str in ['-', 'nan', 'None']: return None
+                    try:
+                        f_v = float(str(v_str).split()[0].replace(",", ""))
+                        return round(f_v, 1) if f_v > 0 else None
+                    except Exception: return None
+
+                total_pph = parse_val(total_pph_raw)
+                direct_pph = parse_val(direct_pph_raw)
 
                 h_int = int(start_time.split(":")[0])
                 time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
@@ -404,7 +430,9 @@ def parse_mh_xfc(sheets_service):
                     '영업마감일자': date_clean,
                     '시간대': time_label,
                     '센터그룹': 'XFC',
-                    'MH': clean_mh
+                    'MH': clean_mh,
+                    '전체PPH': total_pph,
+                    '직접PPH': direct_pph
                 })
             except Exception:
                 continue
