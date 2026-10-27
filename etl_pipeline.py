@@ -246,77 +246,55 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 
 def parse_mh_375(sheets_service):
     """
-    375 센터: [출고] 2026작업현황
-    ⭐ 구글시트 실작업 시간대(E열 작업시간 0.2~1.5h)만 직접 수집
+    375 센터: '2026PPH' 정제 시트에서 실작업 시간대 M/H 직접 수집
+    A열: 날짜, B열: 시작, C열: 종료, D열: 작업시간, E열: M/H, F열: PPH
     """
     rows_to_save = []
     try:
-        range_name = "'[출고] 2026작업현황'!A5:AB10000"
+        range_name = "'2026PPH'!A2:E10000"
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID_375, range=range_name
         ).execute()
         values = result.get('values', [])
 
-        curr_date_str = ""
         curr_year = datetime.now().year
 
         for row in values:
             if not row or len(row) < 5:
                 continue
 
-            row_str = " ".join([str(x).strip() for x in row if x is not None])
+            raw_date = str(row[0]).strip()
+            start_time = str(row[1]).strip()
+            mh_raw = str(row[4]).strip()
 
-            # 1. 1차, 2차, 3차, 합계 행은 무조건 즉시 스킵
-            if any(k in row_str for k in ['1차', '2차', '3차', '합계', '소계', '평균']):
-                continue
-
-            # 2. 날짜 파싱 (10/15 목 또는 2026-10-15 등)
-            raw_date = str(row[0]).strip() if len(row) > 0 else ""
-            if "/" in raw_date:
+            if "/" in raw_date and ":" in start_time and mh_raw:
                 try:
+                    clean_mh = float(mh_raw.replace(",", "").replace("-", "0"))
+                    if clean_mh <= 0:
+                        continue
+
+                    # 날짜 형식 변환 (MM/DD -> YYYY-MM-DD)
                     clean_date_part = raw_date.split()[0].strip()
                     md = clean_date_part.split("/")
                     if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
-                        curr_date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
+                        date_str = f"{curr_year}-{int(md[0]):02d}-{int(md[1]):02d}"
+                    else:
+                        continue
+
+                    # 시작시간 기준 시간대 라벨 생성
+                    h_int = int(start_time.split(":")[0])
+                    time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
+
+                    rows_to_save.append({
+                        '영업마감일자': date_str,
+                        '시간대': time_label,
+                        '센터그룹': '375',
+                        'MH': clean_mh
+                    })
                 except Exception:
-                    pass
-
-            start_time = str(row[2]).strip() if len(row) > 2 else ""
-            if not curr_date_str or ":" not in start_time:
-                continue
-
-            # 3. 작업시간(E열) 검증: 실작업 시간(0.2시간 ~ 1.5시간)만 인정
-            work_time_str = str(row[4]).strip() if len(row) > 4 else ""
-            try:
-                work_time_val = float(work_time_str.replace(",", "").replace("-", "0"))
-                if work_time_val <= 0.1 or work_time_val > 1.5:
                     continue
-            except Exception:
-                continue
-
-            # 4. M/H(AB열, 인덱스 27) 수집: 순수 실작업치(44, 57, 40 등)만 수집
-            mh_val_raw = str(row[27]).strip() if len(row) > 27 else ""
-            if not mh_val_raw:
-                continue
-
-            try:
-                clean_mh = float(mh_val_raw.replace(",", "").replace("-", "0"))
-                if clean_mh <= 0 or clean_mh > 75.0:
-                    continue
-
-                h_int = int(start_time.split(":")[0])
-                time_label = f"{h_int:02d}:00 (D)" if h_int >= 6 else f"{h_int:02d}:00 (D+1)"
-
-                rows_to_save.append({
-                    '영업마감일자': curr_date_str,
-                    '시간대': time_label,
-                    '센터그룹': '375',
-                    'MH': clean_mh
-                })
-            except Exception:
-                continue
     except Exception as e:
-        print(f"375 MH 수집 에러: {e}")
+        print(f"2026PPH 수집 에러: {e}")
     return rows_to_save
     
 
