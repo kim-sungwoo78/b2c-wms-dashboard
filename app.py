@@ -1292,13 +1292,9 @@ elif main_mode == "🚚 B2C 출고 현황":
                     avg_shipment = round(tot_shipment / num_days, 1)
                     cur_mh = round(mh_map.get(label_key, 0.0), 1)
                     
-                    # 전체 PPH & 직접 PPH 값 추출
+                    # ⭐ 구글 시트에 실제 입력된 값만 가져옴 (강제 자동 계산 완전 제거)
                     tot_p_val = pph_tot_map.get(label_key, None)
                     dir_p_val = pph_dir_map.get(label_key, None)
-
-                    # 375 센터의 전체 PPH가 시트에 아직 비어있으면 마감건수/MH 자동 보정 산출
-                    if tot_p_val is None and target_mh_group == '375' and cur_mh > 0:
-                        tot_p_val = round(avg_shipment / cur_mh, 1)
 
                     if avg_inflow > max_cnt_val: max_cnt_val = avg_inflow
                     if avg_shipment > max_cnt_val: max_cnt_val = avg_shipment
@@ -1315,12 +1311,12 @@ elif main_mode == "🚚 B2C 출고 현황":
                 df_chart = pd.DataFrame(chart_rows)
                 title_prefix = f"일평균 ({num_days}일간 평균)" if num_days > 1 else f"당일 ({start_dh.strftime('%Y-%m-%d')})"
 
-                # 3열 서브플롯 구성: [가로 막대 60%] | [전체 PPH 세로 추세선 20%] | [직접 PPH 세로 추세선 20%]
+                # 3열 서브플롯 가로폭 비율 조정: [좌측 막대 72%] | [전체 PPH 14%] | [직접 PPH 14%]
                 fig_v = make_subplots(
                     rows=1, cols=3,
-                    column_widths=[0.60, 0.20, 0.20],
+                    column_widths=[0.72, 0.14, 0.14],
                     shared_yaxes=True,
-                    horizontal_spacing=0.03,
+                    horizontal_spacing=0.025,
                     subplot_titles=(
                         f"<b>[{title_prefix}] 주문 인입 vs 송장 마감</b>",
                         "<b>⚡ 전체 PPH</b>",
@@ -1328,7 +1324,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     )
                 )
 
-                # 1. 좌측 가로 막대: 주문 인입건수 (초록)
+                # [1열] 좌측 가로 막대: 주문 인입건수 (12px 확대)
                 fig_v.add_trace(go.Bar(
                     y=df_chart['시간대'],
                     x=df_chart['주문 인입건수'],
@@ -1336,10 +1332,11 @@ elif main_mode == "🚚 B2C 출고 현황":
                     orientation='h',
                     marker_color='#81c784',
                     text=[f"{v:,.0f}" if v > 0 else "" for v in df_chart['주문 인입건수']],
-                    textposition='outside'
+                    textposition='outside',
+                    textfont=dict(size=12, color='#e5e7eb')
                 ), row=1, col=1)
 
-                # 1. 좌측 가로 막대: 송장 마감건수 (파랑)
+                # [1열] 좌측 가로 막대: 송장 마감건수 (12px 확대)
                 fig_v.add_trace(go.Bar(
                     y=df_chart['시간대'],
                     x=df_chart['송장 마감건수'],
@@ -1347,54 +1344,63 @@ elif main_mode == "🚚 B2C 출고 현황":
                     orientation='h',
                     marker_color='#64b5f6',
                     text=[f"{v:,.0f}" if v > 0 else "" for v in df_chart['송장 마감건수']],
-                    textposition='outside'
+                    textposition='outside',
+                    textfont=dict(size=12, color='#e5e7eb')
                 ), row=1, col=1)
 
-                # 2. 우측 1열: 전체 PPH 세로형 추세선 (주황색)
-                valid_tot = df_chart[df_chart['전체 PPH'].notnull()]
-                if not valid_tot.empty:
+                # [2열] 전체 PPH 세로 추세선 (전체 24개 시간대 축 전달 -> 축 밀림 완전 해결)
+                has_any_tot = any(pd.notnull(v) for v in df_chart['전체 PPH'])
+                tot_text_labels = [f"{v:.1f}" if pd.notnull(v) else "" for v in df_chart['전체 PPH']]
+
+                if has_any_tot:
                     fig_v.add_trace(go.Scatter(
-                        y=valid_tot['시간대'],
-                        x=valid_tot['전체 PPH'],
+                        y=df_chart['시간대'],
+                        x=[v if pd.notnull(v) else None for v in df_chart['전체 PPH']],
                         name='전체 PPH 추세',
                         mode='lines+markers+text',
+                        connectgaps=False,
                         line=dict(color='#f97316', width=2.5),
-                        marker=dict(size=7, color='#ea580c', line=dict(color='#ffffff', width=1.2)),
-                        text=[f"{v:.1f}" for v in valid_tot['전체 PPH']],
+                        marker=dict(size=7.5, color='#ea580c', line=dict(color='#ffffff', width=1.2)),
+                        text=tot_text_labels,
                         textposition='middle right',
-                        textfont=dict(color='#fb923c', size=11),
+                        textfont=dict(color='#fb923c', size=13, family='sans-serif'),
                         showlegend=False
                     ), row=1, col=2)
 
-                # 3. 우측 2열: 직접 PPH 세로형 추세선 (초록색)
-                valid_dir = df_chart[df_chart['직접 PPH'].notnull()]
-                if not valid_dir.empty:
+                # [3열] 직접 PPH 세로 추세선 (전체 24개 시간대 축 전달 -> 해당 시간대 행에 정확히 수평 정렬)
+                has_any_dir = any(pd.notnull(v) for v in df_chart['직접 PPH'])
+                dir_text_labels = [f"{v:.1f}" if pd.notnull(v) else "" for v in df_chart['직접 PPH']]
+
+                if has_any_dir:
                     fig_v.add_trace(go.Scatter(
-                        y=valid_dir['시간대'],
-                        x=valid_dir['직접 PPH'],
+                        y=df_chart['시간대'],
+                        x=[v if pd.notnull(v) else None for v in df_chart['직접 PPH']],
                         name='직접 PPH 추세',
                         mode='lines+markers+text',
+                        connectgaps=False,
                         line=dict(color='#10b981', width=2.5),
-                        marker=dict(size=7, color='#059669', line=dict(color='#ffffff', width=1.2)),
-                        text=[f"{v:.1f}" for v in valid_dir['직접 PPH']],
+                        marker=dict(size=7.5, color='#059669', line=dict(color='#ffffff', width=1.2)),
+                        text=dir_text_labels,
                         textposition='middle right',
-                        textfont=dict(color='#34d399', size=11),
+                        textfont=dict(color='#34d399', size=13, family='sans-serif'),
                         showlegend=False
                     ), row=1, col=3)
 
                 # 차트 축 및 레이아웃 설정
                 x_bar_max = max(max_cnt_val * 1.25, 1000)
                 fig_v.update_xaxes(title_text="건수 (건/일)", range=[0, x_bar_max], row=1, col=1)
-                
-                if not valid_tot.empty:
-                    min_t, max_t = valid_tot['전체 PPH'].min(), valid_tot['전체 PPH'].max()
-                    fig_v.update_xaxes(range=[max(0, min_t - 5), max_t + 10], row=1, col=2)
+
+                valid_tot_vals = [v for v in df_chart['전체 PPH'] if pd.notnull(v)]
+                if valid_tot_vals:
+                    min_t, max_t = min(valid_tot_vals), max(valid_tot_vals)
+                    fig_v.update_xaxes(range=[max(0, min_t - 4), max_t + 8], row=1, col=2)
                 else:
                     fig_v.update_xaxes(showticklabels=False, row=1, col=2)
 
-                if not valid_dir.empty:
-                    min_d, max_d = valid_dir['직접 PPH'].min(), valid_dir['직접 PPH'].max()
-                    fig_v.update_xaxes(range=[max(0, min_d - 5), max_d + 10], row=1, col=3)
+                valid_dir_vals = [v for v in df_chart['직접 PPH'] if pd.notnull(v)]
+                if valid_dir_vals:
+                    min_d, max_d = min(valid_dir_vals), max(valid_dir_vals)
+                    fig_v.update_xaxes(range=[max(0, min_d - 4), max_d + 8], row=1, col=3)
                 else:
                     fig_v.update_xaxes(showticklabels=False, row=1, col=3)
 
@@ -1404,7 +1410,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     template="plotly_dark",
                     barmode='group',
                     height=950,
-                    margin=dict(l=80, r=40, t=70, b=40),
+                    margin=dict(l=80, r=30, t=70, b=40),
                     legend=dict(orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0)
                 )
 
@@ -1416,7 +1422,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 tot_in = df_chart['주문 인입건수'].sum()
                 tot_out = df_chart['송장 마감건수'].sum()
 
-                # 7개 컬럼 순서 데이터프레임 구성
+                # 7개 컬럼 순서 구성
                 df_table = pd.DataFrame({
                     '시간대': df_chart['시간대'],
                     '주문 인입건수': df_chart['주문 인입건수'].apply(lambda x: f"{x:,.0f}"),
