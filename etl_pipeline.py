@@ -246,11 +246,12 @@ def update_inbound_plt_box_from_sheets(service, sheets_service, conn_ib):
 
 def parse_mh_375(sheets_service):
     """
-    375 센터: '2026PPH' 정제 시트에서 실작업 시간대 M/H 직접 수집
-    A열: 날짜, B열: 시작, C열: 종료, D열: 작업시간, E열: M/H, F열: PPH
+    375 센터: '2026PPH' 정제 시트 직결 수집
+    A열: 날짜, B열: 시작시간, C열: 종료시간, D열: 작업시간, E열: M/H, F열: PPH
     """
     rows_to_save = []
     try:
+        # 새로 생성된 정제 시트('2026PPH')에서 A열부터 E열까지 직접 수집
         range_name = "'2026PPH'!A2:E10000"
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID_375, range=range_name
@@ -267,13 +268,14 @@ def parse_mh_375(sheets_service):
             start_time = str(row[1]).strip()
             mh_raw = str(row[4]).strip()
 
+            # 날짜, 시작시간, M/H가 모두 존재하는 행만 수집
             if "/" in raw_date and ":" in start_time and mh_raw:
                 try:
                     clean_mh = float(mh_raw.replace(",", "").replace("-", "0"))
                     if clean_mh <= 0:
                         continue
 
-                    # 날짜 형식 변환 (MM/DD -> YYYY-MM-DD)
+                    # 날짜 형식 정리 (MM/DD -> YYYY-MM-DD)
                     clean_date_part = raw_date.split()[0].strip()
                     md = clean_date_part.split("/")
                     if len(md) == 2 and md[0].isdigit() and md[1].isdigit():
