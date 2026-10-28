@@ -333,7 +333,6 @@ def load_mh_data_by_range(start_date, end_date, center_group=None):
     if rows_to_save:
         df_res = pd.DataFrame(rows_to_save)
 
-        # ⭐ KeyError 방어: 누락된 컬럼 자동 생성
         for col_name in ['MH', '전체PPH', '직접PPH']:
             if col_name not in df_res.columns:
                 df_res[col_name] = None
@@ -783,8 +782,20 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     
     center_options_main = get_formatted_center_options(raw_centers)
 
-    selected_centers_filter = st.multiselect("🏢 센터 선택 (미선택 시 전체):", center_options_main, default=[], key="main_center_filter", disabled=st.session_state['is_syncing'])
-    expanded_main_centers = expand_selected_centers(selected_centers_filter, list(raw_centers)) if selected_centers_filter else []
+    # ⭐ [조회 폼 컨테이너 적용 - 클릭 시 즉시 새로고침 차단]
+    with st.form("main_filter_form"):
+        col_m_f1, col_m_btn = st.columns([5, 1.2])
+        with col_m_f1:
+            selected_centers_filter = st.multiselect("🏢 센터 선택 (미선택 시 전체):", center_options_main, default=st.session_state.get('main_applied_centers', []), key="main_center_filter_input", disabled=st.session_state['is_syncing'])
+        with col_m_btn:
+            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            submit_main = st.form_submit_button("🔍 조회", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+
+    if submit_main or 'main_applied_centers' not in st.session_state:
+        st.session_state['main_applied_centers'] = selected_centers_filter
+
+    applied_main_filter = st.session_state['main_applied_centers']
+    expanded_main_centers = expand_selected_centers(applied_main_filter, list(raw_centers)) if applied_main_filter else []
 
     filtered_b2c = df_b2c_orders.copy() if not df_b2c_orders.empty else pd.DataFrame()
     filtered_inbound = df_inbound_distinct.copy() if not df_inbound_distinct.empty else pd.DataFrame()
@@ -799,11 +810,11 @@ if main_mode == "🏢 메인 : 센터 종합 현황":
     tot_mh_375 = df_mh_summary[df_mh_summary['센터그룹'] == '375']['MH'].sum() if not df_mh_summary.empty else 0.0
     tot_mh_xfc = df_mh_summary[df_mh_summary['센터그룹'] == 'XFC']['MH'].sum() if not df_mh_summary.empty else 0.0
 
-    is_375_selected = any('1층' in str(c) or '375' in str(c) for c in (selected_centers_filter or ["전체"]))
-    is_xfc_selected = any('XFC' in str(c).upper() for c in (selected_centers_filter or ["전체"]))
+    is_375_selected = any('1층' in str(c) or '375' in str(c) for c in (applied_main_filter or ["전체"]))
+    is_xfc_selected = any('XFC' in str(c).upper() for c in (applied_main_filter or ["전체"]))
     
     applicable_mh = 0.0
-    if not selected_centers_filter or "전체" in selected_centers_filter:
+    if not applied_main_filter or "전체" in applied_main_filter:
         applicable_mh = tot_mh_375 + tot_mh_xfc
     else:
         if is_375_selected and not is_xfc_selected: applicable_mh = tot_mh_375
@@ -874,25 +885,39 @@ elif main_mode == "🚚 B2C 출고 현황":
         if not df_b2c_orders.empty:
             raw_centers = df_b2c_orders['센터'].dropna().unique()
             center_options = get_formatted_center_options(raw_centers)
+            all_clients_t1 = sorted(list(df_b2c_orders['고객사'].dropna().unique()))
 
-            col1, col2, col3 = st.columns([3, 2, 2])
-            with col1:
-                selected_center_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options, key="tab1_centers", disabled=st.session_state['is_syncing'])
-                expanded_centers = expand_selected_centers(selected_center_input, list(raw_centers)) if selected_center_input else []
-            with col2: show_client = st.radio("고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"], key="tab1_show_client", disabled=st.session_state['is_syncing'])
-            with col3:
-                if "보이기" in show_client:
-                    available_clients_df = df_b2c_orders[df_b2c_orders['센터'].isin(expanded_centers)] if expanded_centers else df_b2c_orders
-                    available_clients = sorted(list(available_clients_df['고객사'].dropna().unique()))
-                    clients = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients, key="tab1_clients", disabled=st.session_state['is_syncing'])
-                else: clients = []
+            # ⭐ [탭 1 폼 컨테이너 적용]
+            with st.form("tab1_filter_form"):
+                col1, col2, col3, col_btn1 = st.columns([2.5, 1.8, 2.5, 1.2])
+                with col1:
+                    selected_center_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options, key="tab1_centers_input", disabled=st.session_state['is_syncing'])
+                with col2: 
+                    show_client = st.radio("고객사 구분 표시", ["숨김 (센터별 요약)", "보이기 (고객사 상세)"], key="tab1_show_client_input", disabled=st.session_state['is_syncing'])
+                with col3:
+                    clients = st.multiselect("고객사 선택 (미선택 시 전체)", all_clients_t1, key="tab1_clients_input", disabled=st.session_state['is_syncing'])
+                with col_btn1:
+                    st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+                    submit_tab1 = st.form_submit_button("🔍 조회", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+
+            if submit_tab1 or 'tab1_applied_filter' not in st.session_state:
+                st.session_state['tab1_applied_filter'] = {
+                    'centers': selected_center_input,
+                    'show_client': show_client,
+                    'clients': clients
+                }
+
+            t1_applied = st.session_state['tab1_applied_filter']
+            expanded_centers = expand_selected_centers(t1_applied['centers'], list(raw_centers)) if t1_applied['centers'] else []
+            app_show_client = t1_applied['show_client']
+            app_clients = t1_applied['clients']
 
             filtered_df = df_b2c_orders.copy()
             if expanded_centers: filtered_df = filtered_df[filtered_df['센터'].isin(expanded_centers)]
-            if "보이기" in show_client and clients: filtered_df = filtered_df[filtered_df['고객사'].isin(clients)]
+            if "보이기" in app_show_client and app_clients: filtered_df = filtered_df[filtered_df['고객사'].isin(app_clients)]
 
             group_cols = ['센터']
-            if "보이기" in show_client: group_cols.append('고객사')
+            if "보이기" in app_show_client: group_cols.append('고객사')
 
             if not filtered_df.empty:
                 pivot_raw = pd.pivot_table(filtered_df, index=group_cols, columns='영업마감일자', values='출고건수', aggfunc='sum', fill_value=0)
@@ -977,31 +1002,45 @@ elif main_mode == "🚚 B2C 출고 현황":
             raw_centers_tab2 = df_b2c_orders2['센터'].dropna().unique()
             center_options_tab2 = get_formatted_center_options(raw_centers_tab2)
 
-            col_t2_1, col_t2_2 = st.columns([3, 2])
-            with col_t2_1:
-                selected_center_tab2_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options_tab2, key="tab2_centers", disabled=st.session_state['is_syncing'])
-                expanded_centers_tab2 = expand_selected_centers(selected_center_tab2_input, list(raw_centers_tab2)) if selected_center_tab2_input else []
-            with col_t2_2:
-                analysis_type = st.radio("분석 기준 선택", ["배송 속성별", "판매처별"], horizontal=True, key="tab2_analysis_radio", disabled=st.session_state['is_syncing'])
+            # ⭐ [탭 2 폼 컨테이너 적용]
+            with st.form("tab2_filter_form"):
+                col_t2_1, col_t2_2, col_t2_btn = st.columns([3, 2, 1.2])
+                with col_t2_1:
+                    selected_center_tab2_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options_tab2, key="tab2_centers_input", disabled=st.session_state['is_syncing'])
+                with col_t2_2:
+                    analysis_type = st.radio("분석 기준 선택", ["배송 속성별", "판매처별"], horizontal=True, key="tab2_analysis_radio_input", disabled=st.session_state['is_syncing'])
+                with col_t2_btn:
+                    st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+                    submit_tab2 = st.form_submit_button("🔍 조회", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
 
-            target_col = '배송속성' if analysis_type == "배송 속성별" else '판매처'
+            if submit_tab2 or 'tab2_applied_filter' not in st.session_state:
+                st.session_state['tab2_applied_filter'] = {
+                    'centers': selected_center_tab2_input,
+                    'analysis_type': analysis_type
+                }
+
+            t2_applied = st.session_state['tab2_applied_filter']
+            expanded_centers_tab2 = expand_selected_centers(t2_applied['centers'], list(raw_centers_tab2)) if t2_applied['centers'] else []
+            app_analysis_type = t2_applied['analysis_type']
+
+            target_col = '배송속성' if app_analysis_type == "배송 속성별" else '판매처'
             df_tab2 = df_b2c_orders2.copy()
             if expanded_centers_tab2: df_tab2 = df_tab2[df_tab2['센터'].isin(expanded_centers_tab2)]
 
             raw_grp = df_tab2.groupby(target_col)['출고건수'].sum().reset_index()
             raw_grp = raw_grp.sort_values(by='출고건수', ascending=False)
             
-            top_limit = 5 if analysis_type == "배송 속성별" else 7
+            top_limit = 5 if app_analysis_type == "배송 속성별" else 7
             if len(raw_grp) > top_limit:
                 top_grp = raw_grp.head(top_limit)
                 other_sum = raw_grp.iloc[top_limit:]['출고건수'].sum()
-                other_row = pd.DataFrame([{target_col: '기타/일반' if analysis_type == "배송 속성별" else '기타 (외 다수)', '출고건수': other_sum}])
+                other_row = pd.DataFrame([{target_col: '기타/일반' if app_analysis_type == "배송 속성별" else '기타 (외 다수)', '출고건수': other_sum}])
                 chart_df = pd.concat([top_grp, other_row], ignore_index=True)
             else:
                 chart_df = raw_grp
 
             if not chart_df.empty:
-                st.subheader(f"📊 {analysis_type} 점유율 및 출고 비중 분석 (상단 시각화 개편)")
+                st.subheader(f"📊 {app_analysis_type} 점유율 및 출고 비중 분석 (상단 시각화 개편)")
                 color_palette = px.colors.qualitative.Plotly
                 categories = chart_df[target_col].tolist()
                 colors_list = [color_palette[i % len(color_palette)] for i in range(len(categories))]
@@ -1020,7 +1059,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         hoverinfo="label+value+percent",
                     ))
                     fig_pie.update_layout(
-                        title=f"<b>[{analysis_type}] 점유율 비율 (%)</b>",
+                        title=f"<b>[{app_analysis_type}] 점유율 비율 (%)</b>",
                         template="plotly_dark",
                         height=420,
                         margin=dict(t=50, b=80, l=10, r=10),
@@ -1040,7 +1079,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         marker_color=colors_list[::-1]
                     ))
                     fig_bar.update_layout(
-                        title=f"<b>[{analysis_type}] 주요 구분별 총 출고건수 비교</b>",
+                        title=f"<b>[{app_analysis_type}] 주요 구분별 총 출고건수 비교</b>",
                         template="plotly_dark",
                         height=420,
                         margin=dict(t=50, b=20, l=120, r=80),
@@ -1051,7 +1090,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     st.plotly_chart(fig_bar, use_container_width=True)
                 st.markdown("---")
 
-            st.subheader(f"📅 요일별 [{analysis_type}] 구성 현황 분석")
+            st.subheader(f"📅 요일별 [{app_analysis_type}] 구성 현황 분석")
             weekday_kr_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
             ordered_weekdays = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
 
@@ -1065,7 +1104,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 active_days_clean = active_days.apply(lambda x: x if x > 0 else 1)
 
                 top_targets = chart_df[target_col].tolist()
-                other_label = '기타/일반' if analysis_type == "배송 속성별" else '기타 (외 다수)'
+                other_label = '기타/일반' if app_analysis_type == "배송 속성별" else '기타 (외 다수)'
                 df_tab2_copy[target_col] = df_tab2_copy[target_col].apply(lambda x: x if x in top_targets else other_label)
 
                 wk_attr_raw = df_tab2_copy.groupby(['요일', target_col])['출고건수'].sum().unstack(fill_value=0)
@@ -1102,7 +1141,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                         showlegend=False
                     ))
                     fig_wk2.update_layout(
-                        title=f"<b>요일별 [{analysis_type}] 구성 현황 (일평균 출고)</b>",
+                        title=f"<b>요일별 [{app_analysis_type}] 구성 현황 (일평균 출고)</b>",
                         template="plotly_dark",
                         barmode='stack',
                         height=420,
@@ -1115,7 +1154,7 @@ elif main_mode == "🚚 B2C 출고 현황":
 
                 with c_wk2_right:
                     st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-                    st.markdown(f"<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>📋 요일별 {analysis_type} 세부 데이터</p>", unsafe_allow_html=True)
+                    st.markdown(f"<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>📋 요일별 {app_analysis_type} 세부 데이터</p>", unsafe_allow_html=True)
                     wk_attr_disp = wk_attr_summary.copy()
                     wk_attr_disp['합계'] = wk_attr_disp.sum(axis=1)
 
@@ -1148,8 +1187,20 @@ elif main_mode == "🚚 B2C 출고 현황":
         raw_centers3 = df_centers_sample3['센터'].dropna().unique() if not df_centers_sample3.empty and '센터' in df_centers_sample3.columns else []
         avail_centers3 = get_formatted_center_options(raw_centers3)
         
-        selected_center_tab3_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers3, key="tab3_centers", disabled=st.session_state['is_syncing'])
-        expanded_centers_tab3 = expand_selected_centers(selected_center_tab3_input, list(raw_centers3)) if selected_center_tab3_input else []
+        # ⭐ [탭 3 폼 컨테이너 적용]
+        with st.form("tab3_filter_form"):
+            col_t3_1, col_t3_btn = st.columns([5, 1.2])
+            with col_t3_1:
+                selected_center_tab3_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers3, key="tab3_centers_input", disabled=st.session_state['is_syncing'])
+            with col_t3_btn:
+                st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+                submit_tab3 = st.form_submit_button("🔍 조회", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+
+        if submit_tab3 or 'tab3_applied_centers' not in st.session_state:
+            st.session_state['tab3_applied_centers'] = selected_center_tab3_input
+
+        applied_centers_t3 = st.session_state['tab3_applied_centers']
+        expanded_centers_tab3 = expand_selected_centers(applied_centers_t3, list(raw_centers3)) if applied_centers_t3 else []
 
         if not df_b2c_orders3.empty:
             df_tab3 = df_b2c_orders3[~df_b2c_orders3['출고박스종류'].astype(str).str.upper().isin(['N', 'Y', '미지정', 'NAN'])]
@@ -1164,36 +1215,58 @@ elif main_mode == "🚚 B2C 출고 현황":
 
     with tab4:
         st.header("🔍 SKU별 출고량")
-        c_sku1, c_sku2, c_sku3 = st.columns([3, 2, 2])
         
         df_centers_sample4 = load_shipment_orders("전체")
         raw_centers4 = df_centers_sample4['센터'].dropna().unique() if not df_centers_sample4.empty and '센터' in df_centers_sample4.columns else []
         avail_centers4 = get_formatted_center_options(raw_centers4)
+        
+        df_all_clients4 = load_b2c_sku_data("전체")
+        available_clients4 = sorted(list(df_all_clients4['고객사'].dropna().unique())) if not df_all_clients4.empty and '고객사' in df_all_clients4.columns else []
 
-        with c_sku1:
-            today4 = date.today()
-            first_day4 = today4.replace(day=1)
-            date_range4 = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day4, today4), key="tab4_date_range", disabled=st.session_state['is_syncing'])
-            
-        with c_sku2:
-            selected_center_tab4_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers4, key="tab4_centers", disabled=st.session_state['is_syncing'])
-            expanded_centers_tab4 = expand_selected_centers(selected_center_tab4_input, list(raw_centers4)) if selected_center_tab4_input else []
+        # ⭐ [탭 4 폼 컨테이너 적용]
+        with st.form("tab4_filter_form"):
+            c_sku1, c_sku2, c_sku3, c_sku4, c_sku_btn = st.columns([2.2, 2.0, 1.8, 2.0, 1.2])
+            with c_sku1:
+                today4 = date.today()
+                first_day4 = today4.replace(day=1)
+                date_range4 = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day4, today4), key="tab4_date_range_input", disabled=st.session_state['is_syncing'])
+                
+            with c_sku2:
+                selected_center_tab4_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers4, key="tab4_centers_input", disabled=st.session_state['is_syncing'])
 
-        with c_sku3:
-            show_client4 = st.radio("고객사 구분 표시", ["숨김 (전체 요약)", "보이기 (고객사 상세)"], key="tab4_show_client", disabled=st.session_state['is_syncing'])
-            clients4 = []
-            if "보이기" in show_client4:
-                df_all_clients = load_b2c_sku_data("전체")
-                available_clients4 = sorted(list(df_all_clients['고객사'].dropna().unique())) if not df_all_clients.empty and '고객사' in df_all_clients.columns else []
-                clients4 = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients4, key="tab4_clients", disabled=st.session_state['is_syncing'])
+            with c_sku3:
+                show_client4 = st.radio("고객사 구분 표시", ["숨김 (전체 요약)", "보이기 (고객사 상세)"], key="tab4_show_client_input", disabled=st.session_state['is_syncing'])
 
-        if isinstance(date_range4, tuple) and len(date_range4) == 2:
-            start_d4, end_d4 = date_range4
-            df_b2c_sku = load_b2c_sku_data_by_range(start_d4, end_d4, expanded_centers_tab4, clients4)
+            with c_sku4:
+                clients4 = st.multiselect("고객사 선택 (미선택 시 전체)", available_clients4, key="tab4_clients_input", disabled=st.session_state['is_syncing'])
+
+            with c_sku_btn:
+                st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+                submit_tab4 = st.form_submit_button("🔍 조회", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+
+        if submit_tab4 or 'tab4_applied_filter' not in st.session_state:
+            st.session_state['tab4_applied_filter'] = {
+                'date_range': date_range4,
+                'centers': selected_center_tab4_input,
+                'show_client': show_client4,
+                'clients': clients4
+            }
+
+        t4_applied = st.session_state['tab4_applied_filter']
+        t4_dates = t4_applied['date_range']
+        t4_centers_input = t4_applied['centers']
+        t4_show_client = t4_applied['show_client']
+        t4_clients = t4_applied['clients'] if "보이기" in t4_show_client else []
+
+        expanded_centers_tab4 = expand_selected_centers(t4_centers_input, list(raw_centers4)) if t4_centers_input else []
+
+        if isinstance(t4_dates, tuple) and len(t4_dates) == 2:
+            start_d4, end_d4 = t4_dates
+            df_b2c_sku = load_b2c_sku_data_by_range(start_d4, end_d4, expanded_centers_tab4, t4_clients)
             
             if not df_b2c_sku.empty:
                 group_cols4 = ['바코드', 'SKU명']
-                if "보이기" in show_client4: group_cols4 = ['고객사', '바코드', 'SKU명']
+                if "보이기" in t4_show_client: group_cols4 = ['고객사', '바코드', 'SKU명']
                 sku_summary = df_b2c_sku.groupby(group_cols4)[['출고건수', '총출고수량']].sum().reset_index()
                 sku_summary = sku_summary.sort_values(by='총출고수량', ascending=False).reset_index(drop=True)
                 st.dataframe(sku_summary.style.format({'출고건수': '{:,}', '총출고수량': '{:,}'}), use_container_width=True, hide_index=True)
@@ -1207,46 +1280,62 @@ elif main_mode == "🚚 B2C 출고 현황":
         st.header("⏱️ 시간대별 주문 인입 vs 마감 & PPH 효율 분석 (06시 영업 타임라인)")
         st.caption("주문 인입량과 송장 마감량을 비교하고, 우측에 전체 PPH 및 직접 PPH를 세로형 추세선으로 나란히 표시합니다.")
 
-        c_h1, c_h2, c_h3 = st.columns([3, 2, 2])
         df_centers_sample_h = load_shipment_orders("전체")
         raw_centers_h = df_centers_sample_h['센터'].dropna().unique() if not df_centers_sample_h.empty and '센터' in df_centers_sample_h.columns else []
         avail_centers_h = get_formatted_center_options(raw_centers_h)
 
-        with c_h1:
-            yesterday_h = date.today() - timedelta(days=1)
-            date_range_h = st.date_input("🗓️ 마감일자 기간 선택 (기본: 오늘-1일):", value=(yesterday_h, yesterday_h), key="tab5_date_range", disabled=st.session_state['is_syncing'])
-            
-        with c_h2:
-            selected_center_h_input = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers_h, key="tab5_centers", disabled=st.session_state['is_syncing'])
-            expanded_centers_h = expand_selected_centers(selected_center_h_input, list(raw_centers_h)) if selected_center_h_input else []
+        df_all_clients_sample = load_b2c_sku_data("전체")
+        all_avail_clients_h = sorted(list(df_all_clients_sample['고객사'].dropna().unique())) if not df_all_clients_sample.empty and '고객사' in df_all_clients_sample.columns else []
 
-        if isinstance(date_range_h, tuple) and len(date_range_h) == 2:
-            start_dh_tmp, end_dh_tmp = date_range_h
-            df_center_filtered_sample = load_b2c_raw_by_range(start_dh_tmp, end_dh_tmp, expanded_centers_h)
-            available_clients_h = sorted(list(df_center_filtered_sample['고객사'].dropna().unique())) if not df_center_filtered_sample.empty and '고객사' in df_center_filtered_sample.columns else []
-        else:
-            available_clients_h = []
+        # ⭐ [탭 5 폼 컨테이너 적용 - 클릭 시 깜빡임 차단, '조회' 버튼 클릭 시 일괄 갱신]
+        with st.form("tab5_filter_form"):
+            c_h1, c_h2, c_h3, c_btn5 = st.columns([2.5, 2.5, 2.5, 1.2])
 
-        with c_h3:
-            selected_clients_h = st.multiselect("🏢 고객사 선택 (미선택 시 전체):", available_clients_h, key="tab5_clients", disabled=st.session_state['is_syncing'])
+            with c_h1:
+                yesterday_h = date.today() - timedelta(days=1)
+                date_range_h = st.date_input("🗓️ 마감일자 기간 선택:", value=(yesterday_h, yesterday_h), key="tab5_date_range_input", disabled=st.session_state['is_syncing'])
+                
+            with c_h2:
+                selected_center_h_input = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers_h, key="tab5_centers_input", disabled=st.session_state['is_syncing'])
 
-        if isinstance(date_range_h, tuple) and len(date_range_h) == 2:
-            start_dh, end_dh = date_range_h
+            with c_h3:
+                selected_clients_h = st.multiselect("🏢 고객사 선택 (미선택 시 전체):", all_avail_clients_h, key="tab5_clients_input", disabled=st.session_state['is_syncing'])
+
+            with c_btn5:
+                st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+                submit_tab5 = st.form_submit_button("🔍 조회", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+
+        if submit_tab5 or 'tab5_applied_filter' not in st.session_state:
+            st.session_state['tab5_applied_filter'] = {
+                'date_range': date_range_h,
+                'centers': selected_center_h_input,
+                'clients': selected_clients_h
+            }
+
+        t5_applied = st.session_state['tab5_applied_filter']
+        t5_dates = t5_applied['date_range']
+        t5_centers_input = t5_applied['centers']
+        t5_clients = t5_applied['clients']
+
+        expanded_centers_h = expand_selected_centers(t5_centers_input, list(raw_centers_h)) if t5_centers_input else []
+
+        if isinstance(t5_dates, tuple) and len(t5_dates) == 2:
+            start_dh, end_dh = t5_dates
             num_days = (end_dh - start_dh).days + 1
             
             df_raw_h = load_b2c_raw_by_range(start_dh, end_dh, expanded_centers_h)
             
             target_mh_group = None
-            if selected_center_h_input:
-                is_375 = any('375' in str(c) or '1층' in str(c) for c in selected_center_h_input)
-                is_xfc = any('XFC' in str(c).upper() for c in selected_center_h_input)
+            if t5_centers_input:
+                is_375 = any('375' in str(c) or '1층' in str(c) for c in t5_centers_input)
+                is_xfc = any('XFC' in str(c).upper() for c in t5_centers_input)
                 if is_375 and not is_xfc: target_mh_group = '375'
                 elif is_xfc and not is_375: target_mh_group = 'XFC'
 
             df_mh_h = load_mh_data_by_range(start_dh, end_dh, center_group=target_mh_group)
 
-            if selected_clients_h and not df_raw_h.empty and '고객사' in df_raw_h.columns:
-                df_raw_h = df_raw_h[df_raw_h['고객사'].isin(selected_clients_h)]
+            if t5_clients and not df_raw_h.empty and '고객사' in df_raw_h.columns:
+                df_raw_h = df_raw_h[df_raw_h['고객사'].isin(t5_clients)]
 
             if not df_raw_h.empty:
                 op_hours_order = [f"{h:02d}:00" for h in range(6, 24)] + [f"{h:02d}:00" for h in range(0, 6)]
@@ -1292,7 +1381,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                     avg_shipment = round(tot_shipment / num_days, 1)
                     cur_mh = round(mh_map.get(label_key, 0.0), 1)
                     
-                    # ⭐ 구글 시트에 실제 입력된 값만 가져옴 (강제 자동 계산 완전 제거)
+                    # 구글 시트에 실제 입력된 값만 가져옴 (강제 자동 계산 완전 제거)
                     tot_p_val = pph_tot_map.get(label_key, None)
                     dir_p_val = pph_dir_map.get(label_key, None)
 
@@ -1311,7 +1400,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 df_chart = pd.DataFrame(chart_rows)
                 title_prefix = f"일평균 ({num_days}일간 평균)" if num_days > 1 else f"당일 ({start_dh.strftime('%Y-%m-%d')})"
 
-                # 3열 서브플롯 가로폭 비율 조정: [좌측 막대 72%] | [전체 PPH 14%] | [직접 PPH 14%]
+                # 3열 서브플롯 가로폭: [좌측 막대 72%] | [전체 PPH 14%] | [직접 PPH 14%]
                 fig_v = make_subplots(
                     rows=1, cols=3,
                     column_widths=[0.72, 0.14, 0.14],
@@ -1422,7 +1511,7 @@ elif main_mode == "🚚 B2C 출고 현황":
                 tot_in = df_chart['주문 인입건수'].sum()
                 tot_out = df_chart['송장 마감건수'].sum()
 
-                # 7개 컬럼 순서 구성
+                # 7개 컬럼 순서 데이터프레임 구성
                 df_table = pd.DataFrame({
                     '시간대': df_chart['시간대'],
                     '주문 인입건수': df_chart['주문 인입건수'].apply(lambda x: f"{x:,.0f}"),
@@ -1442,72 +1531,92 @@ elif main_mode == "🚚 B2C 출고 현황":
         st.header("📥 B2C 로우파일 추출 및 다운로드")
         st.caption("원하는 기간과 센터 조건을 지정하여 B2C 출고 로우 원장(shipment_raw)을 엑셀 파일로 다운로드할 수 있습니다.")
 
-        c1, c2 = st.columns(2)
-        with c1:
-            today = date.today()
-            first_day = today.replace(day=1)
-            date_range = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day, today), key="raw_dl_date_range", disabled=st.session_state['is_syncing'])
-        
         df_centers_sample = load_shipment_orders("전체")
         raw_centers_dl = df_centers_sample['센터'].dropna().unique() if not df_centers_sample.empty and '센터' in df_centers_sample.columns else []
         avail_centers = get_formatted_center_options(raw_centers_dl)
 
-        with c2:
-            selected_centers_dl = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers, key="raw_dl_centers", disabled=st.session_state['is_syncing'])
+        with st.form("tab6_filter_form"):
+            c1, c2, c3 = st.columns([3, 3, 1.5])
+            with c1:
+                today = date.today()
+                first_day = today.replace(day=1)
+                date_range = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day, today), key="raw_dl_date_range_input", disabled=st.session_state['is_syncing'])
+            with c2:
+                selected_centers_dl = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers, key="raw_dl_centers_input", disabled=st.session_state['is_syncing'])
+            with c3:
+                st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+                submit_dl = st.form_submit_button("🔍 로우 데이터 검색", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
 
-        if isinstance(date_range, tuple) and len(date_range) == 2:
-            start_d, end_d = date_range
-            
-            if st.button("🔍 로우 데이터 검색 및 엑셀 생성", type="primary", disabled=st.session_state['is_syncing']):
+        if submit_dl:
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                start_d, end_d = date_range
                 with st.spinner("데이터베이스에서 로우 데이터를 추출 중입니다..."):
                     expanded_centers_dl = expand_selected_centers(selected_centers_dl, list(raw_centers_dl)) if selected_centers_dl else []
                     df_raw_dl = load_b2c_raw_by_range(start_d, end_d, expanded_centers_dl)
                     st.session_state['searched_raw_df'] = df_raw_dl
                     st.session_state['searched_raw_dates'] = (start_d, end_d)
 
-            if 'searched_raw_df' in st.session_state and not st.session_state['searched_raw_df'].empty:
-                df_raw_dl = st.session_state['searched_raw_df']
-                start_d_s, end_d_s = st.session_state['searched_raw_dates']
-                
-                st.success(f"✅ 총 **{len(df_raw_dl):,}** 건의 로우 데이터가 조회되었습니다.")
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df_raw_dl.to_excel(writer, index=False, sheet_name='B2C_RawData')
+        if 'searched_raw_df' in st.session_state and not st.session_state['searched_raw_df'].empty:
+            df_raw_dl = st.session_state['searched_raw_df']
+            start_d_s, end_d_s = st.session_state['searched_raw_dates']
+            
+            st.success(f"✅ 총 **{len(df_raw_dl):,}** 건의 로우 데이터가 조회되었습니다.")
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_raw_dl.to_excel(writer, index=False, sheet_name='B2C_RawData')
 
-                out_filename = f"B2C_RawData_{start_d_s.strftime('%Y%m%d')}_{end_d_s.strftime('%Y%m%d')}.xlsx"
-                st.download_button(
-                    label="💾 로우 데이터 엑셀 파일 다운로드",
-                    data=buffer.getvalue(),
-                    file_name=out_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="btn_download_b2c_raw_excel",
-                    type="primary",
-                    disabled=st.session_state['is_syncing']
-                )
-                st.markdown("---")
-                st.dataframe(df_raw_dl.head(100), use_container_width=True)
+            out_filename = f"B2C_RawData_{start_d_s.strftime('%Y%m%d')}_{end_d_s.strftime('%Y%m%d')}.xlsx"
+            st.download_button(
+                label="💾 로우 데이터 엑셀 파일 다운로드",
+                data=buffer.getvalue(),
+                file_name=out_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="btn_download_b2c_raw_excel",
+                type="primary",
+                disabled=st.session_state['is_syncing']
+            )
+            st.markdown("---")
+            st.dataframe(df_raw_dl.head(100), use_container_width=True)
 
 # ==========================================
 # 📦 입고 현황
 # ==========================================
 elif main_mode == "📦 입고 현황":
     st.header("📦 입고 현황 모니터링")
-    col_ib1, col_ib2 = st.columns(2)
-    with col_ib1:
-        today_ib = date.today()
-        first_day_ib = today_ib.replace(day=1)
-        date_range_ib = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day_ib, today_ib), key="ib_date_range", disabled=st.session_state['is_syncing'])
-        
+    
     df_centers_sample_ib = load_shipment_orders("전체")
     raw_centers_ib = df_centers_sample_ib['센터'].dropna().unique() if not df_centers_sample_ib.empty and '센터' in df_centers_sample_ib.columns else []
     avail_centers_ib = get_formatted_center_options(raw_centers_ib)
 
-    with col_ib2:
-        selected_centers_ib = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers_ib, key="ib_centers", disabled=st.session_state['is_syncing'])
-        expanded_centers_ib = expand_selected_centers(selected_centers_ib, list(raw_centers_ib)) if selected_centers_ib else []
+    # ⭐ [입고 현황 폼 컨테이너 적용 - 클릭 시 깜빡임 차단, '조회' 버튼 클릭 시 갱신]
+    with st.form("inbound_filter_form"):
+        col_ib1, col_ib2, col_ib_btn = st.columns([3, 3, 1.2])
+        with col_ib1:
+            today_ib = date.today()
+            first_day_ib = today_ib.replace(day=1)
+            date_range_ib = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day_ib, today_ib), key="ib_date_range_input", disabled=st.session_state['is_syncing'])
+            
+        with col_ib2:
+            selected_centers_ib = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers_ib, key="ib_centers_input", disabled=st.session_state['is_syncing'])
 
-    if isinstance(date_range_ib, tuple) and len(date_range_ib) == 2:
-        start_d_ib, end_d_ib = date_range_ib
+        with col_ib_btn:
+            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            submit_ib = st.form_submit_button("🔍 조회", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+
+    if submit_ib or 'ib_applied_filter' not in st.session_state:
+        st.session_state['ib_applied_filter'] = {
+            'date_range': date_range_ib,
+            'centers': selected_centers_ib
+        }
+
+    ib_applied = st.session_state['ib_applied_filter']
+    applied_ib_dates = ib_applied['date_range']
+    applied_ib_centers = ib_applied['centers']
+
+    expanded_centers_ib = expand_selected_centers(applied_ib_centers, list(raw_centers_ib)) if applied_ib_centers else []
+
+    if isinstance(applied_ib_dates, tuple) and len(applied_ib_dates) == 2:
+        start_d_ib, end_d_ib = applied_ib_dates
         df_inbound = load_inbound_data_by_range(start_d_ib, end_d_ib, expanded_centers_ib)
         if not df_inbound.empty:
             pivot_raw_ib = pd.pivot_table(df_inbound, index=['센터', '고객사', '상태'], columns='영업마감일자', values='입고완료수량', aggfunc='sum', fill_value=0)
