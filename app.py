@@ -21,7 +21,7 @@ initial_sidebar_state="expanded"
 DB_INBOUND_PATH = "wms_inbound.db"
 LAST_SYNC_FILE = "last_sync.txt"
 
---- 동기화 상태 세션 초기화 ---
+# --- 동기화 상태 세션 초기화 ---
 
 if 'is_syncing' not in st.session_state:
 st.session_state['is_syncing'] = False
