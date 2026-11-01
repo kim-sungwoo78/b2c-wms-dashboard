@@ -66,7 +66,7 @@ return ""
 if 'loaded_sync_time' not in st.session_state:
 st.session_state['loaded_sync_time'] = get_last_sync_time()
 
-⭐ [전체 월별 DB 자동 다운로드]
+[전체 월별 DB 자동 다운로드]
 
 def init_db_from_drive():
 if "gcp_service_account" in st.secrets:
@@ -110,9 +110,9 @@ importlib.reload(etl_pipeline)
 
         def update_progress(current, total, filename, eta):
             status_text.markdown(
-                f"⏳ **동기화 진행 중 ({current}/{total})**\n\n"
-                f"📄 `{filename}`\n\n"
-                f"*(⚠️ 동기화 중에는 메뉴 선택이 차단됩니다)*"
+                f"진행 중 ({current}/{total})\n\n"
+                f"파일: `{filename}`\n\n"
+                f"*(동기화 중에는 메뉴 선택이 차단됩니다)*"
             )
 
         st.cache_data.clear()
@@ -129,21 +129,21 @@ importlib.reload(etl_pipeline)
         save_last_sync_time()
 
         if matched_cnt > 0:
-            st.session_state['sync_msg'] = f"✅ 동기화 완료! (PLT/BOX {matched_cnt:,}건 매칭 및 M/H 갱신 완료)"
+            st.session_state['sync_msg'] = f"동기화 완료: PLT/BOX {matched_cnt:,}건 매칭 및 M/H 갱신 완료"
             st.session_state['sync_msg_type'] = "success"
         else:
-            st.session_state['sync_msg'] = "✅ 동기화 완료! (최신 DB 및 M/H 갱신 완료)"
+            st.session_state['sync_msg'] = "동기화 완료: 최신 DB 및 M/H 갱신 완료"
             st.session_state['sync_msg_type'] = "info"
         
         st.session_state['is_syncing'] = False
         return True
     except Exception as e:
-        st.session_state['sync_msg'] = f"❌ 동기화 에러: {e}"
+        st.session_state['sync_msg'] = f"동기화 에러: {e}"
         st.session_state['sync_msg_type'] = "error"
         st.session_state['is_syncing'] = False
         return False
 else:
-    st.session_state['sync_msg'] = "❌ gcp_service_account 시크릿 설정이 없습니다."
+    st.session_state['sync_msg'] = "gcp_service_account 시크릿 설정이 없습니다."
     st.session_state['sync_msg_type'] = "error"
     st.session_state['is_syncing'] = False
 return False
@@ -315,7 +315,7 @@ for db_p in all_db_files:
 return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
 
-⭐ [M/H 및 전체/직접 PPH 데이터 로드 - KeyError 방어 로직 적용]
+[M/H 및 전체/직접 PPH 데이터 로드 - KeyError 방어 로직 적용]
 
 @st.cache_data(ttl=5)
 def load_mh_data_by_range(start_date, end_date, center_group=None):
@@ -337,7 +337,7 @@ if "gcp_service_account" in st.secrets:
             list_xfc = etl_pipeline.parse_mh_xfc(sheets_service)
             rows_to_save.extend(list_xfc)
     except Exception as e:
-        st.toast(f"⚠️ PPH 데이터 실시간 로드 안내: {e}")
+        st.toast(f"PPH 데이터 실시간 로드 안내: {e}")
 
 if rows_to_save:
     df_res = pd.DataFrame(rows_to_save)
@@ -493,7 +493,7 @@ st.markdown('''
 
 ''', unsafe_allow_html=True)
 
-st.title("🏢 센터 통합 물류 운영 대시보드")
+st.title("센터 통합 물류 운영 대시보드")
 
 latest_sync = get_last_sync_time()
 my_loaded_sync = st.session_state.get('loaded_sync_time', '')
@@ -501,14 +501,14 @@ my_loaded_sync = st.session_state.get('loaded_sync_time', '')
 if latest_sync and latest_sync > my_loaded_sync:
 col_msg, col_btn = st.columns([4, 1])
 with col_msg:
-st.info(f"🔔 새로운 데이터 업데이트 감지! (최종 동기화: {latest_sync})")
+st.info(f"새로운 데이터 업데이트 감지 (최종 동기화: {latest_sync})")
 with col_btn:
-if st.button("🔄 최신 데이터 불러오기", type="primary", use_container_width=True, disabled=st.session_state['is_syncing']):
+if st.button("최신 데이터 불러오기", type="primary", use_container_width=True, disabled=st.session_state['is_syncing']):
 st.cache_data.clear()
 st.session_state['loaded_sync_time'] = latest_sync
 st.rerun()
 
-if st.sidebar.button("🔄 드라이브 & 구글시트 동기화", disabled=st.session_state['is_syncing']):
+if st.sidebar.button("드라이브 & 구글시트 동기화", disabled=st.session_state['is_syncing']):
 if run_sync():
 st.rerun()
 
@@ -519,26 +519,26 @@ elif m_type == "error": st.sidebar.error(st.session_state['sync_msg'])
 else: st.sidebar.info(st.session_state['sync_msg'])
 
 if 'main_mode_selection' not in st.session_state:
-st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
+st.session_state['main_mode_selection'] = "메인 : 센터 종합 현황"
 
 btn_col1, btn_col2, btn_col3 = st.columns(3)
 
 with btn_col1:
-btn_type = "primary" if (st.session_state['main_mode_selection'] == "🏢 메인 : 센터 종합 현황") else "secondary"
-if st.button("🏢 메인 : 센터 종합 현황", type=btn_type, use_container_width=True, disabled=st.session_state['is_syncing']):
-st.session_state['main_mode_selection'] = "🏢 메인 : 센터 종합 현황"
+btn_type = "primary" if (st.session_state['main_mode_selection'] == "메인 : 센터 종합 현황") else "secondary"
+if st.button("메인 : 센터 종합 현황", type=btn_type, use_container_width=True, disabled=st.session_state['is_syncing']):
+st.session_state['main_mode_selection'] = "메인 : 센터 종합 현황"
 st.rerun()
 
 with btn_col2:
-btn_type = "primary" if (st.session_state['main_mode_selection'] == "🚚 B2C 출고 현황") else "secondary"
-if st.button("🚚 B2C 출고 현황", type=btn_type, use_container_width=True, disabled=st.session_state['is_syncing']):
-st.session_state['main_mode_selection'] = "🚚 B2C 출고 현황"
+btn_type = "primary" if (st.session_state['main_mode_selection'] == "B2C 출고 현황") else "secondary"
+if st.button("B2C 출고 현황", type=btn_type, use_container_width=True, disabled=st.session_state['is_syncing']):
+st.session_state['main_mode_selection'] = "B2C 출고 현황"
 st.rerun()
 
 with btn_col3:
-btn_type = "primary" if (st.session_state['main_mode_selection'] == "📦 입고 현황") else "secondary"
-if st.button("📦 입고 현황", type=btn_type, use_container_width=True, disabled=st.session_state['is_syncing']):
-st.session_state['main_mode_selection'] = "📦 입고 현황"
+btn_type = "primary" if (st.session_state['main_mode_selection'] == "입고 현황") else "secondary"
+if st.button("입고 현황", type=btn_type, use_container_width=True, disabled=st.session_state['is_syncing']):
+st.session_state['main_mode_selection'] = "입고 현황"
 st.rerun()
 
 main_mode = st.session_state['main_mode_selection']
@@ -593,7 +593,7 @@ with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
     df.to_excel(writer, sheet_name='현황데이터')
 st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
 st.download_button(
-    label="💾 현재 표 데이터 엑셀 다운로드", data=excel_buffer.getvalue(),
+    label="현재 표 데이터 엑셀 다운로드", data=excel_buffer.getvalue(),
     file_name=f"센터물류현황_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     key=f"dl_table_{key_suffix}",
@@ -621,7 +621,7 @@ elif item == "XFC 소계": expanded.update(c_xfc_all)
 else: expanded.add(item)
 return list(expanded)
 
-⭐ [전체 메뉴 공통: 선택 센터별 고객사 동적 추출 함수]
+[전체 메뉴 공통: 선택 센터별 고객사 동적 추출 함수]
 
 @st.cache_data(ttl=60)
 def get_clients_by_centers(selected_center_names=None):
@@ -711,15 +711,15 @@ body_df = pd.concat(subtotal_dfs) if subtotal_dfs else pivot_df
 
 total_vals = pivot_df.sum(axis=0).values
 if isinstance(pivot_df.index, pd.MultiIndex):
-    total_idx = ("★ 전체 합계",) + ('',) * (len(group_cols) - 1)
+    total_idx = ("전체 합계",) + ('',) * (len(group_cols) - 1)
     total_df = pd.DataFrame([total_vals], columns=pivot_df.columns, index=pd.MultiIndex.from_tuples([total_idx], names=group_cols))
 else:
-    total_df = pd.DataFrame([total_vals], columns=pivot_df.columns, index=pd.Index(["★ 전체 합계"], name='센터'))
+    total_df = pd.DataFrame([total_vals], columns=pivot_df.columns, index=pd.Index(["전체 합계"], name='센터'))
 
 return pd.concat([total_df, body_df])
 
 
-def render_month_button_bar(session_key_selected, title_label="🗓️ 기준 월 선택:", allow_nujak=True, multi_select=True):
+def render_month_button_bar(session_key_selected, title_label="기준 월 선택:", allow_nujak=True, multi_select=True):
 st.markdown(f"{title_label}", unsafe_allow_html=True)
 
 adjusted_today = datetime.now() - timedelta(days=1)
@@ -774,13 +774,13 @@ return st.session_state[session_key_selected]
 
 ==========================================
 
-🏢 메인 : 센터 종합 현황
+메인 : 센터 종합 현황
 
 ==========================================
 
-if main_mode == "🏢 메인 : 센터 종합 현황":
-st.header("📊 센터 종합 운영 실적 요약")
-selected_m = render_month_button_bar(session_key_selected="main_selected_month", title_label="🗓️ 기준 월 선택:", allow_nujak=True, multi_select=True)
+if main_mode == "메인 : 센터 종합 현황":
+st.header("센터 종합 운영 실적 요약")
+selected_m = render_month_button_bar(session_key_selected="main_selected_month", title_label="기준 월 선택:", allow_nujak=True, multi_select=True)
 
 sel_m_list_main = selected_m if isinstance(selected_m, list) else ([selected_m] if selected_m else [])
 df_b2c_orders = load_shipment_orders(sel_m_list_main) if sel_m_list_main else pd.DataFrame()
@@ -796,10 +796,10 @@ center_options_main = get_formatted_center_options(raw_centers)
 with st.form("main_filter_form"):
     col_m_f1, col_m_btn = st.columns([5, 1.2])
     with col_m_f1:
-        selected_centers_filter = st.multiselect("🏢 센터 선택 (미선택 시 전체):", center_options_main, default=st.session_state.get('main_applied_centers', []), key="main_center_filter_input", disabled=st.session_state['is_syncing'])
+        selected_centers_filter = st.multiselect("센터 선택 (미선택 시 전체):", center_options_main, default=st.session_state.get('main_applied_centers', []), key="main_center_filter_input", disabled=st.session_state['is_syncing'])
     with col_m_btn:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        submit_main = st.form_submit_button("🔍 조회", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+        submit_main = st.form_submit_button("조회", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
 
 if submit_main or 'main_applied_centers' not in st.session_state:
     st.session_state['main_applied_centers'] = selected_centers_filter
@@ -834,13 +834,13 @@ else:
 overall_pph = round(total_b2c_cnt / applicable_mh, 1) if applicable_mh > 0 else 0.0
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-kpi1.metric("🚚 B2C 출고건수", f"{total_b2c_cnt:,} 건")
-kpi2.metric("⚡ 전체 PPH (시간당 처리량)", f"{overall_pph:,.1f}" if overall_pph > 0 else "-")
-kpi3.metric("📦 입고건수 (입고완료/승인대기)", f"{total_inbound_cnt:,} 건")
-kpi4.metric("🏭 B2B 건수 (연동 준비중)", "0 건")
+kpi1.metric("B2C 출고건수", f"{total_b2c_cnt:,} 건")
+kpi2.metric("전체 PPH (시간당 처리량)", f"{overall_pph:,.1f}" if overall_pph > 0 else "-")
+kpi3.metric("입고건수 (입고완료/승인대기)", f"{total_inbound_cnt:,} 건")
+kpi4.metric("B2B 건수 (연동 준비중)", "0 건")
 
 st.markdown("---")
-st.subheader("📋 센터별 운영 항목 종합 비교표 (M/H 및 PPH 포함)")
+st.subheader("센터별 운영 항목 종합 비교표 (M/H 및 PPH 포함)")
 
 summary_rows = []
 centers_to_loop = expanded_main_centers if expanded_main_centers else sorted(list(raw_centers))
@@ -877,19 +877,19 @@ if summary_rows:
     render_sticky_pivot(final_main_df, ["센터"], key_suffix="main_summary")
 
 
-elif main_mode == "🚚 B2C 출고 현황":
+elif main_mode == "B2C 출고 현황":
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-"📊 센터/고객사별 출고현황",
-"🚚 배송속성 / 판매처별 현황",
-"📦 출고박스별 현황",
-"🔍 SKU별 출고량",
-"⏱️ 시간대별 주문/마감 분석",
-"📥 B2C 로우파일 다운로드"
+"센터/고객사별 출고현황",
+"배송속성 / 판매처별 현황",
+"출고박스별 현황",
+"SKU별 출고량",
+"시간대별 주문/마감 분석",
+"B2C 로우파일 다운로드"
 ])
 
 with tab1:
     st.header("센터 & 고객사별 출고현황 (06시 영업마감 기준)")
-    expanded_months_tab1 = render_month_button_bar(session_key_selected="tab1_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=True, multi_select=True)
+    expanded_months_tab1 = render_month_button_bar(session_key_selected="tab1_exp_months", title_label="상세 일자 펼침 월 선택:", allow_nujak=True, multi_select=True)
     sel_m_list = expanded_months_tab1 if isinstance(expanded_months_tab1, list) else ([expanded_months_tab1] if expanded_months_tab1 else [])
     df_b2c_orders = load_shipment_orders(sel_m_list) if sel_m_list else pd.DataFrame()
 
@@ -902,7 +902,7 @@ with tab1:
         with col1:
             selected_center_input = st.multiselect("센터 선택 (미선택 시 전체)", center_options, default=st.session_state.get('t1_f_centers', []), key="tab1_centers_input", disabled=st.session_state['is_syncing'])
         
-        # ⭐ 센터에 따른 고객사 목록 동적 필터링
+        # 센터에 따른 고객사 목록 동적 필터링
         all_clients_t1 = get_clients_by_centers(selected_center_input)
 
         with col2: 
@@ -911,7 +911,7 @@ with tab1:
             clients = st.multiselect("고객사 선택 (미선택 시 전체)", all_clients_t1, default=st.session_state.get('t1_f_clients', []), key="tab1_clients_input", disabled=st.session_state['is_syncing'])
         with col_btn1:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-            submit_tab1 = st.button("🔍 조회", key="tab1_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+            submit_tab1 = st.button("조회", key="tab1_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
 
         if submit_tab1 or 'tab1_applied_filter' not in st.session_state:
             st.session_state['t1_f_centers'] = selected_center_input
@@ -944,7 +944,7 @@ with tab1:
             render_sticky_pivot(pivot_df, group_cols, key_suffix="tab1")
 
             st.markdown("---")
-            st.subheader("📅 요일별 일평균 출고 현황 분석")
+            st.subheader("요일별 일평균 출고 현황 분석")
             
             weekday_kr_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
             ordered_weekdays = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
@@ -998,7 +998,7 @@ with tab1:
                     })
                     total_avg_val = round(df_wk_plot['일평균출고량'].mean(), 1)
                     total_row = pd.DataFrame([{
-                        '요일': '★ 전체 평균',
+                        '요일': '전체 평균',
                         '일평균 출고량': f"{total_avg_val:,.1f}",
                         '비중 (%)': '100.0%'
                     }])
@@ -1009,7 +1009,7 @@ with tab1:
 
 with tab2:
     st.header("배송 속성 및 판매처별 출고현황")
-    expanded_months_tab2 = render_month_button_bar(session_key_selected="tab2_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=True, multi_select=True)
+    expanded_months_tab2 = render_month_button_bar(session_key_selected="tab2_exp_months", title_label="상세 일자 펼침 월 선택:", allow_nujak=True, multi_select=True)
     sel_m_list2 = expanded_months_tab2 if isinstance(expanded_months_tab2, list) else ([expanded_months_tab2] if expanded_months_tab2 else [])
     df_b2c_orders2 = load_shipment_orders(sel_m_list2) if sel_m_list2 else pd.DataFrame()
 
@@ -1024,7 +1024,7 @@ with tab2:
             analysis_type = st.radio("분석 기준 선택", ["배송 속성별", "판매처별"], horizontal=True, key="tab2_analysis_radio_input", disabled=st.session_state['is_syncing'])
         with col_t2_btn:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-            submit_tab2 = st.button("🔍 조회", key="tab2_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+            submit_tab2 = st.button("조회", key="tab2_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
 
         if submit_tab2 or 'tab2_applied_filter' not in st.session_state:
             st.session_state['t2_f_centers'] = selected_center_tab2_input
@@ -1054,7 +1054,7 @@ with tab2:
             chart_df = raw_grp
 
         if not chart_df.empty:
-            st.subheader(f"📊 {app_analysis_type} 점유율 및 출고 비중 분석 (상단 시각화 개편)")
+            st.subheader(f"{app_analysis_type} 점유율 및 출고 비중 분석 (상단 시각화 개편)")
             color_palette = px.colors.qualitative.Plotly
             categories = chart_df[target_col].tolist()
             colors_list = [color_palette[i % len(color_palette)] for i in range(len(categories))]
@@ -1104,7 +1104,7 @@ with tab2:
                 st.plotly_chart(fig_bar, use_container_width=True)
             st.markdown("---")
 
-        st.subheader(f"📅 요일별 [{app_analysis_type}] 구성 현황 분석")
+        st.subheader(f"요일별 [{app_analysis_type}] 구성 현황 분석")
         weekday_kr_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
         ordered_weekdays = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
 
@@ -1168,13 +1168,13 @@ with tab2:
 
             with c_wk2_right:
                 st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-                st.markdown(f"<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>📋 요일별 {app_analysis_type} 세부 데이터</p>", unsafe_allow_html=True)
+                st.markdown(f"<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>요일별 {app_analysis_type} 세부 데이터</p>", unsafe_allow_html=True)
                 wk_attr_disp = wk_attr_summary.copy()
                 wk_attr_disp['합계'] = wk_attr_disp.sum(axis=1)
 
                 avg_row = wk_attr_summary.mean(axis=0)
-                wk_attr_disp.loc['★ 전체 평균'] = avg_row
-                wk_attr_disp.loc['★ 전체 평균', '합계'] = avg_row.sum()
+                wk_attr_disp.loc['전체 평균'] = avg_row
+                wk_attr_disp.loc['전체 평균', '합계'] = avg_row.sum()
 
                 for col in wk_attr_disp.columns:
                     wk_attr_disp[col] = wk_attr_disp[col].apply(lambda x: f"{x:,.1f}")
@@ -1193,7 +1193,7 @@ with tab2:
 
 with tab3:
     st.header("출고박스 규격별 사용 현황")
-    expanded_months_tab3 = render_month_button_bar(session_key_selected="tab3_exp_months", title_label="🗓️ 상세 일자 펼침 월 선택:", allow_nujak=True, multi_select=True)
+    expanded_months_tab3 = render_month_button_bar(session_key_selected="tab3_exp_months", title_label="상세 일자 펼침 월 선택:", allow_nujak=True, multi_select=True)
     sel_m_list3 = expanded_months_tab3 if isinstance(expanded_months_tab3, list) else ([expanded_months_tab3] if expanded_months_tab3 else [])
     df_b2c_orders3 = load_shipment_orders(sel_m_list3) if sel_m_list3 else pd.DataFrame()
 
@@ -1203,10 +1203,10 @@ with tab3:
     
     col_t3_1, col_t3_btn = st.columns([5, 1.2])
     with col_t3_1:
-        selected_center_tab3_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers3, default=st.session_state.get('t3_f_centers', []), key="tab3_centers_input", disabled=st.session_state['is_syncing'])
+        selected_center_tab3_input = st.multiselect("센터 선택 (미선택 시 전체)", avail_centers3, default=st.session_state.get('t3_f_centers', []), key="tab3_centers_input", disabled=st.session_state['is_syncing'])
     with col_t3_btn:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        submit_tab3 = st.button("🔍 조회", key="tab3_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+        submit_tab3 = st.button("조회", key="tab3_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
 
     if submit_tab3 or 'tab3_applied_centers' not in st.session_state:
         st.session_state['t3_f_centers'] = selected_center_tab3_input
@@ -1227,7 +1227,7 @@ with tab3:
             render_sticky_pivot(pivot_df3, ["출고박스 규격"], key_suffix="tab3")
 
 with tab4:
-    st.header("🔍 SKU별 출고량")
+    st.header("SKU별 출고량")
     
     df_centers_sample4 = load_shipment_orders("전체")
     raw_centers4 = df_centers_sample4['센터'].dropna().unique() if not df_centers_sample4.empty and '센터' in df_centers_sample4.columns else []
@@ -1239,12 +1239,12 @@ with tab4:
     with c_sku1:
         today4 = date.today()
         first_day4 = today4.replace(day=1)
-        date_range4 = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day4, today4), key="tab4_date_range_input", disabled=st.session_state['is_syncing'])
+        date_range4 = st.date_input("마감일자 기간 선택:", value=(first_day4, today4), key="tab4_date_range_input", disabled=st.session_state['is_syncing'])
         
     with c_sku2:
-        selected_center_tab4_input = st.multiselect("🏢 센터 선택 (미선택 시 전체)", avail_centers4, default=st.session_state.get('t4_f_centers', []), key="tab4_centers_input", disabled=st.session_state['is_syncing'])
+        selected_center_tab4_input = st.multiselect("센터 선택 (미선택 시 전체)", avail_centers4, default=st.session_state.get('t4_f_centers', []), key="tab4_centers_input", disabled=st.session_state['is_syncing'])
 
-    # ⭐ 센터 선택 시 해당 센터에 속한 고객사만 동적으로 필터링
+    # 센터 선택 시 해당 센터에 속한 고객사만 동적으로 필터링
     avail_clients_tab4 = get_clients_by_centers(selected_center_tab4_input)
 
     with c_sku3:
@@ -1255,7 +1255,7 @@ with tab4:
 
     with c_sku_btn:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        submit_tab4 = st.button("🔍 조회", key="tab4_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+        submit_tab4 = st.button("조회", key="tab4_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
 
     if submit_tab4 or 'tab4_applied_filter' not in st.session_state:
         st.session_state['t4_f_centers'] = selected_center_tab4_input
@@ -1287,14 +1287,14 @@ with tab4:
             
             st.dataframe(sku_summary.style.format({'출고건수': '{:,}', '총출고수량': '{:,}'}), use_container_width=True, hide_index=True)
 
-            # ⭐ SKU별 출고량 엑셀 다운로드 버튼
+            # SKU별 출고량 엑셀 다운로드 버튼
             excel_buffer_sku = io.BytesIO()
             with pd.ExcelWriter(excel_buffer_sku, engine='openpyxl') as writer:
                 sku_summary.to_excel(writer, index=False, sheet_name='SKU별출고량')
             
             st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
             st.download_button(
-                label="💾 SKU별 출고량 엑셀 다운로드",
+                label="SKU별 출고량 엑셀 다운로드",
                 data=excel_buffer_sku.getvalue(),
                 file_name=f"SKU별_출고량_{start_d4.strftime('%Y%m%d')}_{end_d4.strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1306,10 +1306,10 @@ with tab4:
             st.info("선택된 기간 및 조건의 SKU 출고 데이터가 없습니다.")
 
 # ==========================================
-# ⏱️ 탭 5 : 시간대별 주문/마감 & 전체/직접 PPH 독립 세로형 추세선 분석
+# 탭 5 : 시간대별 주문/마감 & 전체/직접 PPH 독립 세로형 추세선 분석
 # ==========================================
 with tab5:
-    st.header("⏱️ 시간대별 주문 인입 vs 마감 & PPH 효율 분석 (06시 영업 타임라인)")
+    st.header("시간대별 주문 인입 vs 마감 & PPH 효율 분석 (06시 영업 타임라인)")
     st.caption("주문 인입량과 송장 마감량을 비교하고, 우측에 전체 PPH 및 직접 PPH를 세로형 추세선으로 나란히 표시합니다.")
 
     df_centers_sample_h = load_shipment_orders("전체")
@@ -1320,20 +1320,20 @@ with tab5:
 
     with c_h1:
         yesterday_h = date.today() - timedelta(days=1)
-        date_range_h = st.date_input("🗓️ 마감일자 기간 선택:", value=(yesterday_h, yesterday_h), key="tab5_date_range_input", disabled=st.session_state['is_syncing'])
+        date_range_h = st.date_input("마감일자 기간 선택:", value=(yesterday_h, yesterday_h), key="tab5_date_range_input", disabled=st.session_state['is_syncing'])
         
     with c_h2:
-        selected_center_h_input = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers_h, default=st.session_state.get('t5_f_centers', []), key="tab5_centers_input", disabled=st.session_state['is_syncing'])
+        selected_center_h_input = st.multiselect("센터 선택 (미선택 시 전체):", avail_centers_h, default=st.session_state.get('t5_f_centers', []), key="tab5_centers_input", disabled=st.session_state['is_syncing'])
 
-    # ⭐ 센터 선택 시 해당 센터에 속한 고객사만 동적으로 필터링
+    # 센터 선택 시 해당 센터에 속한 고객사만 동적으로 필터링
     avail_clients_tab5 = get_clients_by_centers(selected_center_h_input)
 
     with c_h3:
-        selected_clients_h = st.multiselect("🏢 고객사 선택 (미선택 시 전체):", avail_clients_tab5, default=st.session_state.get('t5_f_clients', []), key="tab5_clients_input", disabled=st.session_state['is_syncing'])
+        selected_clients_h = st.multiselect("고객사 선택 (미선택 시 전체):", avail_clients_tab5, default=st.session_state.get('t5_f_clients', []), key="tab5_clients_input", disabled=st.session_state['is_syncing'])
 
     with c_btn5:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        submit_tab5 = st.button("🔍 조회", key="tab5_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+        submit_tab5 = st.button("조회", key="tab5_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
 
     if submit_tab5 or 'tab5_applied_filter' not in st.session_state:
         st.session_state['t5_f_centers'] = selected_center_h_input
@@ -1439,8 +1439,8 @@ with tab5:
                 horizontal_spacing=0.025,
                 subplot_titles=(
                     f"<b>[{title_prefix}] 주문 인입 vs 송장 마감</b>",
-                    "<b>⚡ 전체 PPH</b>",
-                    "<b>🎯 직접 PPH</b>"
+                    "<b>전체 PPH</b>",
+                    "<b>직접 PPH</b>"
                 )
             )
 
@@ -1536,7 +1536,7 @@ with tab5:
             st.plotly_chart(fig_v, use_container_width=True)
 
             st.markdown("---")
-            st.subheader("📋 시간대별 세부 수치 비교표 (전체 PPH 및 직접 PPH 포함)")
+            st.subheader("시간대별 세부 수치 비교표 (전체 PPH 및 직접 PPH 포함)")
 
             tot_in = df_chart['주문 인입건수'].sum()
             tot_out = df_chart['송장 마감건수'].sum()
@@ -1557,7 +1557,7 @@ with tab5:
             st.info("선택된 기간 및 조건의 로우 데이터가 없습니다.")
 
 with tab6:
-    st.header("📥 B2C 로우파일 추출 및 다운로드")
+    st.header("B2C 로우파일 추출 및 다운로드")
     st.caption("원하는 기간과 센터 조건을 지정하여 B2C 출고 로우 원장(shipment_raw)을 엑셀 파일로 다운로드할 수 있습니다.")
 
     df_centers_sample = load_shipment_orders("전체")
@@ -1568,12 +1568,12 @@ with tab6:
     with c1:
         today = date.today()
         first_day = today.replace(day=1)
-        date_range = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day, today), key="raw_dl_date_range_input", disabled=st.session_state['is_syncing'])
+        date_range = st.date_input("마감일자 기간 선택:", value=(first_day, today), key="raw_dl_date_range_input", disabled=st.session_state['is_syncing'])
     with c2:
-        selected_centers_dl = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers, default=st.session_state.get('t6_f_centers', []), key="raw_dl_centers_input", disabled=st.session_state['is_syncing'])
+        selected_centers_dl = st.multiselect("센터 선택 (미선택 시 전체):", avail_centers, default=st.session_state.get('t6_f_centers', []), key="raw_dl_centers_input", disabled=st.session_state['is_syncing'])
     with c3:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        submit_dl = st.button("🔍 로우 데이터 검색", key="tab6_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+        submit_dl = st.button("로우 데이터 검색", key="tab6_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
 
     if submit_dl:
         st.session_state['t6_f_centers'] = selected_centers_dl
@@ -1589,14 +1589,14 @@ with tab6:
         df_raw_dl = st.session_state['searched_raw_df']
         start_d_s, end_d_s = st.session_state['searched_raw_dates']
         
-        st.success(f"✅ 총 **{len(df_raw_dl):,}** 건의 로우 데이터가 조회되었습니다.")
+        st.success(f"총 {len(df_raw_dl):,} 건의 로우 데이터가 조회되었습니다.")
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df_raw_dl.to_excel(writer, index=False, sheet_name='B2C_RawData')
 
         out_filename = f"B2C_RawData_{start_d_s.strftime('%Y%m%d')}_{end_d_s.strftime('%Y%m%d')}.xlsx"
         st.download_button(
-            label="💾 로우 데이터 엑셀 파일 다운로드",
+            label="로우 데이터 엑셀 파일 다운로드",
             data=buffer.getvalue(),
             file_name=out_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1610,12 +1610,12 @@ with tab6:
 
 ==========================================
 
-📦 입고 현황
+입고 현황
 
 ==========================================
 
-elif main_mode == "📦 입고 현황":
-st.header("📦 입고 현황 모니터링")
+elif main_mode == "입고 현황":
+st.header("입고 현황 모니터링")
 
 df_centers_sample_ib = load_shipment_orders("전체")
 raw_centers_ib = df_centers_sample_ib['센터'].dropna().unique() if not df_centers_sample_ib.empty and '센터' in df_centers_sample_ib.columns else []
@@ -1625,14 +1625,14 @@ col_ib1, col_ib2, col_ib_btn = st.columns([3, 3, 1.2])
 with col_ib1:
     today_ib = date.today()
     first_day_ib = today_ib.replace(day=1)
-    date_range_ib = st.date_input("🗓️ 마감일자 기간 선택:", value=(first_day_ib, today_ib), key="ib_date_range_input", disabled=st.session_state['is_syncing'])
+    date_range_ib = st.date_input("마감일자 기간 선택:", value=(first_day_ib, today_ib), key="ib_date_range_input", disabled=st.session_state['is_syncing'])
     
 with col_ib2:
-    selected_centers_ib = st.multiselect("🏢 센터 선택 (미선택 시 전체):", avail_centers_ib, default=st.session_state.get('ib_f_centers', []), key="ib_centers_input", disabled=st.session_state['is_syncing'])
+    selected_centers_ib = st.multiselect("센터 선택 (미선택 시 전체):", avail_centers_ib, default=st.session_state.get('ib_f_centers', []), key="ib_centers_input", disabled=st.session_state['is_syncing'])
 
 with col_ib_btn:
     st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-    submit_ib = st.button("🔍 조회", key="ib_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
+    submit_ib = st.button("조회", key="ib_submit_btn", type="primary", use_container_width=True, disabled=st.session_state['is_syncing'])
 
 if submit_ib or 'ib_applied_filter' not in st.session_state:
     st.session_state['ib_f_centers'] = selected_centers_ib
